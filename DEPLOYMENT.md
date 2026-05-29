@@ -24,6 +24,7 @@ SUPABASE_SYNC_ENABLED=true
 SUPABASE_STATE_ID=coastal-crest
 ALLOWED_EMAIL_DOMAIN=coastalcrestroofing.com
 DEFAULT_AUTH_ROLE=sales
+ADMIN_EMAILS=owner@coastalcrestroofing.com
 AUTH_REQUIRED=true
 ```
 
@@ -53,7 +54,9 @@ For each sales rep:
 3. Use their company email and password.
 4. If Supabase requires email confirmation, they must confirm from their inbox.
 
-Roles can be set in Supabase user metadata:
+Owner/admin users should be listed in `ADMIN_EMAILS` on Render and in the Supabase `crm_admins` table from `supabase/schema.sql`.
+
+Roles for other users can be set in Supabase app metadata:
 
 ```json
 {
@@ -61,4 +64,18 @@ Roles can be set in Supabase user metadata:
 }
 ```
 
-Supported roles are `admin`, `sales`, `production`, and `viewer`.
+Supported roles are `admin`, `office_manager`, `sales_manager`, `operations_manager`, `sales`, `production`, and `viewer`.
+
+Example manager metadata:
+
+```json
+{
+  "role": "sales_manager"
+}
+```
+
+- `office_manager`: team records, estimates, documents, tasks, and company settings
+- `sales_manager`: team leads, jobs, estimates, tasks, and sales reports
+- `operations_manager`: team jobs, projects, documents, tasks, and operational reports
+
+You can enter roles with spaces or hyphens in Supabase metadata, but underscore values such as `sales_manager` are preferred.
