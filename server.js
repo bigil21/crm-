@@ -57,6 +57,7 @@ function authConfigScript() {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
       "",
     allowedEmailDomain,
+    adminEmails: process.env.ADMIN_EMAILS || process.env.OWNER_EMAIL || process.env.ADMIN_EMAIL || "",
     defaultRole: process.env.DEFAULT_AUTH_ROLE || "viewer",
     authRequired: process.env.AUTH_REQUIRED === "true",
     syncEnabled: process.env.SUPABASE_SYNC_ENABLED === "true",
