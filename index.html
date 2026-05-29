@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111111" />
+    <title>Roofline CRM</title>
+    <link rel="manifest" href="manifest.webmanifest?v=23" />
+    <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=23" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-nav" aria-label="Application navigation">
+        <div class="brand">
+          <img src="icon.svg" alt="" class="brand-icon" id="brandLogo" />
+          <div>
+            <strong>Roofline CRM</strong>
+            <span>Leads, customers, estimates</span>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="Primary">
+          <button class="nav-item active" type="button" data-view="dashboard">
+            <span aria-hidden="true" data-icon="home"></span>
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-item" type="button" data-view="leads">
+            <span aria-hidden="true" data-icon="user"></span>
+            <span>Leads</span>
+          </button>
+          <button class="nav-item" type="button" data-view="contacts">
+            <span aria-hidden="true" data-icon="users"></span>
+            <span>Contacts</span>
+          </button>
+          <button class="nav-item" type="button" data-view="jobs">
+            <span aria-hidden="true" data-icon="briefcase"></span>
+            <span>Jobs</span>
+          </button>
+          <button class="nav-item" type="button" data-view="estimates">
+            <span aria-hidden="true" data-icon="file"></span>
+            <span>Estimates</span>
+          </button>
+          <button class="nav-item" type="button" data-view="companyDocuments">
+            <span aria-hidden="true" data-icon="folder"></span>
+            <span>Documents</span>
+          </button>
+          <button class="nav-item" type="button" data-view="projects">
+            <span aria-hidden="true" data-icon="hammer"></span>
+            <span>Projects</span>
+          </button>
+          <button class="nav-item" type="button" data-view="calendar">
+            <span aria-hidden="true" data-icon="calendar"></span>
+            <span>Calendar</span>
+          </button>
+          <button class="nav-item" type="button" data-view="tasks">
+            <span aria-hidden="true" data-icon="clipboard"></span>
+            <span>Tasks</span>
+          </button>
+          <button class="nav-item" type="button" data-view="invoices">
+            <span aria-hidden="true" data-icon="invoice"></span>
+            <span>Invoices</span>
+          </button>
+          <button class="nav-item" type="button" data-view="reviews">
+            <span aria-hidden="true" data-icon="star"></span>
+            <span>Reviews</span>
+          </button>
+          <button class="nav-item" type="button" data-view="reports">
+            <span aria-hidden="true" data-icon="bar-chart"></span>
+            <span>Reports</span>
+          </button>
+          <button class="nav-item" type="button" data-view="company">
+            <span aria-hidden="true" data-icon="settings"></span>
+            <span>Settings</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-title">
+            <button class="icon-button menu-button" type="button" aria-label="Menu">
+              <span aria-hidden="true" data-icon="menu"></span>
+            </button>
+            <div>
+              <p class="eyebrow">Sales workspace</p>
+              <h1 id="viewTitle">Dashboard</h1>
+            </div>
+          </div>
+          <div class="top-actions">
+            <div class="date-chip" id="dashboardDateRange">
+              <span aria-hidden="true" data-icon="calendar"></span>
+              <span>This week</span>
+            </div>
+            <label class="search-field">
+              <span aria-hidden="true" data-icon="search"></span>
+              <input id="globalSearch" type="search" placeholder="Search people, jobs, estimates" />
+            </label>
+            <button class="icon-button notification-button" type="button" data-view="tasks" aria-label="Open tasks">
+              <span aria-hidden="true" data-icon="bell"></span>
+              <span class="notification-dot">0</span>
+            </button>
+            <button class="ghost-button hidden" type="button" id="installAppButton">
+              <span aria-hidden="true" data-icon="download"></span>
+              Install App
+            </button>
+            <button class="secondary-button" type="button" id="importZohoButton">
+              <span aria-hidden="true" data-icon="upload"></span>
+              Import Zoho
+            </button>
+            <input class="file-input-hidden" id="zohoCsvInput" type="file" accept=".csv,text/csv" />
+            <button class="primary-button" type="button" id="addContactButton">
+              <span aria-hidden="true" data-icon="plus"></span>
+              Add Lead
+            </button>
+            <div class="user-chip" id="userChip"></div>
+          </div>
+        </header>
+
+        <section class="summary-strip" id="summaryStrip" aria-label="CRM summary"></section>
+
+        <section class="view-panel" id="dashboardView">
+          <div class="dashboard-layout">
+            <section class="surface dashboard-panel pipeline-widget">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Pipeline overview</p>
+                  <h2>Current job stages</h2>
+                </div>
+              </div>
+              <div id="pipelineOverview" class="pipeline-overview"></div>
+            </section>
+
+            <section class="surface dashboard-panel revenue-widget">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Revenue overview</p>
+                  <h2>Won revenue trend</h2>
+                </div>
+              </div>
+              <div id="revenueChart" class="revenue-chart"></div>
+            </section>
+
+            <section class="surface dashboard-panel tasks-widget">
+              <div class="view-toolbar compact">
+                <div>
+                  <p class="eyebrow">Upcoming tasks</p>
+                  <h2>Rep reminders</h2>
+                </div>
+                <button class="link-button" type="button" data-view="tasks">View All</button>
+              </div>
+              <div id="dashboardTasksList" class="task-list dashboard-task-list"></div>
+            </section>
+
+            <section class="surface dashboard-panel donut-panel">
+              <div class="view-toolbar compact">
+                <div>
+                  <p class="eyebrow">Lead sources</p>
+                  <h2>Lead mix</h2>
+                </div>
+              </div>
+              <div id="leadSourcesChart" class="donut-widget"></div>
+            </section>
+
+            <section class="surface dashboard-panel donut-panel">
+              <div class="view-toolbar compact">
+                <div>
+                  <p class="eyebrow">Jobs by type</p>
+                  <h2>Work categories</h2>
+                </div>
+              </div>
+              <div id="jobsByTypeChart" class="donut-widget"></div>
+            </section>
+
+            <section class="surface dashboard-panel donut-panel">
+              <div class="view-toolbar compact">
+                <div>
+                  <p class="eyebrow">Project status</p>
+                  <h2>Active projects</h2>
+                </div>
+              </div>
+              <div id="projectStatusChart" class="donut-widget"></div>
+            </section>
+
+            <section class="surface dashboard-panel activity-widget">
+              <div class="view-toolbar compact">
+                <div>
+                  <p class="eyebrow">Recent activity</p>
+                  <h2>Latest updates</h2>
+                </div>
+              </div>
+              <div id="recentActivityList" class="activity-list"></div>
+            </section>
+
+            <section class="surface dashboard-panel schedule-widget">
+              <div class="view-toolbar compact">
+                <div>
+                  <p class="eyebrow">Today</p>
+                  <h2>Schedule</h2>
+                </div>
+              </div>
+              <div id="todayScheduleList" class="schedule-strip"></div>
+            </section>
+
+            <section class="surface dashboard-panel weather-widget">
+              <div id="weatherPanel"></div>
+            </section>
+
+            <section class="surface dashboard-panel leaderboard-panel">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Sales leaderboard</p>
+                  <h2>Representative performance</h2>
+                </div>
+                <div class="segmented-control" aria-label="Leaderboard date range">
+                  <button type="button" class="active" data-leaderboard-range="week">Week</button>
+                  <button type="button" data-leaderboard-range="month">Month</button>
+                  <button type="button" data-leaderboard-range="ytd">Year to Date</button>
+                </div>
+              </div>
+              <div class="leaderboard-note" id="leaderboardRangeLabel"></div>
+              <div class="table-wrap">
+                <table class="data-table leaderboard-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Sales Representative</th>
+                      <th>Closed Jobs</th>
+                      <th>Closed Job Value</th>
+                      <th>Avg. Job Value</th>
+                    </tr>
+                  </thead>
+                  <tbody id="leaderboardTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" id="leadsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Lead center</p>
+              <h2>Open sales opportunities</h2>
+            </div>
+            <button class="primary-button" type="button" id="addLeadFromLeadsButton">
+              <span aria-hidden="true" data-icon="plus"></span>
+              Add Lead
+            </button>
+          </div>
+          <div id="leadsList" class="record-grid"></div>
+        </section>
+
+        <section class="view-panel hidden" id="pipelineView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Pipeline board</p>
+              <h2>Active opportunities</h2>
+            </div>
+            <div class="segmented-control" aria-label="Pipeline contact filter">
+              <button type="button" class="active" data-pipeline-filter="Lead">Leads</button>
+              <button type="button" data-pipeline-filter="Customer">Customers</button>
+              <button type="button" data-pipeline-filter="All">All</button>
+            </div>
+          </div>
+          <div class="pipeline-board" id="pipelineBoard" aria-live="polite"></div>
+        </section>
+
+        <section class="view-panel hidden" id="contactsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">People</p>
+              <h2>Leads and customers</h2>
+            </div>
+            <button class="secondary-button" type="button" data-action="add-customer">
+              <span aria-hidden="true" data-icon="plus"></span>
+              Add Customer
+            </button>
+          </div>
+          <div class="surface contacts-surface">
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Sales Rep</th>
+                    <th>Contact</th>
+                    <th>Total Job Value</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="contactsTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" id="jobsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Jobs</p>
+              <h2>All client jobs</h2>
+            </div>
+          </div>
+          <div class="surface contacts-surface">
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Job</th>
+                    <th>Client</th>
+                    <th>Status</th>
+                    <th>Sales Rep</th>
+                    <th>Value</th>
+                    <th>Address</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="jobsTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" id="projectsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Projects</p>
+              <h2>Active job production</h2>
+            </div>
+          </div>
+          <div id="projectsGrid" class="record-grid"></div>
+        </section>
+
+        <section class="view-panel hidden" id="leadDetailView">
+          <div class="lead-detail-header">
+            <div>
+              <button class="ghost-button" type="button" id="backToContactsButton">
+                <span aria-hidden="true" data-icon="arrow-left"></span>
+                Back
+              </button>
+              <p class="eyebrow">Lead page</p>
+              <h2 id="leadDetailTitle">Lead Detail</h2>
+              <p id="leadDetailMeta" class="detail-meta"></p>
+            </div>
+            <div class="detail-actions">
+              <button class="secondary-button" type="button" id="editLeadDetailButton">
+                <span aria-hidden="true" data-icon="edit"></span>
+                Edit
+              </button>
+              <button class="secondary-button" type="button" id="emailLeadDetailButton">
+                <span aria-hidden="true" data-icon="mail"></span>
+                Email
+              </button>
+              <button class="primary-button" type="button" id="estimateLeadDetailButton">
+                <span aria-hidden="true" data-icon="file"></span>
+                Estimate
+              </button>
+            </div>
+          </div>
+
+          <div class="detail-stats" id="leadDetailStats"></div>
+
+          <section class="surface lead-detail-surface">
+            <div class="segmented-control detail-tabs" aria-label="Lead detail sections">
+              <button type="button" class="active" data-lead-tab="overview">Overview</button>
+              <button type="button" data-lead-tab="jobs">Jobs</button>
+              <button type="button" data-lead-tab="email">Email</button>
+              <button type="button" data-lead-tab="documents">Documents</button>
+              <button type="button" data-lead-tab="conversation">Conversation</button>
+            </div>
+
+            <div class="lead-tab-panel" id="leadOverviewPanel"></div>
+
+            <div class="lead-tab-panel hidden" id="leadJobsPanel">
+              <div class="conversation-layout">
+                <form id="leadJobForm" class="conversation-form">
+                  <input type="hidden" name="jobId" />
+                  <div class="form-grid two">
+                    <label>
+                      Job Name
+                      <input name="name" required autocomplete="off" />
+                    </label>
+                    <label>
+                      Status
+                      <select name="status">
+                        <option>New</option>
+                        <option>Contacted</option>
+                        <option>Inspection</option>
+                        <option>Estimate Sent</option>
+                        <option>Won</option>
+                        <option>Lost</option>
+                      </select>
+                    </label>
+                    <label>
+                      Job Value
+                      <input name="value" type="number" min="0" step="100" />
+                    </label>
+                    <label>
+                      Sales Representative
+                      <input name="salesRep" autocomplete="name" />
+                    </label>
+                    <label>
+                      Last Contact
+                      <input name="lastContact" type="date" />
+                    </label>
+                    <label>
+                      Closed Date
+                      <input name="closedDate" type="date" />
+                    </label>
+                  </div>
+                  <label>
+                    Job Address
+                    <textarea name="address" rows="3"></textarea>
+                  </label>
+                  <label>
+                    Job Notes
+                    <textarea name="notes" rows="3"></textarea>
+                  </label>
+                  <div class="builder-actions">
+                    <button class="ghost-button" type="button" id="clearJobFormButton">
+                      <span aria-hidden="true" data-icon="x"></span>
+                      Clear
+                    </button>
+                    <button class="primary-button" type="submit">
+                      <span aria-hidden="true" data-icon="check"></span>
+                      Save Job
+                    </button>
+                  </div>
+                </form>
+                <div id="leadJobsList" class="job-list"></div>
+              </div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadEmailPanel">
+              <form id="leadEmailForm" class="conversation-form email-form">
+                <div class="form-grid two">
+                  <label>
+                    From
+                    <input name="fromEmail" type="email" autocomplete="email" />
+                  </label>
+                  <label>
+                    To
+                    <input name="toEmail" type="email" autocomplete="email" />
+                  </label>
+                </div>
+                <label>
+                  Subject
+                  <input name="subject" autocomplete="off" />
+                </label>
+                <label>
+                  Message
+                  <textarea name="message" rows="8"></textarea>
+                </label>
+                <div class="builder-actions">
+                  <button class="secondary-button" type="button" id="copyLeadEmailButton">
+                    <span aria-hidden="true" data-icon="copy"></span>
+                    Copy
+                  </button>
+                  <button class="primary-button" type="submit">
+                    <span aria-hidden="true" data-icon="mail"></span>
+                    Open Email
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadDocumentsPanel">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Documents</p>
+                  <h2>Files for this lead</h2>
+                </div>
+                <button class="secondary-button" type="button" id="uploadLeadDocumentButton">
+                  <span aria-hidden="true" data-icon="upload"></span>
+                  Upload Document
+                </button>
+                <input class="file-input-hidden" id="leadDocumentInput" type="file" multiple />
+              </div>
+              <div id="leadDocumentsList" class="document-list"></div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadConversationPanel">
+              <div class="conversation-layout">
+                <form id="leadConversationForm" class="conversation-form">
+                  <div class="form-grid two">
+                    <label>
+                      Posted By
+                      <input name="author" autocomplete="name" />
+                    </label>
+                    <label>
+                      Status Update
+                      <select name="status">
+                        <option value="">No status change</option>
+                        <option>New</option>
+                        <option>Contacted</option>
+                        <option>Inspection</option>
+                        <option>Estimate Sent</option>
+                        <option>Won</option>
+                        <option>Lost</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label>
+                    Note or Update
+                    <textarea name="message" rows="4" required></textarea>
+                  </label>
+                  <div class="builder-actions end">
+                    <button class="primary-button" type="submit">
+                      <span aria-hidden="true" data-icon="send"></span>
+                      Post Update
+                    </button>
+                  </div>
+                </form>
+                <div id="leadConversationList" class="conversation-list"></div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view-panel hidden" id="estimatesView">
+          <div class="estimate-layout">
+            <section class="surface estimate-builder" aria-label="Estimate builder">
+              <div class="builder-header">
+                <div>
+                  <p class="eyebrow">Estimate center</p>
+                  <h2>Build and send</h2>
+                </div>
+                <button class="secondary-button" type="button" id="newEstimateButton">
+                  <span aria-hidden="true" data-icon="plus"></span>
+                  New Estimate
+                </button>
+              </div>
+
+              <div class="estimate-list" id="estimateList" aria-label="Saved estimates"></div>
+
+              <form id="estimateForm" class="estimate-form">
+                <div class="form-grid two">
+                  <label>
+                    Customer
+                    <select id="estimateContact" name="contactId"></select>
+                  </label>
+                  <label>
+                    Estimate Number
+                    <input id="estimateNumber" name="estimateNumber" autocomplete="off" />
+                  </label>
+                  <label>
+                    Estimate Title
+                    <input id="estimateTitle" name="projectTitle" autocomplete="off" />
+                  </label>
+                  <label>
+                    Status
+                    <select id="estimateStatus" name="status">
+                      <option>Draft</option>
+                      <option>Sent</option>
+                      <option>Approved</option>
+                      <option>Declined</option>
+                    </select>
+                  </label>
+                  <label>
+                    Project Manager
+                    <input id="projectManager" name="projectManager" autocomplete="off" />
+                  </label>
+                  <label>
+                    Sales Rep Email
+                    <input id="salesRepEmail" name="salesRepEmail" type="email" autocomplete="email" />
+                  </label>
+                  <label>
+                    Sales Rep Phone
+                    <input id="salesRepPhone" name="salesRepPhone" autocomplete="tel" />
+                  </label>
+                  <label>
+                    Issue Date
+                    <input id="issueDate" name="issueDate" type="date" />
+                  </label>
+                  <label>
+                    Good Through
+                    <input id="validUntil" name="validUntil" type="date" />
+                  </label>
+                </div>
+
+                <label>
+                  Scope Summary
+                  <textarea id="scopeSummary" name="scopeSummary" rows="3"></textarea>
+                </label>
+
+                <div class="line-items-head">
+                  <div>
+                    <p class="eyebrow">Line items</p>
+                    <h3>Work to be performed</h3>
+                  </div>
+                  <button class="ghost-button" type="button" id="addLineItemButton">
+                    <span aria-hidden="true" data-icon="plus"></span>
+                    Add Item
+                  </button>
+                </div>
+
+                <div class="line-items" id="lineItems"></div>
+
+                <div class="form-grid two">
+                  <label>
+                    Tax Rate %
+                    <input id="taxRate" name="taxRate" type="number" min="0" step="0.01" />
+                  </label>
+                  <label>
+                    Deposit Required
+                    <input id="deposit" name="deposit" type="number" min="0" step="0.01" />
+                  </label>
+                </div>
+
+                <label>
+                  Notes and Terms
+                  <textarea id="estimateNotes" name="notes" rows="3"></textarea>
+                </label>
+
+                <div class="builder-actions">
+                  <button class="ghost-button danger" type="button" id="deleteEstimateButton">
+                    <span aria-hidden="true" data-icon="trash"></span>
+                    Delete
+                  </button>
+                  <div>
+                    <button class="secondary-button" type="button" id="copyEstimateButton">
+                      <span aria-hidden="true" data-icon="copy"></span>
+                      Copy
+                    </button>
+                    <button class="secondary-button" type="button" id="printEstimateButton">
+                      <span aria-hidden="true" data-icon="download"></span>
+                      Download PDF
+                    </button>
+                    <button class="primary-button" type="button" id="sendEstimateButton">
+                      <span aria-hidden="true" data-icon="mail"></span>
+                      Send Estimate
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </section>
+
+            <section class="estimate-stage" aria-label="Estimate preview">
+              <div id="estimatePreview" class="estimate-paper"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" id="tasksView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Tasks</p>
+              <h2>All reminders</h2>
+            </div>
+            <button class="primary-button" type="button" data-view="calendar">
+              <span aria-hidden="true" data-icon="calendar"></span>
+              New Task
+            </button>
+          </div>
+          <section class="surface lead-detail-surface">
+            <div id="tasksPageList" class="task-list"></div>
+          </section>
+        </section>
+
+        <section class="view-panel hidden" id="invoicesView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Invoices</p>
+              <h2>Estimate billing queue</h2>
+            </div>
+          </div>
+          <section class="surface lead-detail-surface">
+            <div id="invoicesList" class="record-grid"></div>
+          </section>
+        </section>
+
+        <section class="view-panel hidden" id="reviewsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Reviews</p>
+              <h2>Customer follow-up</h2>
+            </div>
+          </div>
+          <section class="surface lead-detail-surface">
+            <div id="reviewsList" class="record-grid"></div>
+          </section>
+        </section>
+
+        <section class="view-panel hidden" id="reportsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Reports</p>
+              <h2>Sales performance</h2>
+            </div>
+          </div>
+          <section class="surface lead-detail-surface">
+            <div id="reportsContent" class="reports-grid"></div>
+          </section>
+        </section>
+
+        <section class="view-panel hidden" id="companyDocumentsView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Company library</p>
+              <h2>Blank contracts and sample estimates</h2>
+            </div>
+            <div class="detail-actions">
+              <label>
+                Category
+                <select id="companyDocumentCategory">
+                  <option>Blank Contract</option>
+                  <option>Sample Estimate</option>
+                  <option>Sales Reference</option>
+                  <option>Other</option>
+                </select>
+              </label>
+              <button class="secondary-button" type="button" id="uploadCompanyDocumentButton">
+                <span aria-hidden="true" data-icon="upload"></span>
+                Upload Document
+              </button>
+              <input class="file-input-hidden" id="companyDocumentInput" type="file" multiple />
+            </div>
+          </div>
+          <section class="surface lead-detail-surface">
+            <div id="companyDocumentsList" class="document-list"></div>
+          </section>
+        </section>
+
+        <section class="view-panel hidden" id="calendarView">
+          <div class="calendar-layout">
+            <section class="surface calendar-form-panel">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Calendar</p>
+                  <h2>Create rep task</h2>
+                </div>
+              </div>
+              <form id="calendarTaskForm" class="estimate-form">
+                <input type="hidden" name="taskId" />
+                <div class="form-grid two">
+                  <label>
+                    Sales Representative
+                    <input name="rep" list="salesRepOptions" required autocomplete="name" />
+                    <datalist id="salesRepOptions"></datalist>
+                  </label>
+                  <label>
+                    Related Lead
+                    <select name="contactId" id="calendarTaskContact"></select>
+                  </label>
+                  <label>
+                    Task Title
+                    <input name="title" required autocomplete="off" />
+                  </label>
+                  <label>
+                    Date and Time
+                    <input name="dueAt" type="datetime-local" required />
+                  </label>
+                  <label>
+                    Duration Minutes
+                    <input name="duration" type="number" min="5" step="5" value="30" />
+                  </label>
+                  <label>
+                    Google Calendar Reminder
+                    <select name="reminder">
+                      <option value="popup">Default popup reminder</option>
+                      <option value="none">No reminder</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  Notes
+                  <textarea name="notes" rows="4"></textarea>
+                </label>
+                <div class="builder-actions end">
+                  <button class="primary-button" type="submit">
+                    <span aria-hidden="true" data-icon="check"></span>
+                    Save Task
+                  </button>
+                </div>
+              </form>
+            </section>
+            <section class="surface calendar-list-panel">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Tasks</p>
+                  <h2>Rep reminders</h2>
+                </div>
+              </div>
+              <div id="calendarTasksList" class="task-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" id="companyView">
+          <div class="view-toolbar">
+            <div>
+              <p class="eyebrow">Business profile</p>
+              <h2>Estimate sender details</h2>
+            </div>
+          </div>
+          <form class="surface company-form" id="companyForm">
+            <h3>Company Logo</h3>
+            <div class="logo-settings">
+              <div class="logo-preview-frame">
+                <img id="companyLogoPreview" alt="Company logo preview" />
+              </div>
+              <div class="logo-settings-actions">
+                <strong>CRM and estimate logo</strong>
+                <span>Upload a square or horizontal logo. It will appear in the left navigation and every estimate PDF.</span>
+                <div class="detail-actions">
+                  <button class="secondary-button" type="button" id="uploadCompanyLogoButton">
+                    <span aria-hidden="true" data-icon="upload"></span>
+                    Add Logo
+                  </button>
+                  <button class="ghost-button danger" type="button" id="removeCompanyLogoButton">
+                    <span aria-hidden="true" data-icon="trash"></span>
+                    Remove
+                  </button>
+                  <input class="file-input-hidden" id="companyLogoInput" type="file" accept="image/*" />
+                </div>
+              </div>
+            </div>
+            <h3>User Profile</h3>
+            <div class="form-grid three">
+              <label>
+                Name
+                <input name="userName" autocomplete="name" />
+              </label>
+              <label>
+                CRM Sign-in Email
+                <input name="userEmail" type="email" autocomplete="email" />
+              </label>
+              <label>
+                Role
+                <input name="userRole" autocomplete="organization-title" />
+              </label>
+            </div>
+            <h3>Company Profile</h3>
+            <div class="form-grid two">
+              <label>
+                Company Name
+                <input name="name" autocomplete="organization" />
+              </label>
+              <label>
+                License or Tagline
+                <input name="license" autocomplete="off" />
+              </label>
+              <label>
+                Phone
+                <input name="phone" autocomplete="tel" />
+              </label>
+              <label>
+                Email
+                <input name="email" type="email" autocomplete="email" />
+              </label>
+            </div>
+            <label>
+              Office Address
+              <textarea name="officeAddress" rows="3" autocomplete="street-address"></textarea>
+            </label>
+            <label>
+              Default Estimate Terms
+              <textarea name="defaultTerms" rows="4"></textarea>
+            </label>
+            <div class="builder-actions end">
+              <button class="primary-button" type="submit">
+                <span aria-hidden="true" data-icon="check"></span>
+                Save Company
+              </button>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="contact-dialog" id="contactDialog">
+      <form method="dialog" id="contactForm">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Contact record</p>
+            <h2 id="contactDialogTitle">Add Lead</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeContactDialog" aria-label="Close">
+            <span aria-hidden="true" data-icon="x"></span>
+          </button>
+        </div>
+
+        <input type="hidden" name="id" />
+        <div class="form-grid two">
+          <label>
+            Type
+            <select name="type">
+              <option>Lead</option>
+              <option>Customer</option>
+            </select>
+          </label>
+          <label>
+            Status
+            <select name="status">
+              <option>New</option>
+              <option>Contacted</option>
+              <option>Inspection</option>
+              <option>Estimate Sent</option>
+              <option>Won</option>
+              <option>Lost</option>
+            </select>
+          </label>
+          <label>
+            Name
+            <input name="name" required autocomplete="name" />
+          </label>
+          <label>
+            Source
+            <input name="source" autocomplete="off" />
+          </label>
+          <label>
+            Sales Representative
+            <input name="salesRep" autocomplete="off" />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" autocomplete="email" />
+          </label>
+          <label>
+            Phone
+            <input name="phone" autocomplete="tel" />
+          </label>
+          <label>
+            Project Value
+            <input name="value" type="number" min="0" step="100" />
+          </label>
+          <label>
+            Last Contact
+            <input name="lastContact" type="date" />
+          </label>
+          <label>
+            Closed Date
+            <input name="closedDate" type="date" />
+          </label>
+        </div>
+        <label>
+          Job Address
+          <textarea name="address" rows="2"></textarea>
+        </label>
+        <label>
+          Notes
+          <textarea name="notes" rows="4"></textarea>
+        </label>
+
+        <div class="dialog-actions">
+          <button class="ghost-button danger" type="button" id="deleteContactButton">
+            <span aria-hidden="true" data-icon="trash"></span>
+            Delete
+          </button>
+          <div>
+            <button class="secondary-button" type="button" id="estimateFromContactButton">
+              <span aria-hidden="true" data-icon="file"></span>
+              Estimate
+            </button>
+            <button class="primary-button" value="save" type="submit">
+              <span aria-hidden="true" data-icon="check"></span>
+              Save
+            </button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="auth-config.js?v=23" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+    <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
+    <script src="auth.js?v=23" defer></script>
+    <script src="app.js?v=23" defer></script>
+  </body>
+</html>

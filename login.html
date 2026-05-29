@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111111" />
+    <title>Login | Roofline CRM</title>
+    <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=23" />
+  </head>
+  <body class="auth-body">
+    <main class="auth-shell">
+      <section class="auth-card surface">
+        <div class="brand auth-brand">
+          <img src="icon.svg" alt="" class="brand-icon" />
+          <div>
+            <strong>Roofline CRM</strong>
+            <span>Coastal Crest Roofing</span>
+          </div>
+        </div>
+
+        <div>
+          <p class="eyebrow">Secure access</p>
+          <h1>Sign in</h1>
+          <p id="domainHint" class="auth-copy">Only company users can sign in.</p>
+        </div>
+
+        <form id="loginForm" class="auth-form">
+          <label>
+            Email
+            <input id="loginEmail" type="email" autocomplete="email" required />
+          </label>
+          <label>
+            Password
+            <input id="loginPassword" type="password" autocomplete="current-password" />
+          </label>
+          <button class="primary-button" type="submit">Sign In</button>
+          <button class="secondary-button" id="createAccountButton" type="button">Create Account</button>
+          <button class="secondary-button" id="magicLinkButton" type="button">Send Magic Link</button>
+        </form>
+
+        <p class="auth-status" id="loginStatus" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="auth-config.js?v=23" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+    <script src="auth.js?v=23" defer></script>
+    <script src="login.js?v=23" defer></script>
+  </body>
+</html>

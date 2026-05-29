@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111111" />
+    <title>Logout | Roofline CRM</title>
+    <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=23" />
+  </head>
+  <body class="auth-body">
+    <main class="auth-shell">
+      <section class="auth-card surface">
+        <div class="brand auth-brand">
+          <img src="icon.svg" alt="" class="brand-icon" />
+          <div>
+            <strong>Roofline CRM</strong>
+            <span>Coastal Crest Roofing</span>
+          </div>
+        </div>
+        <p class="eyebrow">Secure access</p>
+        <h1>Signing out</h1>
+        <p class="auth-status" id="logoutStatus" role="status" aria-live="polite">Ending your CRM session...</p>
+      </section>
+    </main>
+
+    <script src="auth-config.js?v=23" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+    <script src="auth.js?v=23" defer></script>
+    <script src="logout.js?v=23" defer></script>
+  </body>
+</html>
