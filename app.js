@@ -1,6 +1,7 @@
 const STORAGE_KEY = "roofline-crm-v1";
 const SUPABASE_CRM_TABLE = "crm_state";
 const CLOUD_SAVE_DELAY = 700;
+const COMPANY_STATE_SUFFIX = "company";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -35,6 +36,66 @@ const rolePolicies = {
   admin: {
     views: "all",
     actions: "all",
+  },
+  office_manager: {
+    views: [
+      "dashboard",
+      "leads",
+      "contacts",
+      "jobs",
+      "leadDetail",
+      "estimates",
+      "companyDocuments",
+      "projects",
+      "calendar",
+      "tasks",
+      "invoices",
+      "reviews",
+      "reports",
+      "company",
+    ],
+    actions: [
+      "manageContacts",
+      "manageJobs",
+      "manageEstimates",
+      "manageDocuments",
+      "manageTasks",
+      "manageCompany",
+      "sendEmail",
+    ],
+  },
+  sales_manager: {
+    views: [
+      "dashboard",
+      "leads",
+      "contacts",
+      "jobs",
+      "leadDetail",
+      "estimates",
+      "companyDocuments",
+      "calendar",
+      "tasks",
+      "invoices",
+      "reviews",
+      "reports",
+    ],
+    actions: ["manageContacts", "manageJobs", "manageEstimates", "manageDocuments", "manageTasks", "sendEmail"],
+  },
+  operations_manager: {
+    views: [
+      "dashboard",
+      "contacts",
+      "jobs",
+      "leadDetail",
+      "companyDocuments",
+      "projects",
+      "calendar",
+      "tasks",
+      "invoices",
+      "reviews",
+      "reports",
+    ],
+    actions: ["manageJobs", "manageDocuments", "manageTasks", "sendEmail"],
   },
   sales: {
     views: [
@@ -236,7 +297,16 @@ const createInitialState = () => ({
   estimates: seedEstimates,
 });
 
-let state = loadState();
+const createEmptyState = () => ({
+  ...createInitialState(),
+  selectedContactId: null,
+  selectedEstimateId: null,
+  contacts: [],
+  estimates: [],
+  calendarTasks: [],
+});
+
+let state = normalizeState(createEmptyState());
 let deferredInstallPrompt = null;
 let toastTimer = null;
 let authSession = null;
@@ -247,6 +317,15 @@ let cloudSaveInFlight = false;
 let lastCloudSnapshot = "";
 let cloudSubscription = null;
 let applyingCloudState = false;
+let cloudKnownOwners = new Map();
+
+function roleLabel(role = currentRole()) {
+  return String(role || "viewer")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
 
 const els = {
   brandLogo: document.querySelector("#brandLogo"),
@@ -365,19 +444,35 @@ const els = {
   toast: document.querySelector("#toast"),
 };
 
-function loadState() {
+function activeStorageKey() {
+  return authSession?.user?.id ? `${STORAGE_KEY}:${authSession.user.id}` : STORAGE_KEY;
+}
+
+function loadState(storageKey = activeStorageKey()) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return normalizeState(createInitialState());
+    const raw = localStorage.getItem(storageKey);
+    if (!raw && authSession?.user?.id && canManageTeamData()) {
+      const legacyRaw = localStorage.getItem(STORAGE_KEY);
+      if (legacyRaw) {
+        const legacyParsed = JSON.parse(legacyRaw);
+        return normalizeState({
+          ...createEmptyState(),
+          ...legacyParsed,
+          company: normalizeCompany(legacyParsed.company),
+          currentUser: { ...defaultCurrentUser, ...(legacyParsed.currentUser || {}) },
+        });
+      }
+    }
+    if (!raw) return normalizeState(authSession?.user?.id ? createEmptyState() : createInitialState());
     const parsed = JSON.parse(raw);
     return normalizeState({
-      ...createInitialState(),
+      ...(authSession?.user?.id ? createEmptyState() : createInitialState()),
       ...parsed,
       company: normalizeCompany(parsed.company),
       currentUser: { ...defaultCurrentUser, ...(parsed.currentUser || {}) },
     });
   } catch {
-    return normalizeState(createInitialState());
+    return normalizeState(authSession?.user?.id ? createEmptyState() : createInitialState());
   }
 }
 
@@ -419,6 +514,9 @@ function normalizeContact(contact) {
     ...contact,
     type: contact.type || (status === "Won" ? "Customer" : "Lead"),
     status,
+    ownerUserId: contact.ownerUserId || contact.owner_id || "",
+    ownerEmail: contact.ownerEmail || contact.owner_email || "",
+    ownerName: contact.ownerName || contact.owner_name || "",
     salesRep: savedRep || contact.rep || contact.owner || seeded?.salesRep || "Unassigned",
     value: number(contact.value),
     createdAt: contact.createdAt || todayISO(),
@@ -446,6 +544,9 @@ function normalizeJob(job, contact = {}) {
     address: job.address || contact.address || "",
     status,
     value: number(job.value ?? contact.value),
+    ownerUserId: job.ownerUserId || contact.ownerUserId || "",
+    ownerEmail: job.ownerEmail || contact.ownerEmail || "",
+    ownerName: job.ownerName || contact.ownerName || "",
     salesRep: job.salesRep || contact.salesRep || "Unassigned",
     lastContact: job.lastContact || contact.lastContact || todayISO(),
     closedDate,
@@ -472,6 +573,9 @@ function normalizeCalendarTask(task) {
     id: task.id || uid("task"),
     title: task.title || "Calendar task",
     rep: task.rep || "Unassigned",
+    ownerUserId: task.ownerUserId || "",
+    ownerEmail: task.ownerEmail || "",
+    ownerName: task.ownerName || "",
     contactId: task.contactId || "",
     dueAt: task.dueAt || new Date().toISOString(),
     duration: Math.max(number(task.duration) || 30, 5),
@@ -501,6 +605,9 @@ function normalizeEstimate(estimate, contacts = []) {
       estimate.title ||
       `${contact?.name || "Customer"} Exterior Estimate`,
     projectManager: estimate.projectManager || contact?.salesRep || "",
+    ownerUserId: estimate.ownerUserId || contact?.ownerUserId || "",
+    ownerEmail: estimate.ownerEmail || contact?.ownerEmail || "",
+    ownerName: estimate.ownerName || contact?.ownerName || "",
     salesRepEmail: estimate.salesRepEmail || estimate.repEmail || "",
     salesRepPhone: estimate.salesRepPhone || estimate.repPhone || "",
     items: (estimate.items || []).map(normalizeLineItem),
@@ -520,7 +627,7 @@ function normalizeLineItem(item) {
 }
 
 function saveState(options = {}) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(activeStorageKey(), JSON.stringify(state));
   if (!options.localOnly && !applyingCloudState) queueCloudSave();
 }
 
@@ -532,21 +639,169 @@ function supabaseStateId() {
   return supabaseConfig().stateId || "coastal-crest";
 }
 
+function cloudCompanyStateId() {
+  return `${supabaseStateId()}:${COMPANY_STATE_SUFFIX}`;
+}
+
+function cloudUserStateId(userId = authSession?.user?.id) {
+  return `${supabaseStateId()}:user:${userId || "anonymous"}`;
+}
+
 function canUseCloudSync() {
   return Boolean(supabaseConfig().syncEnabled && window.RooflineAuth?.hasConfig());
 }
 
-function sharedStatePayload() {
+function currentOwner() {
   return {
-    company: state.company,
-    contacts: state.contacts,
-    estimates: state.estimates,
-    companyDocuments: state.companyDocuments,
-    calendarTasks: state.calendarTasks,
+    userId: authSession?.user?.id || "",
+    email: authSession?.user?.email || state.currentUser.email || "",
+    name: state.currentUser.name || authSession?.user?.email?.split("@")[0] || "CRM User",
+    role: currentRole(),
   };
 }
 
-function sharedStateSnapshot(payload = sharedStatePayload()) {
+function ownerFromRow(row = {}) {
+  const dataOwner = row.data?.owner || {};
+  const owner = {
+    userId: dataOwner.userId || row.owner_id || row.updated_by || "",
+    email: dataOwner.email || row.owner_email || "",
+    name: dataOwner.name || row.owner_email || "CRM User",
+    role: dataOwner.role || "sales",
+  };
+  if (owner.userId) cloudKnownOwners.set(owner.userId, owner);
+  return owner;
+}
+
+function ownerForUserId(ownerId) {
+  if (ownerId && cloudKnownOwners.has(ownerId)) return cloudKnownOwners.get(ownerId);
+  const owner = currentOwner();
+  return ownerId === owner.userId ? owner : { userId: ownerId || "", email: "", name: "CRM User", role: "sales" };
+}
+
+function withOwner(record = {}, owner = currentOwner()) {
+  return {
+    ...record,
+    ownerUserId: record.ownerUserId || owner.userId,
+    ownerEmail: record.ownerEmail || owner.email,
+    ownerName: record.ownerName || owner.name,
+  };
+}
+
+function tagContactOwner(contact, owner) {
+  const tagged = withOwner(contact, owner);
+  const jobs = (tagged.jobs || []).map((job) => withOwner(job, owner));
+  return normalizeContact({ ...tagged, jobs });
+}
+
+function tagEstimateOwner(estimate, owner, contacts = state.contacts) {
+  const contact = contacts.find((item) => item.id === estimate.contactId);
+  const inferredOwner = contact?.ownerUserId
+    ? { userId: contact.ownerUserId, email: contact.ownerEmail, name: contact.ownerName, role: owner.role }
+    : owner;
+  return normalizeEstimate(withOwner(estimate, inferredOwner), contacts);
+}
+
+function tagCalendarTaskOwner(task, owner, contacts = state.contacts) {
+  const contact = contacts.find((item) => item.id === task.contactId);
+  const inferredOwner = contact?.ownerUserId
+    ? { userId: contact.ownerUserId, email: contact.ownerEmail, name: contact.ownerName, role: owner.role }
+    : owner;
+  return normalizeCalendarTask(withOwner(task, inferredOwner));
+}
+
+function ensureStateOwnership() {
+  const owner = currentOwner();
+  state.contacts = state.contacts.map((contact) => (contact.ownerUserId ? normalizeContact(contact) : tagContactOwner(contact, owner)));
+  state.estimates = state.estimates.map((estimate) =>
+    estimate.ownerUserId ? normalizeEstimate(estimate, state.contacts) : tagEstimateOwner(estimate, owner),
+  );
+  state.calendarTasks = state.calendarTasks.map((task) =>
+    task.ownerUserId ? normalizeCalendarTask(task) : tagCalendarTaskOwner(task, owner),
+  );
+}
+
+function contactOwnerId(contact) {
+  return contact?.ownerUserId || currentOwner().userId;
+}
+
+function estimateOwnerId(estimate) {
+  const contact = getContact(estimate?.contactId);
+  return estimate?.ownerUserId || contact?.ownerUserId || currentOwner().userId;
+}
+
+function calendarTaskOwnerId(task) {
+  const contact = getContact(task?.contactId);
+  return task?.ownerUserId || contact?.ownerUserId || currentOwner().userId;
+}
+
+function ownerIdsInState() {
+  const ids = new Set([currentOwner().userId]);
+  state.contacts.forEach((contact) => ids.add(contactOwnerId(contact)));
+  state.estimates.forEach((estimate) => ids.add(estimateOwnerId(estimate)));
+  state.calendarTasks.forEach((task) => ids.add(calendarTaskOwnerId(task)));
+  return [...ids].filter(Boolean);
+}
+
+function companyStatePayload() {
+  return {
+    company: state.company,
+    companyDocuments: state.companyDocuments,
+  };
+}
+
+function privateStatePayload(ownerId = currentOwner().userId) {
+  const owner = ownerForUserId(ownerId);
+  return {
+    owner,
+    contacts: state.contacts.filter((contact) => contactOwnerId(contact) === ownerId),
+    estimates: state.estimates.filter((estimate) => estimateOwnerId(estimate) === ownerId),
+    calendarTasks: state.calendarTasks.filter((task) => calendarTaskOwnerId(task) === ownerId),
+  };
+}
+
+function cloudRowsForSave() {
+  ensureStateOwnership();
+  const now = new Date().toISOString();
+  const ownerIds = canManageTeamData() ? ownerIdsInState() : [currentOwner().userId];
+  const privateRows = ownerIds.map((ownerId) => {
+    const owner = ownerForUserId(ownerId);
+    return {
+      id: cloudUserStateId(ownerId),
+      data: privateStatePayload(ownerId),
+      owner_id: ownerId,
+      owner_email: owner.email || "",
+      updated_by: authSession.user.id,
+      updated_at: now,
+    };
+  });
+
+  return [
+    {
+      id: cloudCompanyStateId(),
+      data: companyStatePayload(),
+      owner_id: null,
+      owner_email: "",
+      updated_by: authSession.user.id,
+      updated_at: now,
+    },
+    ...privateRows,
+  ];
+}
+
+function cloudSnapshotPayload() {
+  ensureStateOwnership();
+  const ownerIds = canManageTeamData() ? ownerIdsInState() : [currentOwner().userId];
+  return {
+    company: companyStatePayload(),
+    privateRows: ownerIds.map((ownerId) => ({
+      id: cloudUserStateId(ownerId),
+      ownerId,
+      data: privateStatePayload(ownerId),
+    })),
+  };
+}
+
+function sharedStateSnapshot(payload = cloudSnapshotPayload()) {
   return JSON.stringify(payload);
 }
 
@@ -562,11 +817,84 @@ function applySharedState(data = {}) {
     currentUser: state.currentUser,
   };
   state = normalizeState({
-    ...createInitialState(),
+    ...createEmptyState(),
     ...state,
     ...data,
     ...personalState,
   });
+}
+
+function isCompanyCloudRow(row = {}) {
+  return row.id === cloudCompanyStateId();
+}
+
+function isRelevantCloudRow(row = {}) {
+  if (!row?.id) return false;
+  if (canManageTeamData()) return row.id === supabaseStateId() || row.id.startsWith(`${supabaseStateId()}:`);
+  return row.id === cloudCompanyStateId() || row.id === cloudUserStateId();
+}
+
+function mergeCloudRows(rows = []) {
+  const companyRow = rows.find(isCompanyCloudRow);
+  const fallbackCompanyRow = rows.find((row) => row.data?.company || row.data?.companyDocuments);
+  const companyData = companyRow?.data || fallbackCompanyRow?.data || {};
+  const contactMap = new Map();
+  const estimateMap = new Map();
+  const taskMap = new Map();
+
+  rows
+    .filter((row) => !isCompanyCloudRow(row))
+    .forEach((row) => {
+      const owner = ownerFromRow(row);
+      const rowContacts = (row.data?.contacts || []).map((contact) => tagContactOwner(contact, owner));
+      rowContacts.forEach((contact) => contactMap.set(contact.id, contact));
+      const mergedContacts = [...contactMap.values()];
+
+      (row.data?.estimates || [])
+        .map((estimate) => tagEstimateOwner(estimate, owner, mergedContacts))
+        .forEach((estimate) => estimateMap.set(estimate.id, estimate));
+
+      (row.data?.calendarTasks || [])
+        .map((task) => tagCalendarTaskOwner(task, owner, mergedContacts))
+        .forEach((task) => taskMap.set(task.id, task));
+    });
+
+  applySharedState({
+    company: companyData.company || state.company,
+    companyDocuments: companyData.companyDocuments || state.companyDocuments,
+    contacts: [...contactMap.values()],
+    estimates: [...estimateMap.values()],
+    calendarTasks: [...taskMap.values()],
+  });
+  ensureStateOwnership();
+}
+
+async function fetchCloudRows() {
+  const selectColumns = "*";
+  const query =
+    canManageTeamData()
+      ? cloudClient.from(SUPABASE_CRM_TABLE).select(selectColumns).order("updated_at", { ascending: true })
+      : cloudClient
+          .from(SUPABASE_CRM_TABLE)
+          .select(selectColumns)
+          .in("id", [cloudCompanyStateId(), cloudUserStateId()])
+          .order("updated_at", { ascending: true });
+  return query;
+}
+
+async function reloadCloudState({ showUpdateToast = false } = {}) {
+  const { data, error } = await fetchCloudRows();
+  if (error) {
+    console.warn("Supabase CRM state could not be loaded", error);
+    showToast("Supabase is connected, but the CRM table needs the latest setup.");
+    return false;
+  }
+
+  mergeCloudRows(data || []);
+  lastCloudSnapshot = sharedStateSnapshot();
+  saveState({ localOnly: true });
+  if (showUpdateToast) showToast("CRM updated from Supabase");
+  return true;
 }
 
 function queueCloudSave() {
@@ -579,20 +907,12 @@ function queueCloudSave() {
 
 async function flushCloudSave() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id || cloudSaveInFlight) return;
-  const payload = sharedStatePayload();
-  const snapshot = sharedStateSnapshot(payload);
+  const rows = cloudRowsForSave();
+  const snapshot = sharedStateSnapshot();
   if (snapshot === lastCloudSnapshot) return;
 
   cloudSaveInFlight = true;
-  const { error } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(
-    {
-      id: supabaseStateId(),
-      data: payload,
-      updated_by: authSession.user.id,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "id" },
-  );
+  const { error } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(rows, { onConflict: "id" });
   cloudSaveInFlight = false;
 
   if (error) {
@@ -625,68 +945,34 @@ async function initializeCloudSync() {
   authSession = trusted;
   state.currentUser = currentUserFromAuthSession(trusted);
 
-  const { data, error } = await cloudClient
-    .from(SUPABASE_CRM_TABLE)
-    .select("data, updated_at")
-    .eq("id", supabaseStateId())
-    .maybeSingle();
+  applyingCloudState = true;
+  const loaded = await reloadCloudState();
+  applyingCloudState = false;
+  if (!loaded) return;
 
-  if (error) {
-    console.warn("Supabase CRM state could not be loaded", error);
-    showToast("Supabase is connected, but the CRM table needs setup.");
-    return;
-  }
-
-  if (data?.data) {
-    applyingCloudState = true;
-    applySharedState(data.data);
-    saveState({ localOnly: true });
-    applyingCloudState = false;
-  } else {
-    const seedPayload = sharedStatePayload();
-    const { error: seedError } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(
-      {
-        id: supabaseStateId(),
-        data: seedPayload,
-        updated_by: trusted.user.id,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "id" },
-    );
-    if (seedError) {
-      console.warn("Supabase CRM state could not be seeded", seedError);
-      showToast("Supabase is connected, but the CRM table needs setup.");
-      return;
-    }
-  }
-
-  lastCloudSnapshot = sharedStateSnapshot();
   cloudReady = true;
+  queueCloudSave();
   subscribeToCloudState();
 }
 
 function subscribeToCloudState() {
   if (!cloudClient?.channel || cloudSubscription) return;
   cloudSubscription = cloudClient
-    .channel(`crm-state-${supabaseStateId()}`)
+    .channel(`crm-state-${supabaseStateId()}-${authSession?.user?.id || "user"}`)
     .on(
       "postgres_changes",
       {
         event: "*",
         schema: "public",
         table: SUPABASE_CRM_TABLE,
-        filter: `id=eq.${supabaseStateId()}`,
       },
-      (payload) => {
-        const nextData = payload.new?.data;
-        if (!nextData || payload.new?.updated_by === authSession?.user?.id) return;
+      async (payload) => {
+        const row = payload.new || payload.old;
+        if (!isRelevantCloudRow(row) || row?.updated_by === authSession?.user?.id) return;
         applyingCloudState = true;
-        applySharedState(nextData);
-        lastCloudSnapshot = sharedStateSnapshot();
-        saveState({ localOnly: true });
+        await reloadCloudState({ showUpdateToast: true });
         applyingCloudState = false;
         render();
-        showToast("CRM updated from Supabase");
       },
     )
     .subscribe();
@@ -694,6 +980,10 @@ function subscribeToCloudState() {
 
 function currentRole() {
   return window.RooflineAuth?.normalizeRole(authSession?.role || state.currentUser.role) || "viewer";
+}
+
+function canManageTeamData() {
+  return ["admin", "office_manager", "sales_manager", "operations_manager"].includes(currentRole());
 }
 
 function currentUserFromAuthSession(session) {
@@ -704,7 +994,7 @@ function currentUserFromAuthSession(session) {
       session.user?.email?.split("@")[0] ||
       "CRM User",
     email: session.user?.email || "",
-    role: window.RooflineAuth?.normalizeRole(session.role || session.user?.user_metadata?.role) || "viewer",
+    role: window.RooflineAuth?.normalizeRole(session.role || session.user?.app_metadata?.role) || "viewer",
   };
 }
 
@@ -724,7 +1014,7 @@ function canAction(action) {
 
 function requireAction(action) {
   if (canAction(action)) return true;
-  showToast(`Your ${currentRole()} role does not allow that action`);
+  showToast(`Your ${roleLabel()} role does not allow that action`);
   return false;
 }
 
@@ -756,7 +1046,7 @@ function firstAllowedView() {
 
 function setView(view) {
   if (!canView(view)) {
-    showToast(`Your ${currentRole()} role cannot access that section`);
+    showToast(`Your ${roleLabel()} role cannot access that section`);
     state.view = firstAllowedView();
     saveState();
     render();
@@ -769,7 +1059,7 @@ function setView(view) {
 
 function openLeadDetail(contactId, tab = "overview") {
   if (!canView("leadDetail")) {
-    showToast(`Your ${currentRole()} role cannot open client records`);
+    showToast(`Your ${roleLabel()} role cannot open client records`);
     return;
   }
   state.selectedContactId = contactId;
@@ -1430,7 +1720,7 @@ function renderTopbarProfile() {
       <span class="avatar">${escapeHtml(initials || "U")}</span>
       <span>
         <strong>${escapeHtml(state.currentUser.name || "User")}</strong>
-        <small>${escapeHtml(currentRole())} - <a href="/logout">Logout</a></small>
+        <small>${escapeHtml(roleLabel())} - <a href="/logout">Logout</a></small>
       </span>
     `;
   }
@@ -4037,6 +4327,7 @@ async function startApp() {
   if (!authSession) return;
   authSession = await promoteSignedInSession();
 
+  state = loadState(activeStorageKey());
   state.currentUser = currentUserFromAuthSession(authSession);
   saveState({ localOnly: true });
   await initializeCloudSync();
