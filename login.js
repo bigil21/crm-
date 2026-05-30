@@ -18,6 +18,10 @@
     return value.startsWith("/") && !value.startsWith("//") ? value : "/";
   }
 
+  function confirmationRedirectUrl() {
+    return `${location.origin}/login`;
+  }
+
   function validateEmailDomain(email) {
     if (window.RooflineAuth.isAllowedEmail(email)) return true;
     setStatus(`Use your @${config.allowedEmailDomain} email address.`, "error");
@@ -79,7 +83,7 @@
       email,
       password,
       options: {
-        emailRedirectTo: `${location.origin}/login?redirect=${encodeURIComponent(sanitizeRedirect(redirect))}`,
+        emailRedirectTo: confirmationRedirectUrl(),
         data: {
           role: config.defaultRole || "viewer",
         },
@@ -93,7 +97,7 @@
       location.replace(sanitizeRedirect(redirect));
       return;
     }
-    setStatus("Account created. Check your email if confirmation is required, then sign in.", "success");
+    setStatus("Account created. Check your email to confirm it, then come back here and sign in.", "success");
   });
 
   magicLinkButton.addEventListener("click", async () => {
@@ -104,7 +108,7 @@
     const { error } = await client.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${location.origin}/login?redirect=${encodeURIComponent(sanitizeRedirect(redirect))}`,
+        emailRedirectTo: confirmationRedirectUrl(),
         shouldCreateUser: false,
       },
     });
