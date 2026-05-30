@@ -76,18 +76,21 @@ button:disabled {
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 56px;
+  gap: 14px;
+  min-height: 74px;
   margin-bottom: 32px;
 }
 
 .brand-icon {
-  width: 44px;
-  height: 44px;
+  width: 66px;
+  height: 66px;
   border-radius: var(--radius);
   background: #ffffff;
   object-fit: contain;
-  padding: 4px;
+  padding: 1px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 10px 28px rgba(0, 0, 0, 0.24);
 }
 
 .brand strong {
@@ -130,8 +133,30 @@ button:disabled {
 }
 
 .workspace {
+  position: relative;
+  isolation: isolate;
   min-width: 0;
   padding: 28px;
+}
+
+.workspace.dashboard-watermark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--dashboard-logo-watermark);
+  background-position: center 44%;
+  background-repeat: no-repeat;
+  background-size: min(58vw, 760px) auto;
+  opacity: 0.055;
+  filter: grayscale(1) contrast(1.08);
+}
+
+.workspace.dashboard-watermark .surface,
+.workspace.dashboard-watermark .summary-card {
+  background-color: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(1px);
 }
 
 .topbar,
@@ -1861,6 +1886,11 @@ textarea:focus {
     justify-content: center;
   }
 
+  .brand-icon {
+    width: 56px;
+    height: 56px;
+  }
+
   .nav-item {
     justify-content: center;
   }
@@ -1921,6 +1951,11 @@ textarea:focus {
 
   .brand {
     margin: 0 12px 0 0;
+  }
+
+  .brand-icon {
+    width: 44px;
+    height: 44px;
   }
 
   .nav-list {
