@@ -143,19 +143,20 @@ button:disabled {
   content: "";
   position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 2;
   pointer-events: none;
   background-image: var(--dashboard-logo-watermark);
-  background-position: center 44%;
+  background-position: center 260px;
   background-repeat: no-repeat;
-  background-size: min(58vw, 760px) auto;
-  opacity: 0.055;
-  filter: grayscale(1) contrast(1.08);
+  background-size: min(68vw, 960px) auto;
+  opacity: 0.11;
+  filter: grayscale(1) contrast(1.16);
+  mix-blend-mode: multiply;
 }
 
 .workspace.dashboard-watermark .surface,
 .workspace.dashboard-watermark .summary-card {
-  background-color: rgba(255, 255, 255, 0.94);
+  background-color: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(1px);
 }
 
@@ -1970,6 +1971,12 @@ textarea:focus {
 
   .workspace {
     padding: 18px;
+  }
+
+  .workspace.dashboard-watermark::before {
+    background-position: center 340px;
+    background-size: 88vw auto;
+    opacity: 0.1;
   }
 
   .topbar,
