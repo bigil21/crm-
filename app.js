@@ -329,6 +329,7 @@ function roleLabel(role = currentRole()) {
 
 const els = {
   brandLogo: document.querySelector("#brandLogo"),
+  workspace: document.querySelector(".workspace"),
   viewTitle: document.querySelector("#viewTitle"),
   globalSearch: document.querySelector("#globalSearch"),
   installAppButton: document.querySelector("#installAppButton"),
@@ -1663,6 +1664,7 @@ function render() {
     element.classList.toggle("hidden", view !== state.view);
   });
   els.summaryStrip.classList.toggle("hidden", state.view !== "dashboard");
+  els.workspace?.classList.toggle("dashboard-watermark", state.view === "dashboard" && Boolean(state.company.logoDataUrl));
   renderBrandLogo();
   renderTopbarProfile();
 
@@ -1689,6 +1691,14 @@ function renderBrandLogo() {
   if (!els.brandLogo) return;
   els.brandLogo.src = state.company.logoDataUrl || "icon.svg";
   els.brandLogo.alt = state.company.logoDataUrl ? `${state.company.name || "Company"} logo` : "";
+  if (els.workspace) {
+    if (state.company.logoDataUrl) {
+      const logoUrl = state.company.logoDataUrl.replaceAll('"', '\\"');
+      els.workspace.style.setProperty("--dashboard-logo-watermark", `url("${logoUrl}")`);
+    } else {
+      els.workspace.style.removeProperty("--dashboard-logo-watermark");
+    }
+  }
 }
 
 function renderTopbarProfile() {
