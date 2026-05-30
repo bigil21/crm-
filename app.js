@@ -1663,9 +1663,9 @@ function render() {
   Object.entries(els.views).forEach(([view, element]) => {
     element.classList.toggle("hidden", view !== state.view);
   });
-  els.summaryStrip.classList.toggle("hidden", state.view !== "dashboard");
-  els.workspace?.classList.toggle("dashboard-watermark", state.view === "dashboard" && Boolean(state.company.logoDataUrl));
   renderBrandLogo();
+  els.summaryStrip.classList.toggle("hidden", state.view !== "dashboard");
+  els.workspace?.classList.toggle("dashboard-watermark", state.view === "dashboard");
   renderTopbarProfile();
 
   renderSummary();
@@ -1688,16 +1688,14 @@ function render() {
 }
 
 function renderBrandLogo() {
-  if (!els.brandLogo) return;
-  els.brandLogo.src = state.company.logoDataUrl || "icon.svg";
-  els.brandLogo.alt = state.company.logoDataUrl ? `${state.company.name || "Company"} logo` : "";
+  const logoSource = state.company.logoDataUrl || "icon.svg";
+  if (els.brandLogo) {
+    els.brandLogo.src = logoSource;
+    els.brandLogo.alt = state.company.logoDataUrl ? `${state.company.name || "Company"} logo` : "";
+  }
   if (els.workspace) {
-    if (state.company.logoDataUrl) {
-      const logoUrl = state.company.logoDataUrl.replaceAll('"', '\\"');
-      els.workspace.style.setProperty("--dashboard-logo-watermark", `url("${logoUrl}")`);
-    } else {
-      els.workspace.style.removeProperty("--dashboard-logo-watermark");
-    }
+    const logoUrl = logoSource.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    els.workspace.style.setProperty("--dashboard-logo-watermark", `url("${logoUrl}")`);
   }
 }
 
