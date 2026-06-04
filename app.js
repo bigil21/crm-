@@ -3701,11 +3701,11 @@ function estimateFileName(estimate = getSelectedEstimate()) {
     .concat(".pdf");
 }
 
-function pdfAddPageIfNeeded(doc, cursor, needed = 24) {
-  if (cursor.y + needed <= 750) return cursor.y;
+const PDF_PAGE_WIDTH = 612; const PDF_PAGE_HEIGHT = 792; const PDF_TOP_MARGIN = 54; const PDF_BOTTOM_MARGIN = 54; const PDF_CONTENT_BOTTOM = PDF_PAGE_HEIGHT - PDF_BOTTOM_MARGIN; function pdfAddPageIfNeeded(doc, cursor, needed = 24) {
+  if (cursor.y + needed <= PDF_CONTENT_BOTTOM) return false;
   doc.addPage();
-  cursor.y = 54;
-  return cursor.y;
+  pdfDrawPageTopRule(doc); cursor.y = PDF_TOP_MARGIN;
+  return true;
 }
 
 function pdfTextBlock(doc, text, x, cursor, width, options = {}) {
@@ -3722,7 +3722,7 @@ function pdfImageFormat(dataUrl = "") {
   return "PNG";
 }
 
-async function downloadEstimatePdf(options = {}) {
+function pdfDrawPageTopRule(doc) { doc.setFillColor(17, 17, 17); doc.rect(0, 0, PDF_PAGE_WIDTH, 14, "F"); } function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) { const tableWidth = right - left; if (options.continued) { doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(17, 17, 17); doc.text("ESTIMATE DETAIL CONTINUED", left, cursor.y); cursor.y += 14; } doc.setFillColor(17, 17, 17); doc.rect(left, cursor.y, tableWidth, 24, "F"); doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 16); doc.text("QTY", 350, cursor.y + 16, { align: "right" }); doc.text("UNIT", 380, cursor.y + 16); doc.text("RATE", 466, cursor.y + 16, { align: "right" }); doc.text("AMOUNT", right - 8, cursor.y + 16, { align: "right" }); cursor.y += 24; } async function downloadEstimatePdf(options = {}) {
   const estimate = getSelectedEstimate();
   const contact = getEstimateContact(estimate);
   if (!estimate || !contact) {
@@ -3742,9 +3742,9 @@ async function downloadEstimatePdf(options = {}) {
   const officeAddress = companyOfficeAddress();
   const totals = totalsFor(estimate);
   const doc = new JsPdf({ unit: "pt", format: "letter" });
-  const cursor = { y: 54 };
+  const cursor = { y: PDF_TOP_MARGIN };
   const left = 48;
-  const right = 564;
+  const right = PDF_PAGE_WIDTH - 48;
   const tableWidth = right - left;
 
   doc.setProperties({
@@ -3857,7 +3857,7 @@ async function downloadEstimatePdf(options = {}) {
     const titleLines = doc.splitTextToSize(item.title || "Line item", 245);
     const descriptionLines = item.description ? doc.splitTextToSize(item.description, 245) : [];
     const rowHeight = Math.max(34, 12 * (titleLines.length + descriptionLines.length) + 12);
-    pdfAddPageIfNeeded(doc, cursor, rowHeight + 8);
+    const addedPage = pdfAddPageIfNeeded(doc, cursor, rowHeight + 52); if (addedPage) pdfDrawEstimateTableHeader(doc, cursor, left, right, { continued: true });
 
     doc.setDrawColor(209, 213, 219);
     doc.rect(left, cursor.y, tableWidth, rowHeight);
