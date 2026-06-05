@@ -1258,6 +1258,21 @@ button:disabled {
   background: var(--accent-soft);
 }
 
+.estimate-create-controls {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.estimate-create-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .estimate-list small {
   color: var(--muted);
 }
@@ -1902,6 +1917,10 @@ textarea:focus {
 
   .estimate-stage {
     position: static;
+  }
+
+  .estimate-create-controls {
+    grid-template-columns: 1fr;
   }
 
   .conversation-layout {
