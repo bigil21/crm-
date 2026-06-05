@@ -141,8 +141,11 @@ const actionPermissions = {
   "estimate-contact": "manageEstimates",
   "advance-contact": "manageJobs",
   "remove-line": "manageEstimates",
+  "estimate-job": "manageEstimates",
   "remove-document": "manageDocuments",
+  "rename-document": "manageDocuments",
   "remove-company-document": "manageDocuments",
+  "rename-company-document": "manageDocuments",
   "edit-job": "manageJobs",
   "delete-job": "manageJobs",
   "edit-calendar-task": "manageTasks",
@@ -289,6 +292,8 @@ const createInitialState = () => ({
   leadDetailTab: "overview",
   selectedContactId: "contact_1002",
   selectedEstimateId: "estimate_2001",
+  newEstimateContactId: "",
+  newEstimateJobId: "",
   company: defaultCompany,
   currentUser: defaultCurrentUser,
   companyDocuments: [],
@@ -403,7 +408,10 @@ const els = {
   closeContactDialog: document.querySelector("#closeContactDialog"),
   estimateList: document.querySelector("#estimateList"),
   estimateForm: document.querySelector("#estimateForm"),
+  newEstimateContact: document.querySelector("#newEstimateContact"),
+  newEstimateJob: document.querySelector("#newEstimateJob"),
   estimateContact: document.querySelector("#estimateContact"),
+  estimateJob: document.querySelector("#estimateJob"),
   estimateNumber: document.querySelector("#estimateNumber"),
   estimateTitle: document.querySelector("#estimateTitle"),
   estimateStatus: document.querySelector("#estimateStatus"),
@@ -483,6 +491,8 @@ function normalizeState(nextState) {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
     leadDetailTab: nextState.leadDetailTab || "overview",
+    newEstimateContactId: nextState.newEstimateContactId || "",
+    newEstimateJobId: nextState.newEstimateJobId || "",
     company: normalizeCompany(nextState.company),
     currentUser: { ...defaultCurrentUser, ...(nextState.currentUser || {}) },
     contacts,
@@ -566,6 +576,10 @@ function normalizeDocument(document) {
     dataUrl: document.dataUrl || "",
     uploadedAt: document.uploadedAt || new Date().toISOString(),
     uploadedBy: document.uploadedBy || "Local user",
+    source: document.source || "",
+    estimateId: document.estimateId || "",
+    contactId: document.contactId || "",
+    jobId: document.jobId || "",
   };
 }
 
@@ -599,13 +613,16 @@ function normalizeUpdate(update) {
 
 function normalizeEstimate(estimate, contacts = []) {
   const contact = contacts.find((item) => item.id === estimate.contactId);
+  const jobs = contact ? contactJobs(contact) : [];
+  const job = jobs.find((item) => item.id === estimate.jobId) || jobs[0];
   return {
     ...estimate,
+    jobId: estimate.jobId || job?.id || "",
     projectTitle:
       estimate.projectTitle ||
       estimate.title ||
-      `${contact?.name || "Customer"} Exterior Estimate`,
-    projectManager: estimate.projectManager || contact?.salesRep || "",
+      `${job?.name || contact?.name || "Customer"} Exterior Estimate`,
+    projectManager: estimate.projectManager || job?.salesRep || contact?.salesRep || "",
     ownerUserId: estimate.ownerUserId || contact?.ownerUserId || "",
     ownerEmail: estimate.ownerEmail || contact?.ownerEmail || "",
     ownerName: estimate.ownerName || contact?.ownerName || "",
@@ -1121,6 +1138,12 @@ function updateContact(contactId, updater) {
 
 function getEstimateContact(estimate) {
   return getContact(estimate?.contactId) || state.contacts[0];
+}
+
+function getEstimateJob(estimate) {
+  const contact = getEstimateContact(estimate);
+  const jobs = contactJobs(contact);
+  return jobs.find((job) => job.id === estimate?.jobId) || jobs[0];
 }
 
 function filteredContacts() {
@@ -2426,6 +2449,12 @@ function renderLeadJobs(contact) {
           ${job.notes ? `<p>${nl2br(job.notes)}</p>` : ""}
         </div>
         <div class="row-actions">
+          <button class="secondary-button" type="button" data-action="estimate-job" data-contact-id="${contact.id}" data-job-id="${
+            job.id
+          }">
+            <span aria-hidden="true" data-icon="file"></span>
+            Estimate
+          </button>
           <button class="secondary-button" type="button" data-action="edit-job" data-job-id="${job.id}">
             <span aria-hidden="true" data-icon="edit"></span>
             Edit
@@ -2654,6 +2683,11 @@ function renderLeadDocuments(contact) {
               <span aria-hidden="true" data-icon="download"></span>
               Download
             </a>
+            <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(
+              document.name,
+            )}" data-action="rename-document" data-document-id="${document.id}">
+              <span aria-hidden="true" data-icon="edit"></span>
+            </button>
             <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(
               document.name,
             )}" data-action="remove-document" data-document-id="${document.id}">
@@ -2764,6 +2798,38 @@ function removeLeadDocument(documentId) {
   showToast("Document removed");
 }
 
+function documentExtension(name = "") {
+  const match = String(name).match(/(\.[A-Za-z0-9]{1,10})$/);
+  return match ? match[1] : "";
+}
+
+function normalizeDocumentRename(value = "", originalName = "") {
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  const extension = documentExtension(originalName);
+  return extension && !documentExtension(trimmed) ? `${trimmed}${extension}` : trimmed;
+}
+
+function renameLeadDocument(documentId) {
+  if (!requireAction("manageDocuments")) return;
+  const contact = getSelectedContact();
+  if (!contact) return;
+  const document = contact.documents.find((item) => item.id === documentId);
+  if (!document) return;
+  const nextName = normalizeDocumentRename(window.prompt("Rename document", document.name), document.name);
+  if (!nextName || nextName === document.name) return;
+  updateContact(contact.id, (current) => ({
+    ...current,
+    documents: current.documents.map((item) => (item.id === documentId ? { ...item, name: nextName } : item)),
+  }));
+  addContactUpdate(contact.id, {
+    message: `Renamed document ${document.name} to ${nextName}.`,
+  });
+  saveState();
+  render();
+  showToast("Document renamed");
+}
+
 function submitLeadConversation(event) {
   event.preventDefault();
   if (!requireAction("manageJobs")) return;
@@ -2809,6 +2875,11 @@ function renderCompanyDocuments() {
               <span aria-hidden="true" data-icon="download"></span>
               Download
             </a>
+            <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(
+              document.name,
+            )}" data-action="rename-company-document" data-document-id="${document.id}">
+              <span aria-hidden="true" data-icon="edit"></span>
+            </button>
             <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(
               document.name,
             )}" data-action="remove-company-document" data-document-id="${document.id}">
@@ -2853,6 +2924,20 @@ function removeCompanyDocument(documentId) {
   saveState();
   renderCompanyDocuments();
   showToast("Company document removed");
+}
+
+function renameCompanyDocument(documentId) {
+  if (!requireAction("manageDocuments")) return;
+  const document = state.companyDocuments.find((item) => item.id === documentId);
+  if (!document) return;
+  const nextName = normalizeDocumentRename(window.prompt("Rename company document", document.name), document.name);
+  if (!nextName || nextName === document.name) return;
+  state.companyDocuments = state.companyDocuments.map((item) =>
+    item.id === documentId ? { ...item, name: nextName } : item,
+  );
+  saveState();
+  renderCompanyDocuments();
+  showToast("Company document renamed");
 }
 
 async function uploadCompanyLogo(file) {
@@ -3145,18 +3230,49 @@ function renderReportsView() {
   `;
 }
 
-function renderEstimates() {
-  if (!state.estimates.length && state.contacts.length && canAction("manageEstimates")) {
-    createEstimate(state.contacts[0].id, false);
-  }
+function renderNewEstimatePickers() {
+  if (!els.newEstimateContact || !els.newEstimateJob) return;
+  const selectedContact = getContact(state.newEstimateContactId);
+  const contactId = selectedContact ? selectedContact.id : "";
+  const jobs = selectedContact ? contactJobs(selectedContact) : [];
+  const selectedJob = jobs.find((job) => job.id === state.newEstimateJobId) || jobs[0];
 
+  els.newEstimateContact.innerHTML = [
+    '<option value="">Choose lead</option>',
+    ...state.contacts.map(
+      (contact) => `
+        <option value="${contact.id}" ${contact.id === contactId ? "selected" : ""}>
+          ${escapeHtml(contact.name)} (${escapeHtml(contact.type)})
+        </option>
+      `,
+    ),
+  ].join("");
+
+  els.newEstimateJob.disabled = !selectedContact;
+  els.newEstimateJob.innerHTML = selectedContact
+    ? jobs
+        .map(
+          (job) => `
+          <option value="${job.id}" ${job.id === selectedJob?.id ? "selected" : ""}>
+            ${escapeHtml(job.name)} - ${escapeHtml(job.address || "No address")}
+          </option>
+        `,
+        )
+        .join("")
+    : '<option value="">Choose lead first</option>';
+}
+
+function renderEstimates() {
   const estimate = getSelectedEstimate();
   const estimates = filteredEstimates();
+
+  renderNewEstimatePickers();
 
   els.estimateList.innerHTML = estimates.length
     ? estimates
         .map((item) => {
           const contact = getEstimateContact(item);
+          const job = getEstimateJob(item);
           const total = totalsFor(item).total;
           return `
             <button type="button" class="${item.id === estimate?.id ? "active" : ""}" data-estimate-id="${
@@ -3164,7 +3280,8 @@ function renderEstimates() {
             }">
               <strong>${escapeHtml(item.projectTitle || item.estimateNumber)}</strong>
               <span class="status-pill">${escapeHtml(item.status)}</span>
-              <small>${escapeHtml(item.estimateNumber)} - ${escapeHtml(contact?.name || "Unknown contact")}</small>
+              <small>${escapeHtml(item.estimateNumber)} - ${escapeHtml(contact?.name || "Unknown lead")}</small>
+              <small>${escapeHtml(job?.name || "Primary job")}</small>
               <small>${money.format(total)}</small>
             </button>
           `;
@@ -3191,6 +3308,19 @@ function renderEstimateForm(estimate) {
       (contact) => `
       <option value="${contact.id}" ${contact.id === estimate.contactId ? "selected" : ""}>
         ${escapeHtml(contact.name)} (${escapeHtml(contact.type)})
+      </option>
+    `,
+    )
+    .join("");
+
+  const estimateContact = getEstimateContact(estimate);
+  const estimateJobs = contactJobs(estimateContact);
+  const estimateJob = getEstimateJob(estimate);
+  els.estimateJob.innerHTML = estimateJobs
+    .map(
+      (job) => `
+      <option value="${job.id}" ${job.id === estimateJob?.id ? "selected" : ""}>
+        ${escapeHtml(job.name)} - ${escapeHtml(job.address || "No address")}
       </option>
     `,
     )
@@ -3255,6 +3385,7 @@ function renderEstimatePreview(estimate) {
   }
 
   const contact = getEstimateContact(estimate);
+  const job = getEstimateJob(estimate);
   const totals = totalsFor(estimate);
   const company = state.company;
   const rep = estimateSalesRep(estimate);
@@ -3291,7 +3422,7 @@ function renderEstimatePreview(estimate) {
       <section class="doc-box">
         <h3>Job Information</h3>
         <strong>${escapeHtml(estimate.projectTitle || "Project estimate")}</strong>
-        <p>${escapeHtml((contact?.address || "").split("\n")[0] || "Project address")}</p>
+        <p>${escapeHtml((job?.address || contact?.address || "").split("\n")[0] || "Project address")}</p>
         <p class="doc-field-label">Sales Representative</p>
         <strong class="sales-rep-name">${escapeHtml(rep.name || "Unassigned")}</strong>
         <p>${escapeHtml(rep.email)}</p>
@@ -3522,21 +3653,27 @@ function deleteContact(contactId) {
   showToast("Contact deleted");
 }
 
-function createEstimate(contactId = state.selectedContactId || state.contacts[0]?.id, shouldRender = true) {
+function createEstimate(contactId, shouldRender = true, jobId = "") {
   if (!requireAction("manageEstimates")) return null;
   if (!contactId) {
-    showToast("Add a contact before creating an estimate");
+    showToast("Choose a lead before creating an estimate");
     return null;
   }
   const contact = getContact(contactId);
+  if (!contact) {
+    showToast("Choose a valid lead before creating an estimate");
+    return null;
+  }
+  const job = contactJobs(contact).find((item) => item.id === jobId) || primaryJob(contact);
 
   const estimate = {
     id: uid("estimate"),
     contactId,
+    jobId: job?.id || "",
     estimateNumber: nextEstimateNumber(),
-    projectTitle: "Exterior Restoration Estimate",
+    projectTitle: job?.name || "Exterior Restoration Estimate",
     status: "Draft",
-    projectManager: contact?.salesRep || state.currentUser.name || "",
+    projectManager: job?.salesRep || contact.salesRep || state.currentUser.name || "",
     salesRepEmail: state.currentUser.email || state.company.email || "",
     salesRepPhone: state.company.phone || "",
     issueDate: todayISO(),
@@ -3562,6 +3699,8 @@ function createEstimate(contactId = state.selectedContactId || state.contacts[0]
   state.estimates.unshift(estimate);
   state.selectedEstimateId = estimate.id;
   state.selectedContactId = contactId;
+  state.newEstimateContactId = "";
+  state.newEstimateJobId = "";
   state.view = "estimates";
   saveState();
   if (shouldRender) render();
@@ -3587,7 +3726,13 @@ function updateSelectedEstimateFromField(fieldName, value) {
     estimate[fieldName] = value;
   }
 
-  if (fieldName === "contactId") state.selectedContactId = value;
+  if (fieldName === "contactId") {
+    const contact = getContact(value);
+    estimate.jobId = primaryJob(contact)?.id || "";
+    estimate.projectManager = contact?.salesRep || estimate.projectManager;
+    state.selectedContactId = value;
+    renderEstimateForm(estimate);
+  }
   saveState();
   renderEstimatePreview(estimate);
   renderSummary();
@@ -3601,12 +3746,14 @@ function renderEstimateListOnly() {
   els.estimateList.innerHTML = estimates
     .map((item) => {
       const contact = getEstimateContact(item);
+      const job = getEstimateJob(item);
       const total = totalsFor(item).total;
       return `
         <button type="button" class="${item.id === estimate?.id ? "active" : ""}" data-estimate-id="${item.id}">
           <strong>${escapeHtml(item.projectTitle || item.estimateNumber)}</strong>
           <span class="status-pill">${escapeHtml(item.status)}</span>
           <small>${escapeHtml(item.estimateNumber)} - ${escapeHtml(contact?.name || "Unknown contact")}</small>
+          <small>${escapeHtml(job?.name || "Primary job")}</small>
           <small>${money.format(total)}</small>
         </button>
       `;
@@ -3647,6 +3794,7 @@ function deleteEstimate() {
 function estimateText(estimate = getSelectedEstimate()) {
   if (!estimate) return "";
   const contact = getEstimateContact(estimate);
+  const job = getEstimateJob(estimate);
   const totals = totalsFor(estimate);
   const rep = estimateSalesRep(estimate);
   const lines = estimate.items
@@ -3663,6 +3811,10 @@ function estimateText(estimate = getSelectedEstimate()) {
   return `${state.company.name}
 Estimate ${estimate.estimateNumber}
 Title: ${estimate.projectTitle || ""}
+
+Job:
+${job?.name || ""}
+${job?.address || contact?.address || ""}
 
 Customer:
 ${contact?.name || ""}
@@ -3701,10 +3853,67 @@ function estimateFileName(estimate = getSelectedEstimate()) {
     .concat(".pdf");
 }
 
-const PDF_PAGE_WIDTH = 612; const PDF_PAGE_HEIGHT = 792; const PDF_TOP_MARGIN = 54; const PDF_BOTTOM_MARGIN = 54; const PDF_CONTENT_BOTTOM = PDF_PAGE_HEIGHT - PDF_BOTTOM_MARGIN; function pdfAddPageIfNeeded(doc, cursor, needed = 24) {
+function dataUrlSize(dataUrl = "") {
+  const base64 = String(dataUrl).split(",")[1] || "";
+  return Math.round((base64.length * 3) / 4);
+}
+
+function saveEstimatePdfDocument(estimate, contact, doc) {
+  if (!canAction("manageDocuments")) return null;
+  const job = getEstimateJob(estimate);
+  const dataUrl = doc.output("datauristring");
+  const fileName = estimateFileName(estimate);
+  let savedDocument = null;
+  let createdDocument = false;
+
+  updateContact(contact.id, (current) => {
+    const documents = current.documents || [];
+    const existing = documents.find((document) => document.source === "Estimate PDF" && document.estimateId === estimate.id);
+    savedDocument = normalizeDocument({
+      ...(existing || {}),
+      id: existing?.id || uid("doc"),
+      name: fileName,
+      category: "Estimates",
+      type: "application/pdf",
+      size: dataUrlSize(dataUrl),
+      dataUrl,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+      source: "Estimate PDF",
+      estimateId: estimate.id,
+      contactId: contact.id,
+      jobId: estimate.jobId || job?.id || "",
+    });
+    createdDocument = !existing;
+    return {
+      ...current,
+      documents: existing
+        ? documents.map((document) => (document.id === existing.id ? savedDocument : document))
+        : [savedDocument, ...documents],
+    };
+  });
+
+  if (createdDocument) {
+    addContactUpdate(contact.id, {
+      author: state.currentUser.name || "CRM",
+      message: `Saved estimate PDF ${estimate.estimateNumber} to documents.`,
+    });
+  }
+
+  return savedDocument;
+}
+
+const PDF_PAGE_WIDTH = 612;
+const PDF_PAGE_HEIGHT = 792;
+const PDF_TOP_MARGIN = 54;
+const PDF_BOTTOM_MARGIN = 54;
+const PDF_CONTENT_BOTTOM = PDF_PAGE_HEIGHT - PDF_BOTTOM_MARGIN;
+
+function pdfAddPageIfNeeded(doc, cursor, needed = 24) {
   if (cursor.y + needed <= PDF_CONTENT_BOTTOM) return false;
   doc.addPage();
-  pdfDrawPageTopRule(doc); cursor.y = PDF_TOP_MARGIN;
+  pdfDrawPageTopRule(doc);
+  cursor.y = PDF_TOP_MARGIN;
   return true;
 }
 
@@ -3722,9 +3931,38 @@ function pdfImageFormat(dataUrl = "") {
   return "PNG";
 }
 
-function pdfDrawPageTopRule(doc) { doc.setFillColor(17, 17, 17); doc.rect(0, 0, PDF_PAGE_WIDTH, 14, "F"); } function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) { const tableWidth = right - left; if (options.continued) { doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(17, 17, 17); doc.text("ESTIMATE DETAIL CONTINUED", left, cursor.y); cursor.y += 14; } doc.setFillColor(17, 17, 17); doc.rect(left, cursor.y, tableWidth, 24, "F"); doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 16); doc.text("QTY", 350, cursor.y + 16, { align: "right" }); doc.text("UNIT", 380, cursor.y + 16); doc.text("RATE", 466, cursor.y + 16, { align: "right" }); doc.text("AMOUNT", right - 8, cursor.y + 16, { align: "right" }); cursor.y += 24; } async function downloadEstimatePdf(options = {}) {
+function pdfDrawPageTopRule(doc) {
+  doc.setFillColor(17, 17, 17);
+  doc.rect(0, 0, PDF_PAGE_WIDTH, 14, "F");
+}
+
+function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) {
+  const tableWidth = right - left;
+  if (options.continued) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(17, 17, 17);
+    doc.text("ESTIMATE DETAIL CONTINUED", left, cursor.y);
+    cursor.y += 14;
+  }
+
+  doc.setFillColor(17, 17, 17);
+  doc.rect(left, cursor.y, tableWidth, 24, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 16);
+  doc.text("QTY", 350, cursor.y + 16, { align: "right" });
+  doc.text("UNIT", 380, cursor.y + 16);
+  doc.text("RATE", 466, cursor.y + 16, { align: "right" });
+  doc.text("AMOUNT", right - 8, cursor.y + 16, { align: "right" });
+  cursor.y += 24;
+}
+
+async function downloadEstimatePdf(options = {}) {
   const estimate = getSelectedEstimate();
   const contact = getEstimateContact(estimate);
+  const job = getEstimateJob(estimate);
   if (!estimate || !contact) {
     showToast("Create an estimate before downloading");
     return false;
@@ -3753,8 +3991,7 @@ function pdfDrawPageTopRule(doc) { doc.setFillColor(17, 17, 17); doc.rect(0, 0, 
     author: company.name,
   });
 
-  doc.setFillColor(17, 17, 17);
-  doc.rect(0, 0, 612, 14, "F");
+  pdfDrawPageTopRule(doc);
   let companyTextX = left;
   if (company.logoDataUrl) {
     try {
@@ -3813,7 +4050,7 @@ function pdfDrawPageTopRule(doc) { doc.setFillColor(17, 17, 17); doc.rect(0, 0, 
   pdfTextBlock(
     doc,
     `${estimate.projectTitle || "Project estimate"}\n${
-      (contact.address || "").split("\n")[0] || "Project address"
+      (job?.address || contact.address || "").split("\n")[0] || "Project address"
     }\n\nSales Representative\n${rep.name || "Unassigned"}\n${rep.email || ""}\n${rep.phone || ""}\n${
       rep.officeAddress || ""
     }`,
@@ -3842,22 +4079,16 @@ function pdfDrawPageTopRule(doc) { doc.setFillColor(17, 17, 17); doc.rect(0, 0, 
   doc.text("ESTIMATE DETAIL", left, cursor.y);
   cursor.y += 14;
 
-  doc.setFillColor(17, 17, 17);
-  doc.rect(left, cursor.y, tableWidth, 24, "F");
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(9);
-  doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 16);
-  doc.text("QTY", 350, cursor.y + 16, { align: "right" });
-  doc.text("UNIT", 380, cursor.y + 16);
-  doc.text("RATE", 466, cursor.y + 16, { align: "right" });
-  doc.text("AMOUNT", right - 8, cursor.y + 16, { align: "right" });
-  cursor.y += 24;
+  pdfDrawEstimateTableHeader(doc, cursor, left, right);
 
   estimate.items.forEach((item) => {
     const titleLines = doc.splitTextToSize(item.title || "Line item", 245);
     const descriptionLines = item.description ? doc.splitTextToSize(item.description, 245) : [];
     const rowHeight = Math.max(34, 12 * (titleLines.length + descriptionLines.length) + 12);
-    const addedPage = pdfAddPageIfNeeded(doc, cursor, rowHeight + 52); if (addedPage) pdfDrawEstimateTableHeader(doc, cursor, left, right, { continued: true });
+    const addedPage = pdfAddPageIfNeeded(doc, cursor, rowHeight + 52);
+    if (addedPage) {
+      pdfDrawEstimateTableHeader(doc, cursor, left, right, { continued: true });
+    }
 
     doc.setDrawColor(209, 213, 219);
     doc.rect(left, cursor.y, tableWidth, rowHeight);
@@ -3927,8 +4158,12 @@ function pdfDrawPageTopRule(doc) { doc.setFillColor(17, 17, 17); doc.rect(0, 0, 
   doc.text("Customer Signature", left, cursor.y + 50);
   doc.text("Date", 330, cursor.y + 50);
 
+  const savedDocument = saveEstimatePdfDocument(estimate, contact, doc);
+  saveState();
   doc.save(estimateFileName(estimate));
-  if (!options.silent) showToast("Estimate PDF downloaded");
+  if (!options.silent) {
+    showToast(savedDocument ? "Estimate PDF downloaded and saved to the lead" : "Estimate PDF downloaded");
+  }
   return true;
 }
 
@@ -4109,6 +4344,7 @@ function bindEvents() {
     if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview");
     if (action === "edit-contact") openContactDialog(contactId);
     if (action === "estimate-contact") createEstimate(contactId);
+    if (action === "estimate-job") createEstimate(contactId, true, actionButton.dataset.jobId);
     if (action === "select-estimate") {
       state.view = "estimates";
       setSelectedEstimate(actionButton.dataset.estimateId);
@@ -4132,8 +4368,14 @@ function bindEvents() {
     if (action === "remove-document") {
       removeLeadDocument(actionButton.dataset.documentId);
     }
+    if (action === "rename-document") {
+      renameLeadDocument(actionButton.dataset.documentId);
+    }
     if (action === "remove-company-document") {
       removeCompanyDocument(actionButton.dataset.documentId);
+    }
+    if (action === "rename-company-document") {
+      renameCompanyDocument(actionButton.dataset.documentId);
     }
     if (action === "edit-job") {
       editLeadJob(actionButton.dataset.jobId);
@@ -4266,8 +4508,20 @@ function bindEvents() {
     if (button) setSelectedEstimate(button.dataset.estimateId);
   });
 
+  els.newEstimateContact?.addEventListener("change", (event) => {
+    const contact = getContact(event.target.value);
+    state.newEstimateContactId = contact?.id || "";
+    state.newEstimateJobId = primaryJob(contact)?.id || "";
+    saveState();
+    renderNewEstimatePickers();
+  });
+  els.newEstimateJob?.addEventListener("change", (event) => {
+    state.newEstimateJobId = event.target.value;
+    saveState();
+  });
   els.newEstimateButton.addEventListener("click", () => {
-    if (requireAction("manageEstimates")) createEstimate(state.selectedContactId);
+    if (!requireAction("manageEstimates")) return;
+    createEstimate(els.newEstimateContact?.value, true, els.newEstimateJob?.value);
   });
   els.addLineItemButton.addEventListener("click", () => {
     if (!requireAction("manageEstimates")) return;
