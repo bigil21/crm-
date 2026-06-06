@@ -171,6 +171,23 @@ const defaultCurrentUser = {
   role: "viewer",
 };
 
+const fallbackWeatherLocation = {
+  latitude: 35.2271,
+  longitude: -80.8431,
+  label: "Office Market",
+  note: "Enable location for job-site weather",
+};
+
+const weatherRefreshMs = 12 * 60 * 1000;
+const weatherState = {
+  status: "idle",
+  fetchedAt: 0,
+  location: fallbackWeatherLocation,
+  current: null,
+  daily: [],
+  error: "",
+};
+
 const seedContacts = [
   {
     id: "contact_1001",
@@ -1844,6 +1861,150 @@ function renderSummary() {
   hydrateIcons(els.summaryStrip);
 }
 
+function weatherCodeDetails(code) {
+  const value = Number(code);
+  if ([0].includes(value)) return { label: "Clear", icon: "sun" };
+  if ([1, 2].includes(value)) return { label: "Partly Cloudy", icon: "partly" };
+  if ([3].includes(value)) return { label: "Cloudy", icon: "cloud" };
+  if ([45, 48].includes(value)) return { label: "Fog", icon: "fog" };
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(value)) {
+    return { label: "Rain", icon: "rain" };
+  }
+  if ([71, 73, 75, 77, 85, 86].includes(value)) return { label: "Snow", icon: "snow" };
+  if ([95, 96, 99].includes(value)) return { label: "Storms", icon: "storm" };
+  return { label: "Weather", icon: "partly" };
+}
+
+function formatTemperature(value) {
+  return Number.isFinite(Number(value)) ? `${Math.round(Number(value))}&deg;` : "--&deg;";
+}
+
+function weatherDayLabel(isoDate) {
+  return new Date(`${isoDate}T12:00:00`).toLocaleDateString("en-US", { weekday: "short" });
+}
+
+function weatherUpdatedLabel() {
+  if (!weatherState.fetchedAt) return "Not updated yet";
+  return `Updated ${new Date(weatherState.fetchedAt).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
+function getBrowserWeatherLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("Browser location is unavailable"));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          label: "Your Location",
+          note: "Using browser location",
+        });
+      },
+      (error) => reject(error),
+      {
+        enableHighAccuracy: false,
+        maximumAge: weatherRefreshMs,
+        timeout: 10000,
+      },
+    );
+  });
+}
+
+function weatherApiUrl(location) {
+  const params = new URLSearchParams({
+    latitude: String(location.latitude),
+    longitude: String(location.longitude),
+    current: [
+      "temperature_2m",
+      "apparent_temperature",
+      "relative_humidity_2m",
+      "precipitation",
+      "weather_code",
+      "wind_speed_10m",
+      "is_day",
+    ].join(","),
+    daily: [
+      "weather_code",
+      "temperature_2m_max",
+      "temperature_2m_min",
+      "precipitation_probability_max",
+    ].join(","),
+    temperature_unit: "fahrenheit",
+    wind_speed_unit: "mph",
+    precipitation_unit: "inch",
+    forecast_days: "4",
+    timezone: "auto",
+  });
+  return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+}
+
+async function loadWeather({ force = false } = {}) {
+  if (weatherState.status === "loading") return;
+  const isFresh = weatherState.current && Date.now() - weatherState.fetchedAt < weatherRefreshMs;
+  if (isFresh && !force) return;
+
+  weatherState.status = "loading";
+  weatherState.error = "";
+  renderWeatherPanel();
+
+  let location = fallbackWeatherLocation;
+  let locationNote = "";
+  try {
+    location = await getBrowserWeatherLocation();
+  } catch {
+    locationNote = fallbackWeatherLocation.note;
+  }
+
+  try {
+    const response = await fetch(weatherApiUrl(location));
+    if (!response.ok) throw new Error("Weather service unavailable");
+    const data = await response.json();
+    const current = data.current || {};
+    const daily = data.daily || {};
+    const condition = weatherCodeDetails(current.weather_code);
+
+    weatherState.status = "ready";
+    weatherState.fetchedAt = Date.now();
+    weatherState.location = {
+      ...location,
+      note: locationNote || location.note || "Live local weather",
+    };
+    weatherState.current = {
+      temperature: current.temperature_2m,
+      apparentTemperature: current.apparent_temperature,
+      humidity: current.relative_humidity_2m,
+      precipitation: current.precipitation,
+      windSpeed: current.wind_speed_10m,
+      condition,
+    };
+    weatherState.daily = (daily.time || []).slice(0, 4).map((day, index) => ({
+      day,
+      condition: weatherCodeDetails(daily.weather_code?.[index]),
+      high: daily.temperature_2m_max?.[index],
+      low: daily.temperature_2m_min?.[index],
+      rainChance: daily.precipitation_probability_max?.[index],
+    }));
+    weatherState.error = locationNote;
+  } catch {
+    weatherState.status = weatherState.current ? "ready" : "error";
+    weatherState.error = "Live weather is temporarily unavailable";
+  }
+  renderWeatherPanel();
+}
+
+function ensureWeatherData() {
+  if (state.view !== "dashboard") return;
+  if (!weatherState.current || Date.now() - weatherState.fetchedAt >= weatherRefreshMs) {
+    loadWeather();
+  }
+}
+
 function renderDashboard() {
   if (!els.views.dashboard) return;
 
@@ -1901,6 +2062,7 @@ function renderDashboard() {
   renderRecentActivity();
   renderTodaySchedule();
   renderWeatherPanel();
+  ensureWeatherData();
 }
 
 function renderDashboardTasks() {
@@ -1961,6 +2123,8 @@ function renderRevenueOverview() {
         return `${x},${y}`;
       })
       .join(" ");
+  const currentPoints = points(current);
+  const previousPoints = points(previous);
 
   els.revenueChart.innerHTML = `
     <div class="chart-legend">
@@ -1974,8 +2138,9 @@ function renderRevenueOverview() {
         <line x1="35" y1="120" x2="370" y2="120"></line>
         <line x1="35" y1="170" x2="370" y2="170"></line>
       </g>
-      <polyline class="last-period" points="${points(previous)}"></polyline>
-      <polyline class="this-period" points="${points(current)}"></polyline>
+      <polygon class="chart-area" points="35,170 ${currentPoints} 365,170"></polygon>
+      <polyline class="last-period" points="${previousPoints}"></polyline>
+      <polyline class="this-period" points="${currentPoints}"></polyline>
       ${current
         .map((value, index) => {
           const x = 35 + index * 55;
@@ -2012,7 +2177,7 @@ function renderDashboardDonuts() {
 
 function renderDonutWidget(container, items, total, label) {
   if (!container) return;
-  const colors = ["#111827", "#374151", "#6b7280", "#9ca3af", "#d1d5db", "#f3f4f6"];
+  const colors = ["#1d5ed8", "#0f9f98", "#f59e0b", "#7651d1", "#1f9d55", "#9fb7da"];
   const sum = Math.max(items.reduce((value, item) => value + item.count, 0), 1);
   let cursor = 0;
   const gradient = items.length
@@ -2101,23 +2266,59 @@ function renderTodaySchedule() {
 
 function renderWeatherPanel() {
   if (!els.weatherPanel) return;
+  const isLoading = weatherState.status === "loading";
+  const current = weatherState.current;
+  const condition = current?.condition || { label: "Loading", icon: "partly" };
+  const statusNote = weatherState.error || weatherState.location.note || weatherUpdatedLabel();
   els.weatherPanel.innerHTML = `
-    <div class="weather-card">
-      <div>
-        <strong>Local Market</strong>
-        <span>Partly Cloudy</span>
-      </div>
+    <div class="weather-card ${isLoading ? "is-loading" : ""}">
+      <header class="weather-head">
+        <div>
+          <p class="eyebrow">Live weather</p>
+          <strong>${escapeHtml(weatherState.location.label)}</strong>
+          <span>${escapeHtml(statusNote)}</span>
+        </div>
+        <button class="mini-button weather-refresh" type="button" title="Refresh weather" aria-label="Refresh weather" data-action="refresh-weather">
+          <span aria-hidden="true" data-icon="refresh"></span>
+        </button>
+      </header>
       <div class="weather-main">
-        <span class="weather-icon"></span>
-        <strong>82&deg;</strong>
+        <span class="weather-icon weather-${escapeHtml(condition.icon)}"></span>
+        <div>
+          <strong>${current ? formatTemperature(current.temperature) : "--&deg;"}</strong>
+          <span>${escapeHtml(condition.label)}</span>
+        </div>
+      </div>
+      <div class="weather-stats">
+        <span><strong>${current ? formatTemperature(current.apparentTemperature) : "--&deg;"}</strong>Feels</span>
+        <span><strong>${current?.windSpeed ? `${Math.round(Number(current.windSpeed))} mph` : "--"}</strong>Wind</span>
+        <span><strong>${Number.isFinite(Number(current?.humidity)) ? `${Math.round(Number(current.humidity))}%` : "--"}</strong>Humidity</span>
+        <span><strong>${Number.isFinite(Number(current?.precipitation)) ? `${Number(current.precipitation).toFixed(2)} in` : "--"}</strong>Rain</span>
       </div>
       <div class="weather-days">
-        <span>Sun<br /><strong>86/66</strong></span>
-        <span>Mon<br /><strong>85/64</strong></span>
-        <span>Tue<br /><strong>83/63</strong></span>
+        ${
+          weatherState.daily.length
+            ? weatherState.daily
+                .slice(1, 4)
+                .map(
+                  (day) => `
+                    <span>
+                      ${escapeHtml(weatherDayLabel(day.day))}
+                      <i class="weather-dot weather-${escapeHtml(day.condition.icon)}"></i>
+                      <strong>${
+                        Number.isFinite(Number(day.high)) ? Math.round(Number(day.high)) : "--"
+                      }/${Number.isFinite(Number(day.low)) ? Math.round(Number(day.low)) : "--"}</strong>
+                      <small>${Number.isFinite(Number(day.rainChance)) ? `${Math.round(Number(day.rainChance))}% rain` : "Forecast"}</small>
+                    </span>
+                  `,
+                )
+                .join("")
+            : "<span>Forecast loading</span><span>Forecast loading</span><span>Forecast loading</span>"
+        }
       </div>
     </div>
   `;
+  hydrateIcons(els.weatherPanel);
 }
 
 function renderPipeline() {
@@ -4284,6 +4485,8 @@ const icons = {
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>',
   calendar:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>',
+  refresh:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.9-4"/><path d="M4 5v6h6"/><path d="M4 13a8 8 0 0 0 14.9 4"/><path d="M20 19v-6h-6"/></svg>',
   settings:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.23.38.6.64 1 .7.2.03.4.04.6.04a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>',
   search:
@@ -4342,6 +4545,7 @@ function bindEvents() {
     if (action === "add-customer") openContactDialog(null, { type: "Customer" });
     if (action === "open-contact") openLeadDetail(contactId);
     if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview");
+    if (action === "refresh-weather") loadWeather({ force: true });
     if (action === "edit-contact") openContactDialog(contactId);
     if (action === "estimate-contact") createEstimate(contactId);
     if (action === "estimate-job") createEstimate(contactId, true, actionButton.dataset.jobId);
