@@ -7,7 +7,7 @@
     <title>Roofline CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=23" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=29" />
+    <link rel="stylesheet" href="styles.css?v=30" />
   </head>
   <body>
     <div class="app-shell">
@@ -367,6 +367,7 @@
             <div class="segmented-control detail-tabs" aria-label="Lead detail sections">
               <button type="button" class="active" data-lead-tab="overview">Overview</button>
               <button type="button" data-lead-tab="jobs">Jobs</button>
+              <button type="button" class="hidden" data-lead-tab="profit">Profit & Cost</button>
               <button type="button" data-lead-tab="email">Email</button>
               <button type="button" data-lead-tab="documents">Documents</button>
               <button type="button" data-lead-tab="conversation">Conversation</button>
@@ -431,6 +432,76 @@
                   </div>
                 </form>
                 <div id="leadJobsList" class="job-list"></div>
+              </div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadProfitPanel">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Upper admin</p>
+                  <h2>Profit and cost tracking</h2>
+                </div>
+                <label class="compact-select">
+                  Job
+                  <select id="profitJobSelect"></select>
+                </label>
+              </div>
+              <div id="profitSummary" class="profit-summary"></div>
+              <div class="profit-cost-layout">
+                <form id="profitCostForm" class="conversation-form">
+                  <input type="hidden" name="costId" />
+                  <div class="form-grid two">
+                    <label>
+                      Date
+                      <input name="date" type="date" />
+                    </label>
+                    <label>
+                      Category
+                      <select name="category">
+                        <option>Materials</option>
+                        <option>Labor</option>
+                        <option>Subcontractor</option>
+                        <option>Permits</option>
+                        <option>Dump Fees</option>
+                        <option>Equipment</option>
+                        <option>Other</option>
+                      </select>
+                    </label>
+                    <label>
+                      Vendor
+                      <input name="vendor" autocomplete="off" />
+                    </label>
+                    <label>
+                      Amount
+                      <input name="amount" type="number" min="0" step="0.01" />
+                    </label>
+                  </div>
+                  <label>
+                    Description
+                    <textarea name="description" rows="3" placeholder="Material order, labor draw, permit fee, dump receipt..."></textarea>
+                  </label>
+                  <div class="form-grid two">
+                    <label>
+                      Reference
+                      <input name="reference" autocomplete="off" placeholder="Invoice, check, receipt, or PO" />
+                    </label>
+                    <label class="checkbox-label">
+                      <input name="paid" type="checkbox" />
+                      Paid
+                    </label>
+                  </div>
+                  <div class="builder-actions">
+                    <button class="ghost-button" type="button" id="clearProfitCostForm">
+                      <span aria-hidden="true" data-icon="x"></span>
+                      Clear
+                    </button>
+                    <button class="primary-button" type="submit">
+                      <span aria-hidden="true" data-icon="check"></span>
+                      Save Cost
+                    </button>
+                  </div>
+                </form>
+                <div id="profitCostList" class="cost-list"></div>
               </div>
             </div>
 
@@ -984,10 +1055,36 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+    <section class="ai-assistant" id="aiAssistant" aria-label="CRM AI assistant">
+      <button class="ai-toggle" id="aiToggle" type="button" aria-expanded="false">
+        <span aria-hidden="true" data-icon="sparkles"></span>
+        <span>AI</span>
+      </button>
+      <div class="ai-panel" id="aiPanel">
+        <header>
+          <div>
+            <p class="eyebrow">CRM Assistant</p>
+            <strong>Ask for help or navigation</strong>
+          </div>
+          <button class="mini-button" id="aiClear" type="button" title="Clear chat" aria-label="Clear chat">
+            <span aria-hidden="true" data-icon="x"></span>
+          </button>
+        </header>
+        <div class="ai-suggestions" id="aiSuggestions"></div>
+        <div class="ai-messages" id="aiMessages" role="log" aria-live="polite"></div>
+        <form id="aiForm" class="ai-form">
+          <input id="aiInput" autocomplete="off" placeholder="Ask about leads, documents, estimates, or roofing copy..." />
+          <button class="primary-button" type="submit" aria-label="Send assistant message">
+            <span aria-hidden="true" data-icon="send"></span>
+          </button>
+        </form>
+      </div>
+    </section>
+
     <script src="auth-config.js?v=24" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=24" defer></script>
-    <script src="app.js?v=30" defer></script>
+    <script src="app.js?v=31" defer></script>
   </body>
 </html>

@@ -148,6 +148,9 @@ const actionPermissions = {
   "rename-company-document": "manageDocuments",
   "edit-job": "manageJobs",
   "delete-job": "manageJobs",
+  "edit-cost-item": "manageJobFinancials",
+  "delete-cost-item": "manageJobFinancials",
+  "open-job-profit": "manageJobFinancials",
   "edit-calendar-task": "manageTasks",
   "complete-calendar-task": "manageTasks",
   "delete-calendar-task": "manageTasks",
@@ -171,6 +174,10 @@ const defaultCurrentUser = {
   role: "viewer",
 };
 
+const privilegedFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
+
+const costCategories = ["Materials", "Labor", "Subcontractor", "Permits", "Dump Fees", "Equipment", "Other"];
+
 const fallbackWeatherLocation = {
   latitude: 35.2271,
   longitude: -80.8431,
@@ -187,6 +194,13 @@ const weatherState = {
   daily: [],
   error: "",
 };
+
+const assistantSuggestions = [
+  "Create a detailed tear off process for shingle roofs",
+  "Find lead Aakritie",
+  "Open company documents",
+  "Take me to estimates",
+];
 
 const seedContacts = [
   {
@@ -311,6 +325,9 @@ const createInitialState = () => ({
   selectedEstimateId: "estimate_2001",
   newEstimateContactId: "",
   newEstimateJobId: "",
+  selectedProfitJobId: "",
+  assistantOpen: false,
+  assistantMessages: [],
   company: defaultCompany,
   currentUser: defaultCurrentUser,
   companyDocuments: [],
@@ -407,6 +424,12 @@ const els = {
   leadJobForm: document.querySelector("#leadJobForm"),
   clearJobFormButton: document.querySelector("#clearJobFormButton"),
   leadJobsList: document.querySelector("#leadJobsList"),
+  leadProfitPanel: document.querySelector("#leadProfitPanel"),
+  profitJobSelect: document.querySelector("#profitJobSelect"),
+  profitSummary: document.querySelector("#profitSummary"),
+  profitCostForm: document.querySelector("#profitCostForm"),
+  clearProfitCostForm: document.querySelector("#clearProfitCostForm"),
+  profitCostList: document.querySelector("#profitCostList"),
   leadEmailPanel: document.querySelector("#leadEmailPanel"),
   leadEmailForm: document.querySelector("#leadEmailForm"),
   copyLeadEmailButton: document.querySelector("#copyLeadEmailButton"),
@@ -467,6 +490,14 @@ const els = {
   uploadCompanyLogoButton: document.querySelector("#uploadCompanyLogoButton"),
   removeCompanyLogoButton: document.querySelector("#removeCompanyLogoButton"),
   companyLogoPreview: document.querySelector("#companyLogoPreview"),
+  aiAssistant: document.querySelector("#aiAssistant"),
+  aiToggle: document.querySelector("#aiToggle"),
+  aiPanel: document.querySelector("#aiPanel"),
+  aiClear: document.querySelector("#aiClear"),
+  aiSuggestions: document.querySelector("#aiSuggestions"),
+  aiMessages: document.querySelector("#aiMessages"),
+  aiForm: document.querySelector("#aiForm"),
+  aiInput: document.querySelector("#aiInput"),
   toast: document.querySelector("#toast"),
 };
 
@@ -510,6 +541,9 @@ function normalizeState(nextState) {
     leadDetailTab: nextState.leadDetailTab || "overview",
     newEstimateContactId: nextState.newEstimateContactId || "",
     newEstimateJobId: nextState.newEstimateJobId || "",
+    selectedProfitJobId: nextState.selectedProfitJobId || "",
+    assistantOpen: Boolean(nextState.assistantOpen),
+    assistantMessages: (nextState.assistantMessages || []).slice(-12).map(normalizeAssistantMessage),
     company: normalizeCompany(nextState.company),
     currentUser: { ...defaultCurrentUser, ...(nextState.currentUser || {}) },
     contacts,
@@ -579,7 +613,33 @@ function normalizeJob(job, contact = {}) {
     lastContact: job.lastContact || contact.lastContact || todayISO(),
     closedDate,
     notes: job.notes || "",
+    costItems: (job.costItems || job.costs || []).map(normalizeCostItem),
+    profitNotes: job.profitNotes || "",
     createdAt: job.createdAt || contact.createdAt || todayISO(),
+  };
+}
+
+function normalizeCostItem(item = {}) {
+  return {
+    id: item.id || uid("cost"),
+    date: item.date || todayISO(),
+    category: costCategories.includes(item.category) ? item.category : "Other",
+    vendor: item.vendor || "",
+    description: item.description || item.memo || "",
+    amount: number(item.amount),
+    paid: Boolean(item.paid),
+    reference: item.reference || item.invoice || "",
+    createdAt: item.createdAt || new Date().toISOString(),
+    createdBy: item.createdBy || "",
+  };
+}
+
+function normalizeAssistantMessage(message = {}) {
+  return {
+    id: message.id || uid("chat"),
+    role: message.role === "user" ? "user" : "assistant",
+    text: String(message.text || "").slice(0, 4000),
+    createdAt: message.createdAt || new Date().toISOString(),
   };
 }
 
@@ -1021,6 +1081,14 @@ function canManageTeamData() {
   return ["admin", "office_manager", "sales_manager", "operations_manager"].includes(currentRole());
 }
 
+function currentUserEmail() {
+  return String(authSession?.user?.email || state.currentUser.email || "").toLowerCase();
+}
+
+function canManageJobFinancials() {
+  return currentRole() === "admin" || privilegedFinancialEmails.includes(currentUserEmail());
+}
+
 function currentUserFromAuthSession(session) {
   return {
     name:
@@ -1043,6 +1111,7 @@ function canView(view) {
 }
 
 function canAction(action) {
+  if (action === "manageJobFinancials") return canManageJobFinancials();
   const actions = rolePolicy().actions;
   return actions === "all" || actions.includes(action);
 }
@@ -1670,6 +1739,283 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
   });
 }
 
+function assistantWelcomeMessage() {
+  return {
+    id: "assistant_welcome",
+    role: "assistant",
+    text:
+      "I can draft roofing scope language, open CRM sections, find leads, find jobs, and locate documents. Try: create a detailed tear off process for shingle roofs.",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function assistantMessages() {
+  return state.assistantMessages.length ? state.assistantMessages : [assistantWelcomeMessage()];
+}
+
+function addAssistantMessage(role, text) {
+  state.assistantMessages = [
+    ...state.assistantMessages,
+    normalizeAssistantMessage({
+      role,
+      text,
+      createdAt: new Date().toISOString(),
+    }),
+  ].slice(-12);
+}
+
+function assistantCleanQuery(prompt) {
+  return String(prompt || "")
+    .replace(/\b(take me to|go to|open|show|find|search for|search|look up|locate)\b/gi, " ")
+    .replace(/\b(the|a|an|lead|leads|client|clients|customer|customers|job|jobs|document|documents|file|files|estimate|estimates|specific)\b/gi, " ")
+    .replace(/[^\w\s@.-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function textIncludesAll(text, terms) {
+  const normalized = String(text || "").toLowerCase();
+  return terms.every((term) => normalized.includes(term));
+}
+
+function contactSearchText(contact) {
+  return [
+    contact.name,
+    contact.email,
+    contact.phone,
+    contact.type,
+    contact.status,
+    contact.source,
+    contact.salesRep,
+    contact.address,
+    contact.notes,
+    ...contactJobs(contact).flatMap((job) => [job.name, job.address, job.status, job.salesRep, job.notes]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function findContactsByPrompt(prompt) {
+  const query = assistantCleanQuery(prompt).toLowerCase();
+  if (!query) return [];
+  const terms = query.split(/\s+/).filter((term) => term.length > 1);
+  return state.contacts.filter((contact) => textIncludesAll(contactSearchText(contact), terms));
+}
+
+function findJobByPrompt(prompt) {
+  const query = assistantCleanQuery(prompt).toLowerCase();
+  if (!query) return null;
+  const terms = query.split(/\s+/).filter((term) => term.length > 1);
+  return allJobs().find((job) =>
+    textIncludesAll([job.name, job.address, job.status, job.salesRep, job.contactName, job.notes].join(" "), terms),
+  );
+}
+
+function findDocumentByPrompt(prompt) {
+  const query = assistantCleanQuery(prompt).toLowerCase();
+  if (!query) return null;
+  const terms = query.split(/\s+/).filter((term) => term.length > 1);
+  const companyDocument = state.companyDocuments.find((document) =>
+    textIncludesAll([document.name, document.category, document.source].join(" "), terms),
+  );
+  if (companyDocument) return { type: "company", document: companyDocument };
+
+  for (const contact of state.contacts) {
+    const document = (contact.documents || []).find((item) =>
+      textIncludesAll([item.name, item.category, item.source].join(" "), terms),
+    );
+    if (document) return { type: "lead", contact, document };
+  }
+  return null;
+}
+
+function findEstimateByPrompt(prompt) {
+  const query = assistantCleanQuery(prompt).toLowerCase();
+  if (!query) return null;
+  const terms = query.split(/\s+/).filter((term) => term.length > 1);
+  return state.estimates.find((estimate) => {
+    const contact = getEstimateContact(estimate);
+    return textIncludesAll([estimate.estimateNumber, estimate.projectTitle, estimate.status, contact?.name].join(" "), terms);
+  });
+}
+
+function roofingTearOffDraft() {
+  return `Tear Off Process for Shingle Roofs
+
+Our tear off process begins with protecting the property before any roofing material is removed. The crew stages tarps, protects landscaping, covers vulnerable areas, and establishes a controlled debris path so the work area stays organized and safe.
+
+Once protection is in place, the existing shingles are removed down to the roof decking. This includes stripping shingles, starter courses, hip and ridge caps, old underlayment, drip edge where required, pipe boot flashings, and other worn roof accessories that need replacement. Debris is moved directly into the designated disposal area to keep the job site clean throughout the day.
+
+After the roof is opened, the decking is inspected carefully for soft, rotted, delaminated, or damaged sheathing. Any compromised decking is documented and replaced as needed so the new roofing system has a solid, code-compliant surface to attach to.
+
+The crew then prepares the roof for installation by sweeping the deck, removing loose fasteners, checking roof penetrations, and making sure valleys, eaves, rakes, and wall transitions are ready for the new system. Ice and water shield, synthetic underlayment, drip edge, starter shingles, flashing components, ventilation, and architectural shingles can then be installed according to manufacturer specifications.
+
+At completion, the crew performs a full cleanup that includes removing debris, blowing off work areas, cleaning gutters when applicable, and using magnetic rollers to collect loose nails around the property. The goal is to leave the property protected, clean, and ready for final inspection.`;
+}
+
+function genericRoofingDraft(prompt) {
+  if (/tear\s*off|remove|removal/i.test(prompt) && /shingle|roof/i.test(prompt)) return roofingTearOffDraft();
+  return `Roofing Scope Explanation
+
+This work includes a professional review of the existing roof condition, preparation of the work area, protection of surrounding property, and completion of the roofing scope using materials and installation practices appropriate for the project. The crew will document visible concerns, communicate any concealed damage discovered during production, and maintain a clean job site throughout the work.
+
+The final scope should identify the roofing system being installed, the areas included, the materials required, any ventilation or flashing work, and any exclusions or conditions that may affect pricing. Once the work is complete, the crew should perform cleanup, remove project debris, and complete a final quality review before closing the job.`;
+}
+
+function assistantViewFromPrompt(prompt) {
+  const lower = prompt.toLowerCase();
+  const matches = [
+    ["dashboard", ["dashboard", "home"]],
+    ["leads", ["leads"]],
+    ["contacts", ["contacts", "clients", "customers"]],
+    ["jobs", ["jobs", "projects list"]],
+    ["projects", ["projects", "production"]],
+    ["estimates", ["estimates", "estimate center"]],
+    ["companyDocuments", ["company documents", "documents", "samples", "contracts"]],
+    ["calendar", ["calendar", "schedule"]],
+    ["tasks", ["tasks", "reminders"]],
+    ["reports", ["reports", "leaderboard"]],
+    ["company", ["settings", "company settings"]],
+  ];
+  return matches.find(([, aliases]) => aliases.some((alias) => lower.includes(alias)))?.[0] || "";
+}
+
+function assistantViewLabel(view) {
+  return (
+    {
+      dashboard: "Dashboard",
+      leads: "Leads",
+      contacts: "Contacts",
+      jobs: "Jobs",
+      projects: "Projects",
+      estimates: "Estimates",
+      companyDocuments: "Company Documents",
+      calendar: "Calendar",
+      tasks: "Tasks",
+      reports: "Reports",
+      company: "Settings",
+    }[view] || "that section"
+  );
+}
+
+function assistantRespond(prompt) {
+  const lower = prompt.toLowerCase();
+  const query = assistantCleanQuery(prompt);
+
+  if (/(create|write|draft|generate).*(roof|shingle|tear|scope|process|explanation)/i.test(prompt)) {
+    return genericRoofingDraft(prompt);
+  }
+
+  if (lower.includes("document") || lower.includes("file") || lower.includes("contract") || lower.includes("sample")) {
+    const found = findDocumentByPrompt(prompt);
+    if (found?.type === "lead") {
+      state.selectedContactId = found.contact.id;
+      state.leadDetailTab = "documents";
+      state.view = "leadDetail";
+      state.search = "";
+      return `I found "${found.document.name}" under ${found.contact.name} and opened that lead's Documents tab.`;
+    }
+    if (found?.type === "company") {
+      state.view = "companyDocuments";
+      state.search = query;
+      return `I found "${found.document.name}" in Company Documents and filtered the document list for you.`;
+    }
+  }
+
+  if (lower.includes("estimate")) {
+    const estimate = findEstimateByPrompt(prompt);
+    if (estimate) {
+      state.view = "estimates";
+      state.selectedEstimateId = estimate.id;
+      state.selectedContactId = estimate.contactId;
+      state.search = "";
+      return `I opened ${estimate.estimateNumber || "that estimate"} for ${getEstimateContact(estimate)?.name || "the selected client"}.`;
+    }
+  }
+
+  if (lower.includes("job")) {
+    const job = findJobByPrompt(prompt);
+    if (job) {
+      state.selectedContactId = job.contactId;
+      state.selectedProfitJobId = job.id;
+      state.leadDetailTab = canManageJobFinancials() && lower.includes("profit") ? "profit" : "jobs";
+      state.view = "leadDetail";
+      state.search = "";
+      return `I found ${job.name} for ${job.contactName} and opened the job page.`;
+    }
+  }
+
+  if (/\b(find|search|open|show|locate)\b/i.test(prompt) && query) {
+    const matches = findContactsByPrompt(prompt);
+    if (matches.length === 1) {
+      state.selectedContactId = matches[0].id;
+      state.leadDetailTab = "overview";
+      state.view = "leadDetail";
+      state.search = "";
+      return `I found ${matches[0].name} and opened the lead page.`;
+    }
+    if (matches.length > 1) {
+      state.view = "contacts";
+      state.search = query;
+      return `I found ${matches.length} matching records and filtered Contacts for "${query}".`;
+    }
+  }
+
+  const view = assistantViewFromPrompt(prompt);
+  if (view && canView(view)) {
+    state.view = view;
+    state.search = "";
+    return `I opened ${assistantViewLabel(view)} for you.`;
+  }
+
+  if (/help|what can you do|examples/i.test(prompt)) {
+    return "I can draft roofing scope text, open CRM sections, find leads or jobs by name/address, locate documents, and open estimates. Try: Find Aakritie, Open company documents, Take me to calendar, or Create a detailed tear off process for shingle roofs.";
+  }
+
+  return "I can help with CRM navigation, lead/job/document searches, and roofing scope writing. Try asking me to find a lead, open company documents, take you to estimates, or draft a roofing process description.";
+}
+
+function submitAssistantPrompt(prompt) {
+  const text = String(prompt || "").trim();
+  if (!text) return;
+  addAssistantMessage("user", text);
+  const response = assistantRespond(text);
+  addAssistantMessage("assistant", response);
+  state.assistantOpen = true;
+  saveState();
+  render();
+}
+
+function renderAssistant() {
+  if (!els.aiAssistant) return;
+  els.aiAssistant.classList.toggle("open", state.assistantOpen);
+  els.aiToggle?.setAttribute("aria-expanded", String(Boolean(state.assistantOpen)));
+
+  if (els.aiSuggestions) {
+    els.aiSuggestions.innerHTML = assistantSuggestions
+      .map((suggestion) => `<button type="button" data-assistant-prompt="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</button>`)
+      .join("");
+  }
+
+  if (els.aiMessages) {
+    els.aiMessages.innerHTML = assistantMessages()
+      .map(
+        (message) => `
+          <article class="ai-message ${message.role}">
+            <span>${message.role === "user" ? "You" : "CRM AI"}</span>
+            <p>${nl2br(message.text)}</p>
+          </article>
+        `,
+      )
+      .join("");
+    window.requestAnimationFrame(() => {
+      els.aiMessages.scrollTop = els.aiMessages.scrollHeight;
+    });
+  }
+  hydrateIcons(els.aiAssistant);
+}
+
 function render() {
   if (!canView(state.view)) {
     state.view = firstAllowedView();
@@ -1725,6 +2071,7 @@ function render() {
   renderReportsView();
   renderCompanyForm();
   applyPermissionsToDom();
+  renderAssistant();
 }
 
 function renderBrandLogo() {
@@ -1816,6 +2163,12 @@ function applyPermissionsToDom() {
   els.leadJobForm?.querySelectorAll("input, textarea, select, button").forEach((field) => {
     field.disabled = !jobWritable;
   });
+
+  const financialWritable = canAction("manageJobFinancials");
+  els.profitCostForm?.querySelectorAll("input, textarea, select, button").forEach((field) => {
+    field.disabled = !financialWritable;
+  });
+  if (els.profitJobSelect) els.profitJobSelect.disabled = !financialWritable;
 
   const emailWritable = canAction("sendEmail");
   els.leadEmailForm?.querySelectorAll("input, textarea, button").forEach((field) => {
@@ -2574,18 +2927,27 @@ function renderLeadDetail() {
   els.leadDetailTitle.textContent = contact.name;
   els.leadDetailMeta.textContent = `${contact.type} - ${contact.status} - ${contact.salesRep || "Unassigned"}`;
 
+  if (state.leadDetailTab === "profit" && !canManageJobFinancials()) {
+    state.leadDetailTab = "overview";
+  }
+
   document.querySelectorAll("[data-lead-tab]").forEach((button) => {
+    if (button.dataset.leadTab === "profit") {
+      button.classList.toggle("hidden", !canManageJobFinancials());
+    }
     button.classList.toggle("active", button.dataset.leadTab === state.leadDetailTab);
   });
 
   const panels = {
     overview: els.leadOverviewPanel,
     jobs: els.leadJobsPanel,
+    profit: els.leadProfitPanel,
     email: els.leadEmailPanel,
     documents: els.leadDocumentsPanel,
     conversation: els.leadConversationPanel,
   };
   Object.entries(panels).forEach(([tab, panel]) => {
+    if (!panel) return;
     panel.classList.toggle("hidden", tab !== state.leadDetailTab);
   });
 
@@ -2632,6 +2994,7 @@ function renderLeadDetail() {
   `;
 
   renderLeadJobs(contact);
+  renderLeadProfit(contact);
   renderLeadEmail(contact);
   renderLeadDocuments(contact);
   renderLeadConversation(contact);
@@ -2661,6 +3024,14 @@ function renderLeadJobs(contact) {
             Edit
           </button>
           ${
+            canManageJobFinancials()
+              ? `<button class="secondary-button" type="button" data-action="open-job-profit" data-contact-id="${contact.id}" data-job-id="${job.id}">
+                  <span aria-hidden="true" data-icon="dollar"></span>
+                  Profit & Cost
+                </button>`
+              : ""
+          }
+          ${
             contactJobs(contact).length > 1
               ? `<button class="mini-button" type="button" title="Remove job" aria-label="Remove ${escapeHtml(
                   job.name,
@@ -2675,6 +3046,214 @@ function renderLeadJobs(contact) {
     )
     .join("");
   hydrateIcons(els.leadJobsList);
+}
+
+function selectedProfitJob(contact) {
+  const jobs = contactJobs(contact);
+  return jobs.find((job) => job.id === state.selectedProfitJobId) || jobs[0];
+}
+
+function jobCostTotal(job) {
+  return (job?.costItems || []).reduce((sum, item) => sum + number(item.amount), 0);
+}
+
+function jobProfitMetrics(job) {
+  const contractValue = number(job?.value);
+  const totalCost = jobCostTotal(job);
+  const profit = contractValue - totalCost;
+  const margin = contractValue ? (profit / contractValue) * 100 : 0;
+  return { contractValue, totalCost, profit, margin };
+}
+
+function renderLeadProfit(contact) {
+  if (!els.leadProfitPanel) return;
+  if (!canManageJobFinancials()) {
+    els.leadProfitPanel.innerHTML = '<div class="empty-state">Profit and cost is restricted to upper admin.</div>';
+    return;
+  }
+
+  const jobs = contactJobs(contact);
+  const selected = selectedProfitJob(contact);
+  state.selectedProfitJobId = selected?.id || "";
+
+  if (els.profitJobSelect) {
+    els.profitJobSelect.innerHTML = jobs
+      .map(
+        (job) => `
+          <option value="${job.id}" ${job.id === selected?.id ? "selected" : ""}>
+            ${escapeHtml(job.name)} - ${escapeHtml((job.address || "No address").split("\n")[0])}
+          </option>
+        `,
+      )
+      .join("");
+  }
+
+  const metrics = jobProfitMetrics(selected);
+  if (els.profitSummary) {
+    els.profitSummary.innerHTML = [
+      ["Contract Value", money.format(metrics.contractValue), "Customer/job value"],
+      ["Total Cost", money.format(metrics.totalCost), `${selected.costItems.length} cost line${selected.costItems.length === 1 ? "" : "s"}`],
+      ["Projected Profit", money.format(metrics.profit), `${metrics.margin.toFixed(1)}% gross margin`],
+    ]
+      .map(
+        ([label, value, caption]) => `
+          <article class="summary-card">
+            <span class="eyebrow">${label}</span>
+            <strong>${escapeHtml(value)}</strong>
+            <span>${escapeHtml(caption)}</span>
+          </article>
+        `,
+      )
+      .join("");
+  }
+
+  if (els.profitCostList) {
+    const rows = [...(selected.costItems || [])].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    els.profitCostList.innerHTML = rows.length
+      ? rows
+          .map(
+            (item) => `
+              <article class="cost-card">
+                <div>
+                  <span class="status-pill">${escapeHtml(item.category)}</span>
+                  <strong>${money.format(number(item.amount))}</strong>
+                  <span>${escapeHtml(item.vendor || "No vendor")} - ${escapeHtml(formatDate(item.date))}</span>
+                  <p>${nl2br(item.description || "No description")}</p>
+                  <small>${escapeHtml(item.reference || "No reference")} ${item.paid ? "- Paid" : "- Unpaid"}</small>
+                </div>
+                <div class="row-actions">
+                  <button class="mini-button" type="button" title="Edit cost" aria-label="Edit cost" data-action="edit-cost-item" data-cost-id="${item.id}">
+                    <span aria-hidden="true" data-icon="edit"></span>
+                  </button>
+                  <button class="mini-button" type="button" title="Delete cost" aria-label="Delete cost" data-action="delete-cost-item" data-cost-id="${item.id}">
+                    <span aria-hidden="true" data-icon="trash"></span>
+                  </button>
+                </div>
+              </article>
+            `,
+          )
+          .join("")
+      : '<div class="empty-state">No costs have been entered for this job yet.</div>';
+    hydrateIcons(els.profitCostList);
+  }
+}
+
+function fillProfitCostForm(item = {}) {
+  if (!els.profitCostForm) return;
+  const data = {
+    costId: "",
+    date: todayISO(),
+    category: "Materials",
+    vendor: "",
+    amount: "",
+    description: "",
+    reference: "",
+    paid: false,
+    ...item,
+  };
+  Object.entries(data).forEach(([key, value]) => {
+    const field = els.profitCostForm.elements[key];
+    if (!field) return;
+    if (field.type === "checkbox") field.checked = Boolean(value);
+    else field.value = value ?? "";
+  });
+}
+
+function updateSelectedProfitJob(updater) {
+  const contact = getSelectedContact();
+  if (!contact || !state.selectedProfitJobId) return null;
+  let updatedJob = null;
+  updateContact(contact.id, (current) => {
+    const jobs = contactJobs(current).map((job) => {
+      if (job.id !== state.selectedProfitJobId) return job;
+      updatedJob = normalizeJob(updater({ ...job }), current);
+      return updatedJob;
+    });
+    const primary = jobs[0];
+    return {
+      ...current,
+      jobs,
+      status: primary.status,
+      value: primary.value,
+      salesRep: primary.salesRep,
+      address: primary.address,
+      closedDate: primary.closedDate,
+    };
+  });
+  return updatedJob;
+}
+
+function saveProfitCost(event) {
+  event.preventDefault();
+  if (!requireAction("manageJobFinancials")) return;
+  const contact = getSelectedContact();
+  const job = selectedProfitJob(contact);
+  if (!contact || !job) return;
+  state.selectedProfitJobId = job.id;
+  const formData = new FormData(els.profitCostForm);
+  const costId = formData.get("costId") || uid("cost");
+  const existing = (job.costItems || []).find((item) => item.id === costId);
+  const nextItem = normalizeCostItem({
+    ...(existing || { id: costId }),
+    id: costId,
+    date: formData.get("date") || todayISO(),
+    category: formData.get("category"),
+    vendor: formData.get("vendor").trim(),
+    amount: number(formData.get("amount")),
+    description: formData.get("description").trim(),
+    reference: formData.get("reference").trim(),
+    paid: formData.get("paid") === "on",
+    createdBy: state.currentUser.name || state.currentUser.email || "Upper admin",
+  });
+
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    costItems: existing
+      ? (currentJob.costItems || []).map((item) => (item.id === costId ? nextItem : item))
+      : [nextItem, ...(currentJob.costItems || [])],
+  }));
+
+  addContactUpdate(contact.id, {
+    author: state.currentUser.name || "Upper admin",
+    message: `${existing ? "Updated" : "Added"} cost on ${job.name}: ${money.format(nextItem.amount)} ${nextItem.category}.`,
+  });
+
+  fillProfitCostForm();
+  state.leadDetailTab = "profit";
+  saveState();
+  render();
+  showToast("Cost saved");
+}
+
+function editCostItem(costId) {
+  if (!requireAction("manageJobFinancials")) return;
+  const contact = getSelectedContact();
+  const job = selectedProfitJob(contact);
+  const item = (job?.costItems || []).find((cost) => cost.id === costId);
+  if (!item) return;
+  state.leadDetailTab = "profit";
+  renderLeadDetail();
+  fillProfitCostForm({ ...item, costId: item.id });
+}
+
+function deleteCostItem(costId) {
+  if (!requireAction("manageJobFinancials")) return;
+  const contact = getSelectedContact();
+  const job = selectedProfitJob(contact);
+  if (!contact || !job) return;
+  const item = (job.costItems || []).find((cost) => cost.id === costId);
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    costItems: (currentJob.costItems || []).filter((cost) => cost.id !== costId),
+  }));
+  addContactUpdate(contact.id, {
+    author: state.currentUser.name || "Upper admin",
+    message: `Removed cost on ${job.name}: ${item ? money.format(item.amount) : "cost item"}.`,
+  });
+  fillProfitCostForm();
+  saveState();
+  render();
+  showToast("Cost removed");
 }
 
 function fillJobForm(job = {}) {
@@ -4475,6 +5054,8 @@ const icons = {
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.3L5.8 21 7 14.2 2 9.3l6.9-1Z"/></svg>',
   "bar-chart":
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5"/><rect x="12" y="7" width="3" height="9"/><rect x="17" y="9" width="3" height="7"/></svg>',
+  sparkles:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7Z"/><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9Z"/><path d="m5 14 .9 2.1L8 17l-2.1.9L5 20l-.9-2.1L2 17l2.1-.9Z"/></svg>',
   bell:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
   menu:
@@ -4587,6 +5168,16 @@ function bindEvents() {
     if (action === "delete-job") {
       deleteLeadJob(actionButton.dataset.jobId);
     }
+    if (action === "open-job-profit") {
+      state.selectedProfitJobId = actionButton.dataset.jobId;
+      openLeadDetail(contactId, "profit");
+    }
+    if (action === "edit-cost-item") {
+      editCostItem(actionButton.dataset.costId);
+    }
+    if (action === "delete-cost-item") {
+      deleteCostItem(actionButton.dataset.costId);
+    }
     if (action === "open-calendar-task") {
       editCalendarTask(actionButton.dataset.taskId);
     }
@@ -4663,6 +5254,14 @@ function bindEvents() {
   els.leadConversationForm.addEventListener("submit", submitLeadConversation);
   els.leadJobForm.addEventListener("submit", saveLeadJob);
   els.clearJobFormButton.addEventListener("click", () => fillJobForm());
+  els.profitJobSelect?.addEventListener("change", (event) => {
+    if (!requireAction("manageJobFinancials")) return;
+    state.selectedProfitJobId = event.target.value;
+    saveState();
+    renderLeadDetail();
+  });
+  els.profitCostForm?.addEventListener("submit", saveProfitCost);
+  els.clearProfitCostForm?.addEventListener("click", () => fillProfitCostForm());
   els.leadEmailForm.addEventListener("submit", submitLeadEmail);
   els.copyLeadEmailButton.addEventListener("click", copyLeadEmail);
   els.uploadCompanyDocumentButton.addEventListener("click", () => {
@@ -4771,6 +5370,28 @@ function bindEvents() {
     await deferredInstallPrompt.userChoice;
     deferredInstallPrompt = null;
     els.installAppButton.classList.add("hidden");
+  });
+
+  els.aiToggle?.addEventListener("click", () => {
+    state.assistantOpen = !state.assistantOpen;
+    saveState();
+    renderAssistant();
+  });
+  els.aiClear?.addEventListener("click", () => {
+    state.assistantMessages = [];
+    saveState();
+    renderAssistant();
+  });
+  els.aiSuggestions?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-assistant-prompt]");
+    if (!button) return;
+    submitAssistantPrompt(button.dataset.assistantPrompt);
+  });
+  els.aiForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = els.aiInput?.value || "";
+    if (els.aiInput) els.aiInput.value = "";
+    submitAssistantPrompt(value);
   });
 }
 
