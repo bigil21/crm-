@@ -2023,10 +2023,24 @@ function assistantApiHistory() {
     .filter((message) => message.text);
 }
 
+async function assistantAccessToken() {
+  if (authSession?.access_token) return authSession.access_token;
+  if (authSession?.session?.access_token) return authSession.session.access_token;
+  if (!window.RooflineAuth?.getTrustedUser) return "";
+
+  const trusted = await window.RooflineAuth.getTrustedUser();
+  if (trusted?.session?.access_token) {
+    authSession = { ...authSession, ...trusted };
+    return trusted.session.access_token;
+  }
+  return "";
+}
+
 async function assistantRealtimeAnswer(prompt) {
   try {
     const headers = { "Content-Type": "application/json" };
-    if (authSession?.access_token) headers.Authorization = `Bearer ${authSession.access_token}`;
+    const accessToken = await assistantAccessToken();
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
     const response = await fetch("/api/assistant", {
       method: "POST",
