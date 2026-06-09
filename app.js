@@ -196,10 +196,10 @@ const weatherState = {
 };
 
 const assistantSuggestions = [
+  "What is 1500 x 25?",
   "Create a detailed tear off process for shingle roofs",
   "Find lead Aakritie",
   "Open company documents",
-  "Take me to estimates",
 ];
 
 const seedContacts = [
@@ -1744,7 +1744,7 @@ function assistantWelcomeMessage() {
     id: "assistant_welcome",
     role: "assistant",
     text:
-      "I can draft roofing scope language, open CRM sections, find leads, find jobs, and locate documents. Try: create a detailed tear off process for shingle roofs.",
+      "Ask me real questions, have me draft roofing or sales language, or use me to open CRM sections and find records.",
     createdAt: new Date().toISOString(),
   };
 }
@@ -1899,13 +1899,162 @@ function assistantViewLabel(view) {
   );
 }
 
-function assistantRespond(prompt) {
+function normalizeMathExpression(prompt) {
+  const normalized = String(prompt || "")
+    .toLowerCase()
+    .replaceAll(",", "")
+    .replace(/\$/g, "")
+    .replace(/\b(what is|what's|calculate|solve|how much is|answer|equals|equal to)\b/g, " ")
+    .replace(/\bmultiplied by\b/g, "*")
+    .replace(/\btimes\b/g, "*")
+    .replace(/\bdivided by\b/g, "/")
+    .replace(/\bover\b/g, "/")
+    .replace(/\bplus\b/g, "+")
+    .replace(/\bminus\b/g, "-")
+    .replace(/(\d)\s*\u00d7\s*(\d)/g, "$1*$2")
+    .replace(/(\d)\s*[x×]\s*(\d)/g, "$1*$2");
+  const candidates = normalized.match(/[0-9+\-*/().\s]+/g) || [];
+  return candidates
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => /\d/.test(candidate) && /[+\-*/]/.test(candidate))
+    .sort((a, b) => b.length - a.length)[0] || "";
+}
+
+function evaluateMathExpression(expression) {
+  const text = String(expression || "").replace(/\s+/g, "");
+  if (!text || text.length > 100 || /[^0-9+\-*/().]/.test(text)) return null;
+  let index = 0;
+
+  const parseNumber = () => {
+    const match = text.slice(index).match(/^\d*\.?\d+/);
+    if (!match) return null;
+    index += match[0].length;
+    return Number(match[0]);
+  };
+
+  const parseFactor = () => {
+    if (text[index] === "+") {
+      index += 1;
+      return parseFactor();
+    }
+    if (text[index] === "-") {
+      index += 1;
+      const value = parseFactor();
+      return value === null ? null : -value;
+    }
+    if (text[index] === "(") {
+      index += 1;
+      const value = parseExpression();
+      if (text[index] !== ")") return null;
+      index += 1;
+      return value;
+    }
+    return parseNumber();
+  };
+
+  const parseTerm = () => {
+    let value = parseFactor();
+    if (value === null) return null;
+    while (text[index] === "*" || text[index] === "/") {
+      const operator = text[index];
+      index += 1;
+      const next = parseFactor();
+      if (next === null) return null;
+      value = operator === "*" ? value * next : value / next;
+    }
+    return value;
+  };
+
+  var parseExpression = () => {
+    let value = parseTerm();
+    if (value === null) return null;
+    while (text[index] === "+" || text[index] === "-") {
+      const operator = text[index];
+      index += 1;
+      const next = parseTerm();
+      if (next === null) return null;
+      value = operator === "+" ? value + next : value - next;
+    }
+    return value;
+  };
+
+  const result = parseExpression();
+  if (index !== text.length || !Number.isFinite(result)) return null;
+  return result;
+}
+
+function formatMathNumber(value) {
+  const rounded = Math.abs(value) < 1e-10 ? 0 : value;
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: Number.isInteger(rounded) ? 0 : 4,
+  }).format(rounded);
+}
+
+function assistantMathAnswer(prompt) {
+  const expression = normalizeMathExpression(prompt);
+  if (!expression) return "";
+  const result = evaluateMathExpression(expression);
+  if (result === null) return "";
+  return `${expression.replaceAll("*", " x ")} = ${formatMathNumber(result)}`;
+}
+
+function assistantRuntimeContext() {
+  return {
+    companyName: state.company?.name || "",
+    currentView: assistantViewLabel(state.view),
+    userRole: currentRole(),
+    counts: {
+      leads: state.contacts.filter((contact) => contact.type === "Lead").length,
+      customers: state.contacts.filter((contact) => contact.type === "Customer").length,
+      jobs: allJobs().length,
+      estimates: state.estimates.length,
+      companyDocuments: state.companyDocuments.length,
+    },
+  };
+}
+
+function assistantApiHistory() {
+  return state.assistantMessages
+    .slice(-8)
+    .map((message) => ({
+      role: message.role,
+      text: message.text,
+    }))
+    .filter((message) => message.text);
+}
+
+async function assistantRealtimeAnswer(prompt) {
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (authSession?.access_token) headers.Authorization = `Bearer ${authSession.access_token}`;
+
+    const response = await fetch("/api/assistant", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        prompt,
+        context: assistantRuntimeContext(),
+        history: assistantApiHistory(),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    return (
+      data.reply ||
+      (response.ok
+        ? "I could not generate an answer for that. Try asking it a different way."
+        : "The live AI service could not answer right now. Try again in a moment.")
+    );
+  } catch {
+    return "I could not reach the live AI service. I can still open CRM sections, find leads, and answer simple math.";
+  }
+}
+
+function assistantLocalResponse(prompt) {
   const lower = prompt.toLowerCase();
   const query = assistantCleanQuery(prompt);
+  const mathAnswer = assistantMathAnswer(prompt);
 
-  if (/(create|write|draft|generate).*(roof|shingle|tear|scope|process|explanation)/i.test(prompt)) {
-    return genericRoofingDraft(prompt);
-  }
+  if (mathAnswer) return mathAnswer;
 
   if (lower.includes("document") || lower.includes("file") || lower.includes("contract") || lower.includes("sample")) {
     const found = findDocumentByPrompt(prompt);
@@ -1970,17 +2119,26 @@ function assistantRespond(prompt) {
   }
 
   if (/help|what can you do|examples/i.test(prompt)) {
-    return "I can draft roofing scope text, open CRM sections, find leads or jobs by name/address, locate documents, and open estimates. Try: Find Aakritie, Open company documents, Take me to calendar, or Create a detailed tear off process for shingle roofs.";
+    return "I can answer general questions in real time, draft roofing and sales language, do simple math, open CRM sections, find leads or jobs by name/address, locate documents, and open estimates.";
   }
 
-  return "I can help with CRM navigation, lead/job/document searches, and roofing scope writing. Try asking me to find a lead, open company documents, take you to estimates, or draft a roofing process description.";
+  return "";
 }
 
-function submitAssistantPrompt(prompt) {
+async function assistantRespond(prompt) {
+  const localResponse = assistantLocalResponse(prompt);
+  if (localResponse) return localResponse;
+  return assistantRealtimeAnswer(prompt);
+}
+
+async function submitAssistantPrompt(prompt) {
   const text = String(prompt || "").trim();
   if (!text) return;
   addAssistantMessage("user", text);
-  const response = assistantRespond(text);
+  state.assistantOpen = true;
+  saveState();
+  render();
+  const response = await assistantRespond(text);
   addAssistantMessage("assistant", response);
   state.assistantOpen = true;
   saveState();
