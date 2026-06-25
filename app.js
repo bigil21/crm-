@@ -1179,7 +1179,7 @@ function estimateSalesRep(estimate = {}) {
   return {
     name: estimate.projectManager || state.currentUser.name || "Unassigned",
     email: estimate.salesRepEmail || state.currentUser.email || state.company.email || "",
-    phone: estimate.salesRepPhone || state.company.phone || "",
+    phone: estimate.salesRepPhone || state.currentUser.phone || state.company.phone || "",
     officeAddress: companyOfficeAddress(),
   };
 }
@@ -4630,6 +4630,7 @@ function renderCompanyForm() {
   const userFields = {
     userName: state.currentUser.name,
     userEmail: state.currentUser.email,
+    userPhone: state.currentUser.phone || "",
     userRole: state.currentUser.role,
   };
   Object.entries(userFields).forEach(([key, value]) => {
@@ -4779,7 +4780,7 @@ function createEstimate(contactId, shouldRender = true, jobId = "") {
     status: "Draft",
     projectManager: job?.salesRep || contact.salesRep || state.currentUser.name || "",
     salesRepEmail: state.currentUser.email || state.company.email || "",
-    salesRepPhone: state.company.phone || "",
+    salesRepPhone: state.currentUser.phone || state.company.phone || "",
     issueDate: todayISO(),
     validUntil: addDaysISO(14),
     scopeSummary:
@@ -5425,6 +5426,7 @@ function saveCompany(event) {
   state.currentUser = {
     name: formData.get("userName").trim() || defaultCurrentUser.name,
     email: formData.get("userEmail").trim() || state.company.email || defaultCurrentUser.email,
+    phone: formData.get("userPhone").trim() || state.currentUser.phone || "",
     role: formData.get("userRole").trim() || defaultCurrentUser.role,
   };
   state.company = {
