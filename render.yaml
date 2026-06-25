@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: crm
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-store, no-cache, must-revalidate
+      - path: /*.js
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /*.css
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
