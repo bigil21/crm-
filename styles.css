@@ -1412,6 +1412,166 @@ button:disabled {
   font-weight: 800;
 }
 
+/* Colored status pills */
+.pill-won   { background: var(--green-soft);  color: var(--green); }
+.pill-lost  { background: #fef2f2;             color: var(--danger); }
+.pill-sent  { background: var(--teal-soft);   color: var(--teal); }
+.pill-inspection { background: var(--gold-soft); color: #92580a; }
+.pill-contacted  { background: var(--purple-soft); color: var(--purple); }
+.pill-new        { background: var(--accent-soft); color: var(--accent-strong); }
+.pill-default    { background: var(--surface-soft); color: var(--muted); }
+
+/* Avatar initials */
+.lead-card-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.avatar-blue   { background: var(--accent-soft);  color: var(--accent-strong); }
+.avatar-teal   { background: var(--teal-soft);    color: var(--teal); }
+.avatar-purple { background: var(--purple-soft);  color: var(--purple); }
+.avatar-amber  { background: var(--gold-soft);    color: #92580a; }
+.avatar-coral  { background: #fef2f2;             color: var(--danger); }
+
+/* Tappable phone/email links */
+.tel-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+.tel-link:hover { text-decoration: underline; }
+
+/* Stale lead indicators */
+.stale-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.stale-amber { background: var(--gold-soft);  color: #92580a; }
+.stale-red   { background: #fef2f2;           color: var(--danger); }
+.lead-card.stale-red   { border-color: #fca5a5; }
+.lead-card.stale-amber { border-color: #fcd34d; }
+.record-card.stale-red   { border-color: #fca5a5; }
+.record-card.stale-amber { border-color: #fcd34d; }
+
+/* Lead card avatar layout */
+.lead-card header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.lead-card-header-text { flex: 1; min-width: 0; }
+.lead-card-header-text h4 { margin: 0 0 2px; }
+.lead-card-header-text p  { margin: 0; }
+
+/* Record card top row */
+.record-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+/* Lead detail overview redesign */
+.overview-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.overview-hero-text { flex: 1; min-width: 0; }
+.overview-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.overview-stale-banner.stale-amber { background: var(--gold-soft); color: #92580a; }
+.overview-stale-banner.stale-red   { background: #fef2f2; color: var(--danger); }
+.overview-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.overview-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.overview-info-box {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+.overview-info-label {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.overview-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.overview-info-row span:first-child { color: var(--muted); white-space: nowrap; }
+.overview-notes {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+/* Estimate line item templates */
+.template-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0 4px;
+}
+.template-picker.hidden { display: none; }
+.template-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.template-chip:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
 .lead-card {
   display: grid;
   gap: 10px;

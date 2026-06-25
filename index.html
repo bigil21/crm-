@@ -680,11 +680,18 @@
                     <p class="eyebrow">Line items</p>
                     <h3>Work to be performed</h3>
                   </div>
-                  <button class="ghost-button" type="button" id="addLineItemButton">
-                    <span aria-hidden="true" data-icon="plus"></span>
-                    Add Item
-                  </button>
+                  <div style="display:flex;gap:8px">
+                    <button class="ghost-button" type="button" id="lineItemTemplatesButton">
+                      <span aria-hidden="true" data-icon="template"></span>
+                      Templates
+                    </button>
+                    <button class="ghost-button" type="button" id="addLineItemButton">
+                      <span aria-hidden="true" data-icon="plus"></span>
+                      Add Item
+                    </button>
+                  </div>
                 </div>
+                <div class="template-picker hidden" id="templatePicker"></div>
 
                 <div class="line-items" id="lineItems"></div>
 

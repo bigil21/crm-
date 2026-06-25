@@ -178,6 +178,53 @@ const privilegedFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastal
 
 const costCategories = ["Materials", "Labor", "Subcontractor", "Permits", "Dump Fees", "Equipment", "Other"];
 
+const estimateTemplates = [
+  {
+    name: "Full Reroof",
+    items: [
+      { title: "Architectural shingle system", description: "Install architectural shingles with underlayment, starter strip, and ridge cap to manufacturer specs.", quantity: 0, unit: "sq", rate: 420 },
+      { title: "Tear-off & haul-away", description: "Remove existing roofing, haul debris, perform magnetic nail sweep.", quantity: 0, unit: "sq", rate: 85 },
+      { title: "Synthetic underlayment", description: "", quantity: 0, unit: "sq", rate: 30 },
+      { title: "Ice & water shield (valleys)", description: "", quantity: 0, unit: "sq", rate: 95 },
+      { title: "Ridge vent & accessories", description: "Install continuous ridge ventilation and matching ridge cap.", quantity: 1, unit: "lot", rate: 640 },
+    ],
+  },
+  {
+    name: "Storm Damage Repair",
+    items: [
+      { title: "Hail/wind damage shingle replacement", description: "Replace damaged shingles, match existing color/profile where possible.", quantity: 0, unit: "sq", rate: 390 },
+      { title: "Flashing repair", description: "Re-seal and replace damaged step/counter flashing.", quantity: 1, unit: "lot", rate: 450 },
+      { title: "Decking repair", description: "Replace damaged sheathing as discovered.", quantity: 0, unit: "sheet", rate: 85 },
+    ],
+  },
+  {
+    name: "Gutters",
+    items: [
+      { title: "5\" K-style gutter installation", description: "Install .032 aluminum seamless gutters with hidden hangers every 24\".", quantity: 0, unit: "lf", rate: 8 },
+      { title: "3×4 downspouts", description: "Install downspouts with elbows and splash blocks.", quantity: 0, unit: "ea", rate: 95 },
+      { title: "Gutter guard installation", description: "Micro-mesh gutter protection system.", quantity: 0, unit: "lf", rate: 12 },
+      { title: "Remove & haul existing gutters", description: "", quantity: 0, unit: "lf", rate: 3 },
+    ],
+  },
+  {
+    name: "Flat Roof (TPO)",
+    items: [
+      { title: "TPO membrane installation", description: "60-mil TPO single-ply membrane, mechanically fastened with heat-welded seams.", quantity: 0, unit: "sq", rate: 520 },
+      { title: "Insulation board", description: "2\" polyiso insulation board, tapered at drains.", quantity: 0, unit: "sq", rate: 110 },
+      { title: "Tear-off & haul-away", description: "Remove existing flat roof membrane and insulation.", quantity: 0, unit: "sq", rate: 90 },
+      { title: "Drain and flashing work", description: "Inspect, clean, and re-flash all roof penetrations and drains.", quantity: 1, unit: "lot", rate: 850 },
+    ],
+  },
+  {
+    name: "Roof Tune-Up",
+    items: [
+      { title: "Roof inspection & report", description: "Full inspection with photo documentation.", quantity: 1, unit: "ea", rate: 250 },
+      { title: "Re-seal penetrations & vents", description: "Apply roofing sealant to all vents, pipes, and flashings.", quantity: 1, unit: "lot", rate: 320 },
+      { title: "Minor shingle repairs", description: "Nail down loose shingles, replace up to 3 damaged shingles.", quantity: 1, unit: "lot", rate: 280 },
+    ],
+  },
+];
+
 const fallbackWeatherLocation = {
   latitude: 35.2271,
   longitude: -80.8431,
@@ -467,6 +514,8 @@ const els = {
   estimateNotes: document.querySelector("#estimateNotes"),
   newEstimateButton: document.querySelector("#newEstimateButton"),
   addLineItemButton: document.querySelector("#addLineItemButton"),
+  lineItemTemplatesButton: document.querySelector("#lineItemTemplatesButton"),
+  templatePicker: document.querySelector("#templatePicker"),
   deleteEstimateButton: document.querySelector("#deleteEstimateButton"),
   copyEstimateButton: document.querySelector("#copyEstimateButton"),
   printEstimateButton: document.querySelector("#printEstimateButton"),
@@ -1292,6 +1341,52 @@ function totalsFor(estimate) {
   const total = subtotal + tax;
   const balance = Math.max(total - number(estimate.deposit), 0);
   return { subtotal, tax, total, balance };
+}
+
+function statusPillClass(status = "") {
+  const s = status.toLowerCase().replace(/\s+/g, "-");
+  if (s === "won" || s === "approved" || s === "completed") return "pill-won";
+  if (s === "lost" || s === "rejected") return "pill-lost";
+  if (s === "estimate-sent" || s === "sent") return "pill-sent";
+  if (s === "inspection") return "pill-inspection";
+  if (s === "contacted") return "pill-contacted";
+  if (s === "new") return "pill-new";
+  if (s === "in-progress" || s === "in_progress") return "pill-inspection";
+  return "pill-default";
+}
+
+function contactInitials(name = "") {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function initialsColor(name = "") {
+  const colors = ["avatar-blue", "avatar-teal", "avatar-purple", "avatar-amber", "avatar-coral"];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function staleLeadDays(contact) {
+  if (!contact.lastContact) return 0;
+  const last = new Date(contact.lastContact);
+  const now = new Date();
+  return Math.floor((now - last) / (1000 * 60 * 60 * 24));
+}
+
+function staleClass(contact) {
+  if (["Won", "Lost"].includes(contact.status)) return "";
+  const days = staleLeadDays(contact);
+  if (days >= 14) return "stale-red";
+  if (days >= 7) return "stale-amber";
+  return "";
+}
+
+function telLink(phone = "") {
+  if (!phone) return "";
+  const digits = phone.replace(/\D/g, "");
+  return `<a class="tel-link" href="tel:${digits}">${escapeHtml(phone)}</a>`;
 }
 
 function escapeHtml(value = "") {
@@ -2632,53 +2727,65 @@ function renderPipelineOverview() {
 
 function renderRevenueOverview() {
   if (!els.revenueChart) return;
-  const metrics = dashboardMetrics();
-  const current = [0.1, 0.26, 0.42, 0.55, 0.68, 0.82, 1].map(
-    (ratio) => metrics.closedValue * ratio,
-  );
-  const previous = [0.07, 0.14, 0.26, 0.35, 0.46, 0.57, 0.68].map(
-    (ratio) => Math.max(metrics.closedValue, 100000) * ratio,
-  );
-  const max = Math.max(...current, ...previous, 1);
-  const points = (values) =>
-    values
-      .map((value, index) => {
-        const x = 35 + index * 55;
-        const y = 170 - (number(value) / max) * 140;
-        return `${x},${y}`;
-      })
-      .join(" ");
-  const currentPoints = points(current);
-  const previousPoints = points(previous);
+
+  // Build last 6 months of real closed revenue
+  const now = new Date();
+  const months = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+    return {
+      label: d.toLocaleString("en-US", { month: "short" }),
+      year: d.getFullYear(),
+      month: d.getMonth(),
+      value: 0,
+    };
+  });
+
+  allJobs().filter((job) => job.status === "Won" && job.closedDate).forEach((job) => {
+    const d = new Date(job.closedDate);
+    const bucket = months.find((m) => m.year === d.getFullYear() && m.month === d.getMonth());
+    if (bucket) bucket.value += number(job.value);
+  });
+
+  const max = Math.max(...months.map((m) => m.value), 1);
+  const W = 390, H = 180, padL = 48, padR = 16, padT = 16, padB = 28;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  const barW = Math.floor(chartW / months.length * 0.55);
+  const gap = chartW / months.length;
+
+  const bars = months.map((m, i) => {
+    const x = padL + i * gap + (gap - barW) / 2;
+    const barH = Math.max(2, (m.value / max) * chartH);
+    const y = padT + chartH - barH;
+    return { x, y, barH, barW, label: m.label, value: m.value };
+  });
+
+  const totalClosed = months.reduce((s, m) => s + m.value, 0);
 
   els.revenueChart.innerHTML = `
-    <div class="chart-legend">
-      <span><i class="solid"></i>This Period</span>
-      <span><i class="dash"></i>Last Period</span>
+    <div class="chart-legend" style="margin-bottom:8px">
+      <span style="font-size:12px;color:var(--muted)">Closed revenue — last 6 months</span>
+      <strong style="font-size:13px">${money.format(totalClosed)}</strong>
     </div>
-    <svg viewBox="0 0 390 210" role="img" aria-label="Revenue overview chart">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Closed revenue by month bar chart" style="width:100%;display:block">
       <g class="chart-grid">
-        <line x1="35" y1="30" x2="370" y2="30"></line>
-        <line x1="35" y1="75" x2="370" y2="75"></line>
-        <line x1="35" y1="120" x2="370" y2="120"></line>
-        <line x1="35" y1="170" x2="370" y2="170"></line>
+        <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="var(--line)" stroke-width="0.5"/>
+        <line x1="${padL}" y1="${padT + chartH / 2}" x2="${W - padR}" y2="${padT + chartH / 2}" stroke="var(--line)" stroke-width="0.5"/>
+        <line x1="${padL}" y1="${padT + chartH}" x2="${W - padR}" y2="${padT + chartH}" stroke="var(--line)" stroke-width="1"/>
       </g>
-      <polygon class="chart-area" points="35,170 ${currentPoints} 365,170"></polygon>
-      <polyline class="last-period" points="${previousPoints}"></polyline>
-      <polyline class="this-period" points="${currentPoints}"></polyline>
-      ${current
-        .map((value, index) => {
-          const x = 35 + index * 55;
-          const y = 170 - (number(value) / max) * 140;
-          return `<circle class="data-dot" cx="${x}" cy="${y}" r="4"></circle>`;
-        })
-        .join("")}
-      <g class="chart-labels">
-        <text x="10" y="174">$0</text>
-        <text x="4" y="124">$25K</text>
-        <text x="4" y="79">$50K</text>
-        <text x="4" y="34">$100K</text>
-      </g>
+      <text x="${padL - 4}" y="${padT + 4}" text-anchor="end" font-size="9" fill="var(--muted)">${money.format(max).replace(/\.00$/, "")}</text>
+      <text x="${padL - 4}" y="${padT + chartH / 2 + 4}" text-anchor="end" font-size="9" fill="var(--muted)">${money.format(max / 2).replace(/\.00$/, "")}</text>
+      <text x="${padL - 4}" y="${padT + chartH + 4}" text-anchor="end" font-size="9" fill="var(--muted)">$0</text>
+      ${bars.map((b, i) => {
+        const isLatest = i === bars.length - 1;
+        return `
+          <rect x="${b.x}" y="${b.y}" width="${b.barW}" height="${b.barH}"
+            rx="3" fill="${isLatest ? "var(--accent)" : "var(--accent-soft)"}"
+            stroke="${isLatest ? "var(--accent)" : "var(--line)"}" stroke-width="1"/>
+          <text x="${b.x + b.barW / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${b.label}</text>
+          ${b.value > 0 ? `<text x="${b.x + b.barW / 2}" y="${b.y - 4}" text-anchor="middle" font-size="8" fill="${isLatest ? "var(--accent-strong)" : "var(--muted)"}">${money.format(b.value).replace(/\.00$/, "")}</text>` : ""}
+        `;
+      }).join("")}
     </svg>
   `;
 }
@@ -2881,10 +2988,16 @@ function renderPipeline() {
 function renderLeadCard(contact) {
   const job = primaryJob(contact);
   const nextStatus = statuses[Math.min(statuses.indexOf(contact.status) + 1, statuses.length - 1)];
+  const days = staleLeadDays(contact);
+  const sc = staleClass(contact);
+  const staleTag = sc ? `<span class="stale-badge ${sc}">${days}d no contact</span>` : "";
+  const initials = contactInitials(contact.name);
+  const avatarClass = initialsColor(contact.name);
   return `
-    <article class="lead-card">
+    <article class="lead-card ${sc}">
       <header>
-        <div>
+        <div class="lead-card-avatar ${avatarClass}">${initials}</div>
+        <div class="lead-card-header-text">
           <h4>
             <button class="link-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
               ${escapeHtml(contact.name)}
@@ -2894,9 +3007,10 @@ function renderLeadCard(contact) {
             contactJobs(contact).reduce((sum, item) => sum + number(item.value), 0),
           )}</p>
         </div>
-        <span class="type-pill">${escapeHtml(contact.type)}</span>
+        <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(contact.status)}</span>
       </header>
-      <p>${escapeHtml(contact.phone || "No phone")}<br />${escapeHtml(contact.email || "No email")}</p>
+      ${staleTag}
+      <p>${telLink(contact.phone) || "No phone"}<br />${escapeHtml(contact.email || "No email")}</p>
       <p>${escapeHtml(job.name)}<br />${escapeHtml((job.address || contact.address || "").split("\n")[0] || "No job address")}</p>
       <div class="card-actions">
         <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
@@ -3065,13 +3179,25 @@ function renderProjectsView() {
 function renderRecordCard(contact) {
   const jobs = contactJobs(contact);
   const value = jobs.reduce((sum, job) => sum + number(job.value), 0);
+  const sc = staleClass(contact);
+  const days = staleLeadDays(contact);
+  const staleTag = sc ? `<span class="stale-badge ${sc}">${days}d no contact</span>` : "";
+  const initials = contactInitials(contact.name);
+  const avatarClass = initialsColor(contact.name);
   return `
-    <article class="record-card">
-      <span class="type-pill">${escapeHtml(contact.type)}</span>
-      <strong>${escapeHtml(contact.name)}</strong>
-      <span>${escapeHtml(contact.status)} - ${escapeHtml(contact.salesRep || "Unassigned")}</span>
-      <p>${escapeHtml(contact.phone || "No phone")}<br />${escapeHtml(contact.email || "No email")}</p>
-      <p>${jobs.length} job${jobs.length === 1 ? "" : "s"} - ${money.format(value)}</p>
+    <article class="record-card ${sc}">
+      <div class="record-card-top">
+        <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong>${escapeHtml(contact.name)}</strong>
+            <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(contact.status)}</span>
+          </div>
+          <span>${escapeHtml(contact.salesRep || "Unassigned")} &middot; ${jobs.length} job${jobs.length === 1 ? "" : "s"} &middot; ${money.format(value)}</span>
+        </div>
+      </div>
+      ${staleTag}
+      <p>${telLink(contact.phone) || "No phone"}<br />${escapeHtml(contact.email || "No email")}</p>
       <div class="row-actions">
         <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
           <span aria-hidden="true" data-icon="open"></span>
@@ -3143,27 +3269,50 @@ function renderLeadDetail() {
     )
     .join("");
 
+  const initials = contactInitials(contact.name);
+  const avatarClass = initialsColor(contact.name);
+  const sc = staleClass(contact);
+  const days = staleLeadDays(contact);
   els.leadOverviewPanel.innerHTML = `
-    <div class="detail-grid">
-      <section>
-        <h3>Contact Information</h3>
-        <p><strong>Email:</strong> ${escapeHtml(contact.email || "No email")}</p>
-        <p><strong>Phone:</strong> ${escapeHtml(contact.phone || "No phone")}</p>
-        <p><strong>Source:</strong> ${escapeHtml(contact.source || "No source")}</p>
-        <p><strong>Created:</strong> ${formatDate(contact.createdAt)}</p>
-        <p><strong>Last Contact:</strong> ${formatDate(contact.lastContact)}</p>
-        <p><strong>Closed Date:</strong> ${formatDate(contact.closedDate)}</p>
-      </section>
-      <section>
-        <h3>Job Address</h3>
-        <p>${jobs.map((job) => `<strong>${escapeHtml(job.name)}</strong><br />${nl2br(job.address || "No address saved")}`).join("<br /><br />")}</p>
-      </section>
-      <section class="detail-notes">
-        <h3>Lead Notes</h3>
-        <p>${nl2br(contact.notes || "No notes saved")}</p>
-      </section>
+    <div class="overview-hero">
+      <div class="lead-card-avatar ${avatarClass}" style="width:52px;height:52px;font-size:19px;flex-shrink:0">${initials}</div>
+      <div class="overview-hero-text">
+        <h2 style="margin:0;font-size:20px">${escapeHtml(contact.name)}</h2>
+        <p style="margin:4px 0 0;color:var(--muted);font-size:13px">${escapeHtml(contact.source || "No source")} &middot; ${escapeHtml(contact.salesRep || "Unassigned")}</p>
+      </div>
+      <span class="status-pill ${statusPillClass(contact.status)}" style="align-self:flex-start">${escapeHtml(contact.status)}</span>
     </div>
+    ${sc ? `<div class="overview-stale-banner ${sc}"><span data-icon="alert-triangle" aria-hidden="true"></span> No contact in ${days} days — follow up soon</div>` : ""}
+    <div class="overview-quick-actions">
+      ${contact.phone ? `<a class="secondary-button" href="tel:${contact.phone.replace(/\D/g, "")}"><span aria-hidden="true" data-icon="phone"></span> Call</a>` : ""}
+      ${contact.email ? `<button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="email"><span aria-hidden="true" data-icon="mail"></span> Email</button>` : ""}
+      <button class="secondary-button" type="button" data-action="estimate-contact" data-contact-id="${contact.id}"><span aria-hidden="true" data-icon="file"></span> Estimate</button>
+      <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="conversation"><span aria-hidden="true" data-icon="message"></span> Log Note</button>
+    </div>
+    <div class="overview-info-grid">
+      <div class="overview-info-box">
+        <p class="overview-info-label">Contact</p>
+        ${contact.phone ? `<p class="overview-info-row"><span>Phone</span>${telLink(contact.phone)}</p>` : ""}
+        ${contact.email ? `<p class="overview-info-row"><span>Email</span><a href="mailto:${escapeHtml(contact.email)}" class="tel-link">${escapeHtml(contact.email)}</a></p>` : ""}
+        <p class="overview-info-row"><span>Source</span>${escapeHtml(contact.source || "—")}</p>
+        <p class="overview-info-row"><span>Created</span>${formatDate(contact.createdAt)}</p>
+        <p class="overview-info-row"><span>Last contact</span>${formatDate(contact.lastContact)}</p>
+        ${contact.closedDate ? `<p class="overview-info-row"><span>Closed</span>${formatDate(contact.closedDate)}</p>` : ""}
+      </div>
+      <div class="overview-info-box">
+        <p class="overview-info-label">Job address${jobs.length > 1 ? "es" : ""}</p>
+        ${jobs.map((job) => `
+          <p style="margin:0 0 8px"><strong style="font-size:13px">${escapeHtml(job.name)}</strong><br /><span style="color:var(--muted);font-size:12px">${nl2br(job.address || "No address saved")}</span></p>
+        `).join("")}
+      </div>
+    </div>
+    ${contact.notes ? `
+    <div class="overview-notes">
+      <p class="overview-info-label">Notes</p>
+      <p style="margin:0;font-size:13px;line-height:1.6;color:var(--ink)">${nl2br(contact.notes)}</p>
+    </div>` : ""}
   `;
+  hydrateIcons(els.leadOverviewPanel);
 
   renderLeadJobs(contact);
   renderLeadProfit(contact);
@@ -5613,6 +5762,37 @@ function bindEvents() {
     estimate.items.push({ title: "", description: "", quantity: 1, unit: "ea", rate: 0 });
     saveState();
     renderEstimates();
+  });
+
+  els.lineItemTemplatesButton?.addEventListener("click", () => {
+    if (!requireAction("manageEstimates")) return;
+    const picker = els.templatePicker;
+    if (!picker) return;
+    const isOpen = !picker.classList.contains("hidden");
+    if (isOpen) { picker.classList.add("hidden"); return; }
+    picker.innerHTML = estimateTemplates.map((tpl, i) => `
+      <button class="template-chip" type="button" data-template-index="${i}">
+        <span aria-hidden="true" data-icon="template"></span>
+        ${escapeHtml(tpl.name)}
+      </button>
+    `).join("");
+    hydrateIcons(picker);
+    picker.classList.remove("hidden");
+  });
+
+  els.templatePicker?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-template-index]");
+    if (!btn) return;
+    if (!requireAction("manageEstimates")) return;
+    const estimate = getSelectedEstimate();
+    if (!estimate) return;
+    const tpl = estimateTemplates[Number(btn.dataset.templateIndex)];
+    if (!tpl) return;
+    estimate.items = [...estimate.items, ...tpl.items.map((item) => ({ ...item }))];
+    saveState();
+    renderEstimates();
+    els.templatePicker.classList.add("hidden");
+    showToast(`${tpl.name} template added`);
   });
 
   els.estimateForm.addEventListener("input", (event) => {
