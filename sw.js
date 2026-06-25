@@ -1,12 +1,12 @@
-const CACHE_NAME = "roofline-crm-v35";
+const CACHE_NAME = "roofline-crm-v37";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./login.html",
   "./logout.html",
-  "./styles.css",
-  "./app.js",
-  "./auth.js",
+  "./styles.css?v=32",
+  "./app.js?v=37",
+  "./auth.js?v=24",
   "./login.js",
   "./logout.js",
   "./vendor/jspdf.umd.min.js",
@@ -40,6 +40,11 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.pathname === "/auth-config.js" || url.pathname === "/login" || url.pathname === "/logout") {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+  // Always fetch HTML fresh — never serve from cache
+  if (url.pathname === "/" || url.pathname.endsWith(".html")) {
     event.respondWith(fetch(event.request));
     return;
   }
