@@ -1572,6 +1572,29 @@ button:disabled {
   color: var(--accent-strong);
 }
 
+/* Field hints */
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* Review warning banner */
+.review-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: var(--gold-soft);
+  border: 1px solid #fcd34d;
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: #92580a;
+}
+
 .lead-card {
   display: grid;
   gap: 10px;

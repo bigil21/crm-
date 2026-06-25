@@ -164,6 +164,7 @@ const defaultCompany = {
   address: "1800 Market Street\nSuite 210\nCharlotte, NC 28202",
   officeAddress: "1800 Market Street\nSuite 210\nCharlotte, NC 28202",
   logoDataUrl: "",
+  googleReviewUrl: "",
   defaultTerms:
     "This estimate is valid through the date shown above. Scope may change if concealed damage is discovered after work begins. Customer approval is required before materials are ordered.",
 };
@@ -4251,29 +4252,69 @@ function renderInvoicesView() {
   hydrateIcons(els.invoicesList);
 }
 
+function reviewRequestEmail(contact) {
+  const reviewUrl = state.company.googleReviewUrl || "";
+  const repName = state.currentUser.name || state.company.name;
+  const reviewLine = reviewUrl
+    ? `We'd love to hear about your experience! It would mean a lot if you could take a moment to leave us a review:\n\n${reviewUrl}\n\nIt only takes a minute and helps us continue doing great work for homeowners like you.`
+    : `We'd love to hear about your experience! If you have a moment, please leave us a review on Google — it helps us continue doing great work for homeowners like you.`;
+  return {
+    toEmail: contact.email || "",
+    subject: `How did we do, ${contact.name.split(" ")[0]}? — ${state.company.name}`,
+    message: `Hi ${contact.name.split(" ")[0]},\n\nThank you so much for choosing ${state.company.name}! It was a pleasure working on your project and we hope you're thrilled with the results.\n\n${reviewLine}\n\nThank you again for your trust and business. Please don't hesitate to reach out if there's anything else we can help with.\n\nWarm regards,\n${repName}\n${state.company.name}\n${state.currentUser.phone || state.company.phone || ""}`,
+  };
+}
+
 function renderReviewsView() {
   if (!els.reviewsList) return;
-  const customers = state.contacts.filter((contact) => contact.type === "Customer" || contact.status === "Won");
-  els.reviewsList.innerHTML = customers.length
-    ? customers
-        .map(
-          (contact) => `
-            <article class="record-card">
-              <span class="status-pill">Review Request</span>
-              <strong>${escapeHtml(contact.name)}</strong>
-              <span>${escapeHtml(contact.email || "No email saved")}</span>
-              <p>${escapeHtml(contact.notes || "Customer is ready for post-job follow-up.")}</p>
-              <div class="row-actions">
-                <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="email">
-                  <span aria-hidden="true" data-icon="mail"></span>
-                  Email
-                </button>
+  const customers = state.contacts.filter((c) => c.type === "Customer" || c.status === "Won");
+  const hasReviewUrl = !!state.company.googleReviewUrl;
+
+  const warningBanner = !hasReviewUrl ? `
+    <div class="review-warning">
+      <span data-icon="alert-triangle" aria-hidden="true"></span>
+      No Google Review link saved yet — <button class="link-button" type="button" data-action="go-to-settings">add it in Settings</button> so it's included in every request.
+    </div>
+  ` : "";
+
+  els.reviewsList.innerHTML = warningBanner + (customers.length
+    ? customers.map((contact) => {
+        const initials = contactInitials(contact.name);
+        const avatarClass = initialsColor(contact.name);
+        const job = primaryJob(contact);
+        const email = contact.email || "";
+        return `
+          <article class="record-card">
+            <div class="record-card-top">
+              <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <strong>${escapeHtml(contact.name)}</strong>
+                  <span class="status-pill pill-won">Won</span>
+                </div>
+                <span style="font-size:12px;color:var(--muted)">${escapeHtml(job.name || "Completed job")} &middot; ${escapeHtml(email || "No email saved")}</span>
               </div>
-            </article>
-          `,
-        )
-        .join("")
-    : '<div class="empty-state">Won customers will appear here for review follow-up</div>';
+            </div>
+            <div class="row-actions" style="margin-top:8px">
+              ${email ? `
+                <a class="primary-button"
+                  href="${mailtoUrl(email, reviewRequestEmail(contact).subject, reviewRequestEmail(contact).message)}"
+                  data-action="log-review-request"
+                  data-contact-id="${contact.id}">
+                  <span aria-hidden="true" data-icon="star"></span>
+                  Send Review Request
+                </a>
+              ` : `<span style="font-size:12px;color:var(--muted)">No email address on file</span>`}
+              <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
+                <span aria-hidden="true" data-icon="open"></span>
+                Open
+              </button>
+            </div>
+          </article>
+        `;
+      }).join("")
+    : '<div class="empty-state">Won customers will appear here for review follow-up</div>');
+
   hydrateIcons(els.reviewsList);
 }
 
@@ -5437,6 +5478,7 @@ function saveCompany(event) {
     address: formData.get("officeAddress").trim(),
     officeAddress: formData.get("officeAddress").trim(),
     logoDataUrl: state.company.logoDataUrl || "",
+    googleReviewUrl: formData.get("googleReviewUrl").trim(),
     defaultTerms: formData.get("defaultTerms").trim(),
   };
   saveState();
@@ -5561,6 +5603,17 @@ function bindEvents() {
     if (action === "edit-contact") openContactDialog(contactId);
     if (action === "estimate-contact") createEstimate(contactId);
     if (action === "estimate-job") createEstimate(contactId, true, actionButton.dataset.jobId);
+    if (action === "go-to-settings") { state.view = "company"; render(); }
+    if (action === "log-review-request") {
+      if (contactId) {
+        addContactUpdate(contactId, {
+          author: state.currentUser.name || "CRM",
+          message: "Sent review request email.",
+        });
+        saveState();
+        showToast("Review request logged");
+      }
+    }
     if (action === "select-estimate") {
       state.view = "estimates";
       setSelectedEstimate(actionButton.dataset.estimateId);
