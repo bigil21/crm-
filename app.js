@@ -4343,123 +4343,126 @@ function renderEstimatePreview(estimate) {
   const rep = estimateSalesRep(estimate);
   const officeAddress = companyOfficeAddress();
 
+  const statusColors = {
+    Draft: "est-status-draft",
+    Sent: "est-status-sent",
+    Approved: "est-status-approved",
+    Rejected: "est-status-rejected",
+    Invoiced: "est-status-invoiced",
+  };
+  const statusClass = statusColors[estimate.status] || "est-status-draft";
+
   els.estimatePreview.innerHTML = `
-    <div class="doc-topline">
-      <div class="doc-brand">
-        ${companyLogoTag()}
-        <div>
-          <h2>${escapeHtml(company.name)}</h2>
-          <p>${nl2br(officeAddress)}</p>
-          <p>${escapeHtml(company.phone)} &middot; ${escapeHtml(company.email)}</p>
-          <p>${escapeHtml(company.license)}</p>
+    <div class="est-preview">
+      <div class="est-header">
+        <div class="est-header-brand">
+          ${companyLogoTag("est-logo")}
+          <div>
+            <p class="est-company-name">${escapeHtml(company.name)}</p>
+            <p class="est-company-sub">${nl2br(officeAddress)}</p>
+            <p class="est-company-sub">${escapeHtml(company.phone)}${company.phone && company.email ? " &middot; " : ""}${escapeHtml(company.email)}</p>
+            ${company.license ? `<p class="est-company-sub">${escapeHtml(company.license)}</p>` : ""}
+          </div>
+        </div>
+        <div class="est-header-meta">
+          <p class="est-doc-label">ESTIMATE</p>
+          <p class="est-doc-num">${escapeHtml(estimate.estimateNumber)}</p>
+          <p class="est-doc-date">Issued: ${formatDate(estimate.issueDate)}</p>
+          <p class="est-doc-date">Valid through: ${formatDate(estimate.validUntil)}</p>
+          <span class="est-status-chip ${statusClass}">${escapeHtml(estimate.status)}</span>
         </div>
       </div>
-      <div class="doc-meta">
-        <h1>ESTIMATE</h1>
-        <strong>${escapeHtml(estimate.estimateNumber)}</strong>
-        <p>Issued ${formatDate(estimate.issueDate)}</p>
-        <p>Valid through ${formatDate(estimate.validUntil)}</p>
-        <p>Status: ${escapeHtml(estimate.status)}</p>
-      </div>
-    </div>
+      <div class="est-accent-bar"></div>
 
-    <div class="doc-grid">
-      <section class="doc-box">
-        <h3>Customer Information</h3>
-        <strong>${escapeHtml(contact?.name || "No customer selected")}</strong>
-        <p>${nl2br(contact?.address || "")}</p>
-        <p>${escapeHtml(contact?.phone || "")}</p>
-        <p>${escapeHtml(contact?.email || "")}</p>
-      </section>
-      <section class="doc-box">
-        <h3>Job Information</h3>
-        <strong>${escapeHtml(estimate.projectTitle || "Project estimate")}</strong>
-        <p>${escapeHtml((job?.address || contact?.address || "").split("\n")[0] || "Project address")}</p>
-        <p class="doc-field-label">Sales Representative</p>
-        <strong class="sales-rep-name">${escapeHtml(rep.name || "Unassigned")}</strong>
-        <p>${escapeHtml(rep.email)}</p>
-        <p>${escapeHtml(rep.phone)}</p>
-        <p>${nl2br(rep.officeAddress)}</p>
-      </section>
-    </div>
+      <div class="est-body">
+        <div class="est-info-grid">
+          <div class="est-info-box">
+            <p class="est-info-label">Customer</p>
+            <p class="est-info-name">${escapeHtml(contact?.name || "No customer selected")}</p>
+            ${contact?.address ? `<p class="est-info-sub">${nl2br(contact.address)}</p>` : ""}
+            ${contact?.phone ? `<p class="est-info-sub">${escapeHtml(contact.phone)}</p>` : ""}
+            ${contact?.email ? `<p class="est-info-sub">${escapeHtml(contact.email)}</p>` : ""}
+          </div>
+          <div class="est-info-box">
+            <p class="est-info-label">Project &amp; Representative</p>
+            <p class="est-info-name">${escapeHtml(estimate.projectTitle || "Project estimate")}</p>
+            <p class="est-info-sub">${escapeHtml((job?.address || contact?.address || "").split("\n")[0] || "")}</p>
+            <p class="est-info-rep">${escapeHtml(rep.name || "Unassigned")}</p>
+            ${rep.email ? `<p class="est-info-sub">${escapeHtml(rep.email)}</p>` : ""}
+            ${rep.phone ? `<p class="est-info-sub">${escapeHtml(rep.phone)}</p>` : ""}
+          </div>
+        </div>
 
-    <section class="doc-section">
-      <h3>Project Summary</h3>
-      <div class="scope-box">${nl2br(estimate.scopeSummary || "Scope summary will appear here.")}</div>
-    </section>
+        ${estimate.scopeSummary ? `
+        <div class="est-scope-block">
+          <p class="est-info-label">Project scope</p>
+          <p class="est-scope-text">${nl2br(estimate.scopeSummary)}</p>
+        </div>
+        ` : ""}
 
-    <section class="doc-section">
-      <h3>Estimate Detail</h3>
-      <table class="doc-table">
-        <thead>
-          <tr>
-            <th>Product / Work Item</th>
-            <th class="number">Qty</th>
-            <th>Unit</th>
-            <th class="number">Rate</th>
-            <th class="number">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${estimate.items
-            .map(
-              (item) => `
+        <table class="est-table">
+          <thead>
+            <tr>
+              <th>Product / work item</th>
+              <th class="est-th-r">Qty</th>
+              <th>Unit</th>
+              <th class="est-th-r">Rate</th>
+              <th class="est-th-r">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${estimate.items.map((item) => `
               <tr>
                 <td>
-                  <strong class="doc-item-title">${escapeHtml(item.title || "Line item")}</strong>
-                  ${
-                    item.description
-                      ? `<p class="doc-item-description">${nl2br(item.description)}</p>`
-                      : ""
-                  }
+                  <span class="est-item-title">${escapeHtml(item.title || "Line item")}</span>
+                  ${item.description ? `<span class="est-item-desc">${nl2br(item.description)}</span>` : ""}
                 </td>
-                <td class="number">${number(item.quantity).toLocaleString("en-US")}</td>
-                <td>${escapeHtml(item.unit || "ea")}</td>
-                <td class="number">${money.format(number(item.rate))}</td>
-                <td class="number">${money.format(number(item.quantity) * number(item.rate))}</td>
+                <td class="est-td-r est-td-muted">${number(item.quantity).toLocaleString("en-US")}</td>
+                <td class="est-td-muted">${escapeHtml(item.unit || "ea")}</td>
+                <td class="est-td-r est-td-muted">${money.format(number(item.rate))}</td>
+                <td class="est-td-r est-td-amt">${money.format(number(item.quantity) * number(item.rate))}</td>
               </tr>
-            `,
-            )
-            .join("")}
-        </tbody>
-      </table>
-
-      <div class="totals-block">
-        <table class="totals-table">
-          <tbody>
-            <tr>
-              <td>Subtotal</td>
-              <td>${money.format(totals.subtotal)}</td>
-            </tr>
-            <tr>
-              <td>Tax (${number(estimate.taxRate)}%)</td>
-              <td>${money.format(totals.tax)}</td>
-            </tr>
-            <tr>
-              <td>Deposit</td>
-              <td>${money.format(number(estimate.deposit))}</td>
-            </tr>
-            <tr class="total">
-              <td>Total</td>
-              <td>${money.format(totals.total)}</td>
-            </tr>
-            <tr>
-              <td>Balance Due</td>
-              <td>${money.format(totals.balance)}</td>
-            </tr>
+            `).join("")}
           </tbody>
         </table>
+
+        <div class="est-totals-block">
+          <div class="est-totals-inner">
+            <div class="est-total-row">
+              <span>Subtotal</span><span>${money.format(totals.subtotal)}</span>
+            </div>
+            <div class="est-total-row">
+              <span>Tax (${number(estimate.taxRate)}%)</span><span>${money.format(totals.tax)}</span>
+            </div>
+            <div class="est-total-row">
+              <span>Deposit</span><span>&minus;${money.format(number(estimate.deposit))}</span>
+            </div>
+            <div class="est-total-row est-total-grand">
+              <span>Total</span><span>${money.format(totals.total)}</span>
+            </div>
+            <div class="est-total-row est-total-balance">
+              <span>Balance due on completion</span><span>${money.format(totals.balance)}</span>
+            </div>
+          </div>
+        </div>
+
+        ${(estimate.notes || company.defaultTerms) ? `
+        <div class="est-notes-block">
+          <p class="est-info-label">Notes &amp; Terms</p>
+          <p class="est-notes-text">${nl2br(estimate.notes || company.defaultTerms)}</p>
+        </div>
+        ` : ""}
+
+        <div class="est-sig-grid">
+          <div class="est-sig-line">Customer signature</div>
+          <div class="est-sig-line">Date</div>
+        </div>
       </div>
-    </section>
 
-    <section class="doc-section">
-      <h3>Notes and Terms</h3>
-      <p>${nl2br(estimate.notes || company.defaultTerms)}</p>
-    </section>
-
-    <div class="signature-grid">
-      <div class="signature-line">Customer Signature</div>
-      <div class="signature-line">Date</div>
+      <div class="est-footer">
+        <span>${escapeHtml(company.name)}${company.website ? ` &middot; ${escapeHtml(company.website)}` : ""}</span>
+        <span>${escapeHtml(company.license || "")}</span>
+      </div>
     </div>
   `;
 }
@@ -4892,23 +4895,25 @@ function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) {
   const tableWidth = right - left;
   if (options.continued) {
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(17, 17, 17);
-    doc.text("ESTIMATE DETAIL CONTINUED", left, cursor.y);
-    cursor.y += 14;
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text("ESTIMATE DETAIL (CONTINUED)", left, cursor.y);
+    cursor.y += 12;
   }
-
-  doc.setFillColor(17, 17, 17);
-  doc.rect(left, cursor.y, tableWidth, 24, "F");
-  doc.setTextColor(255, 255, 255);
+  // Bottom border only (clean minimal header)
+  doc.setDrawColor(12, 23, 48);
+  doc.setLineWidth(1.5);
+  doc.line(left, cursor.y + 20, right, cursor.y + 20);
+  doc.setLineWidth(0.5);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 16);
-  doc.text("QTY", 350, cursor.y + 16, { align: "right" });
-  doc.text("UNIT", 380, cursor.y + 16);
-  doc.text("RATE", 466, cursor.y + 16, { align: "right" });
-  doc.text("AMOUNT", right - 8, cursor.y + 16, { align: "right" });
-  cursor.y += 24;
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 14);
+  doc.text("QTY", 352, cursor.y + 14, { align: "right" });
+  doc.text("UNIT", 362, cursor.y + 14);
+  doc.text("RATE", 468, cursor.y + 14, { align: "right" });
+  doc.text("AMOUNT", right - 8, cursor.y + 14, { align: "right" });
+  cursor.y += 22;
 }
 
 async function downloadEstimatePdf(options = {}) {
@@ -4932,10 +4937,11 @@ async function downloadEstimatePdf(options = {}) {
   const officeAddress = companyOfficeAddress();
   const totals = totalsFor(estimate);
   const doc = new JsPdf({ unit: "pt", format: "letter" });
-  const cursor = { y: PDF_TOP_MARGIN };
+  const cursor = { y: 0 };
   const left = 48;
   const right = PDF_PAGE_WIDTH - 48;
   const tableWidth = right - left;
+  const midX = left + tableWidth / 2 + 12;
 
   doc.setProperties({
     title: `${estimate.estimateNumber} - ${estimate.projectTitle || "Estimate"}`,
@@ -4943,172 +4949,274 @@ async function downloadEstimatePdf(options = {}) {
     author: company.name,
   });
 
-  pdfDrawPageTopRule(doc);
-  let companyTextX = left;
+  // ── Dark header band ──────────────────────────────────────
+  doc.setFillColor(12, 23, 48);
+  doc.rect(0, 0, PDF_PAGE_WIDTH, 90, "F");
+
+  // Logo or initial mark
+  let brandTextX = left;
   if (company.logoDataUrl) {
     try {
-      doc.addImage(company.logoDataUrl, pdfImageFormat(company.logoDataUrl), left, 30, 54, 54);
-      companyTextX = left + 66;
-    } catch {
-      companyTextX = left;
-    }
+      doc.addImage(company.logoDataUrl, pdfImageFormat(company.logoDataUrl), left, 18, 48, 38);
+      brandTextX = left + 60;
+    } catch { brandTextX = left; }
+  } else {
+    doc.setFillColor(15, 95, 232);
+    doc.roundedRect(left, 20, 36, 36, 4, 4, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor(255, 255, 255);
+    doc.text((company.name || "R").slice(0, 1).toUpperCase(), left + 18, 44, { align: "center" });
+    brandTextX = left + 48;
   }
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
-  doc.setTextColor(17, 17, 17);
-  doc.text(company.name || "Roofline CRM", companyTextX, cursor.y);
-  doc.setFontSize(30);
-  doc.text("ESTIMATE", 390, cursor.y);
 
-  cursor.y += 16;
+  // Company name
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.setTextColor(255, 255, 255);
+  doc.text(company.name || "Company", brandTextX, 34);
+
+  // Company sub-info
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(148, 163, 184);
+  const companySubLines = [
+    officeAddress ? officeAddress.split("\n")[0] : "",
+    [company.phone, company.email].filter(Boolean).join("  ·  "),
+    company.license || "",
+  ].filter(Boolean);
+  companySubLines.forEach((line, i) => {
+    doc.text(line, brandTextX, 46 + i * 10);
+  });
+
+  // ESTIMATE label (right side)
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(26);
+  doc.setTextColor(255, 255, 255);
+  doc.text("ESTIMATE", right, 34, { align: "right" });
+
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.setTextColor(93, 99, 111);
-  pdfTextBlock(doc, `${officeAddress || ""}\n${company.phone || ""}  ${company.email || ""}`, companyTextX, cursor, 250, {
-    lineHeight: 10,
-    after: 0,
-  });
-  doc.text(`Estimate #: ${estimate.estimateNumber}`, 390, 72);
-  doc.text(`Issued: ${formatDate(estimate.issueDate)}`, 390, 84);
-  doc.text(`Valid Through: ${formatDate(estimate.validUntil)}`, 390, 96);
-  doc.text(`Status: ${estimate.status}`, 390, 108);
+  doc.setTextColor(148, 163, 184);
+  doc.text(estimate.estimateNumber || "", right, 48, { align: "right" });
+  doc.text(`Issued: ${formatDate(estimate.issueDate)}`, right, 59, { align: "right" });
+  doc.text(`Valid through: ${formatDate(estimate.validUntil)}`, right, 70, { align: "right" });
 
-  cursor.y = 140;
-  doc.setDrawColor(209, 213, 219);
-  doc.line(left, cursor.y, right, cursor.y);
-  cursor.y += 24;
+  // Status pill
+  const statusPillColors = {
+    Draft: [51, 65, 85], Sent: [29, 158, 117], Approved: [31, 157, 85],
+    Rejected: [184, 67, 61], Invoiced: [15, 95, 232],
+  };
+  const pillRgb = statusPillColors[estimate.status] || statusPillColors.Draft;
+  doc.setFillColor(...pillRgb);
+  const statusText = estimate.status || "Draft";
+  doc.setFontSize(8);
+  const pillW = doc.getTextWidth(statusText) + 14;
+  doc.roundedRect(right - pillW, 76, pillW, 12, 3, 3, "F");
+  doc.setTextColor(220, 240, 255);
+  doc.text(statusText, right - pillW / 2, 84.5, { align: "center" });
+
+  // Accent bar
+  doc.setFillColor(15, 95, 232);
+  doc.rect(0, 90, PDF_PAGE_WIDTH * 0.55, 3, "F");
+  doc.setFillColor(15, 159, 152);
+  doc.rect(PDF_PAGE_WIDTH * 0.55, 90, PDF_PAGE_WIDTH * 0.45, 3, "F");
+
+  cursor.y = 108;
+
+  // ── Customer & Job info boxes ─────────────────────────────
+  const boxTop = cursor.y;
+  const boxH = 88;
+  const col2X = midX;
+
+  doc.setFillColor(246, 250, 255);
+  doc.setDrawColor(214, 227, 243);
+  doc.roundedRect(left, boxTop, tableWidth / 2 - 8, boxH, 3, 3, "FD");
+  doc.roundedRect(col2X, boxTop, tableWidth / 2 - 8, boxH, 3, 3, "FD");
+
+  // Customer label
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("CUSTOMER", left + 10, boxTop + 14);
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(17, 17, 17);
-  doc.text("CUSTOMER INFORMATION", left, cursor.y);
-  doc.text("JOB INFORMATION", 320, cursor.y);
-  cursor.y += 16;
-
-  doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
-  doc.setTextColor(31, 41, 55);
-  const customerStart = cursor.y;
-  pdfTextBlock(
-    doc,
-    `${contact.name || ""}\n${contact.address || ""}\n${contact.phone || ""}\n${contact.email || ""}`,
-    left,
-    cursor,
-    230,
-    { lineHeight: 12 },
-  );
-  const customerEnd = cursor.y;
-  cursor.y = customerStart;
-  pdfTextBlock(
-    doc,
-    `${estimate.projectTitle || "Project estimate"}\n${
-      (job?.address || contact.address || "").split("\n")[0] || "Project address"
-    }\n\nSales Representative\n${rep.name || "Unassigned"}\n${rep.email || ""}\n${rep.phone || ""}\n${
-      rep.officeAddress || ""
-    }`,
-    320,
-    cursor,
-    230,
-    { lineHeight: 12 },
-  );
-  cursor.y = Math.max(cursor.y, customerEnd) + 18;
+  doc.setTextColor(12, 23, 48);
+  doc.text(contact.name || "No customer", left + 10, boxTop + 27);
 
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(17, 17, 17);
-  doc.text("PROJECT SUMMARY", left, cursor.y);
-  cursor.y += 14;
   doc.setFont("helvetica", "normal");
-  doc.setTextColor(31, 41, 55);
-  pdfTextBlock(doc, estimate.scopeSummary || "Scope summary will appear here.", left, cursor, tableWidth, {
-    lineHeight: 12,
-    after: 12,
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  const customerLines = [
+    (contact.address || "").split("\n")[0],
+    contact.phone || "",
+    contact.email || "",
+  ].filter(Boolean);
+  customerLines.forEach((line, i) => {
+    doc.text(line, left + 10, boxTop + 39 + i * 11);
   });
 
-  pdfAddPageIfNeeded(doc, cursor, 48);
+  // Job / rep label
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(17, 17, 17);
-  doc.text("ESTIMATE DETAIL", left, cursor.y);
-  cursor.y += 14;
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("PROJECT & REPRESENTATIVE", col2X + 10, boxTop + 14);
 
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(12, 23, 48);
+  doc.text(estimate.projectTitle || "Project estimate", col2X + 10, boxTop + 27);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  const jobLines = [
+    (job?.address || contact.address || "").split("\n")[0],
+    rep.name ? `Rep: ${rep.name}` : "",
+    rep.email || "",
+    rep.phone || "",
+  ].filter(Boolean);
+  jobLines.forEach((line, i) => {
+    doc.text(line, col2X + 10, boxTop + 39 + i * 11);
+  });
+
+  cursor.y = boxTop + boxH + 16;
+
+  // ── Scope summary ─────────────────────────────────────────
+  if (estimate.scopeSummary) {
+    pdfAddPageIfNeeded(doc, cursor, 48);
+    doc.setFillColor(232, 242, 255);
+    doc.setDrawColor(15, 95, 232);
+    const scopeLines = doc.splitTextToSize(estimate.scopeSummary, tableWidth - 28);
+    const scopeH = scopeLines.length * 11 + 20;
+    doc.rect(left, cursor.y, 3, scopeH, "F");
+    doc.setFillColor(232, 242, 255);
+    doc.rect(left + 3, cursor.y, tableWidth - 3, scopeH, "F");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text("PROJECT SCOPE", left + 12, cursor.y + 12);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(12, 23, 48);
+    doc.text(scopeLines, left + 12, cursor.y + 23);
+    cursor.y += scopeH + 14;
+  }
+
+  // ── Line items table ──────────────────────────────────────
+  pdfAddPageIfNeeded(doc, cursor, 48);
   pdfDrawEstimateTableHeader(doc, cursor, left, right);
 
   estimate.items.forEach((item) => {
-    const titleLines = doc.splitTextToSize(item.title || "Line item", 245);
-    const descriptionLines = item.description ? doc.splitTextToSize(item.description, 245) : [];
-    const rowHeight = Math.max(34, 12 * (titleLines.length + descriptionLines.length) + 12);
-    const addedPage = pdfAddPageIfNeeded(doc, cursor, rowHeight + 52);
-    if (addedPage) {
-      pdfDrawEstimateTableHeader(doc, cursor, left, right, { continued: true });
-    }
+    const titleLines = doc.splitTextToSize(item.title || "Line item", 235);
+    const descLines = item.description ? doc.splitTextToSize(item.description, 235) : [];
+    const textLines = titleLines.length + descLines.length;
+    const rowH = Math.max(32, textLines * 11 + 16);
 
-    doc.setDrawColor(209, 213, 219);
-    doc.rect(left, cursor.y, tableWidth, rowHeight);
+    const addedPage = pdfAddPageIfNeeded(doc, cursor, rowH + 52);
+    if (addedPage) pdfDrawEstimateTableHeader(doc, cursor, left, right, { continued: true });
+
+    doc.setDrawColor(214, 227, 243);
+    doc.setFillColor(255, 255, 255);
+    doc.rect(left, cursor.y, tableWidth, rowH, "FD");
+
+    // Subtle zebra on alternating rows handled via fill above
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
-    doc.setTextColor(31, 41, 55);
-    doc.text(titleLines, left + 8, cursor.y + 14);
-    if (descriptionLines.length) {
+    doc.setTextColor(12, 23, 48);
+    doc.text(titleLines, left + 8, cursor.y + 13);
+
+    if (descLines.length) {
       doc.setFont("helvetica", "normal");
-      doc.setTextColor(93, 99, 111);
-      doc.text(descriptionLines, left + 8, cursor.y + 14 + titleLines.length * 11);
+      doc.setFontSize(8.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(descLines, left + 8, cursor.y + 13 + titleLines.length * 11);
     }
-    doc.setTextColor(31, 41, 55);
-    doc.text(number(item.quantity).toLocaleString("en-US"), 350, cursor.y + 14, { align: "right" });
-    doc.text(item.unit || "ea", 380, cursor.y + 14);
-    doc.text(money.format(number(item.rate)), 466, cursor.y + 14, { align: "right" });
-    doc.text(money.format(number(item.quantity) * number(item.rate)), right - 8, cursor.y + 14, {
-      align: "right",
-    });
-    cursor.y += rowHeight;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(number(item.quantity).toLocaleString("en-US"), 352, cursor.y + 13, { align: "right" });
+    doc.text(item.unit || "ea", 362, cursor.y + 13);
+    doc.setTextColor(12, 23, 48);
+    doc.text(money.format(number(item.rate)), 468, cursor.y + 13, { align: "right" });
+    doc.setFont("helvetica", "bold");
+    doc.text(money.format(number(item.quantity) * number(item.rate)), right - 8, cursor.y + 13, { align: "right" });
+    cursor.y += rowH;
   });
 
-  cursor.y += 18;
-  pdfAddPageIfNeeded(doc, cursor, 120);
-  const totalX = 360;
-  const totalLabelX = totalX;
-  const totalValueX = right;
+  // ── Totals ────────────────────────────────────────────────
+  cursor.y += 16;
+  pdfAddPageIfNeeded(doc, cursor, 110);
+  const tlX = 360;
+  const tvX = right;
+
   const totalRows = [
-    ["Subtotal", money.format(totals.subtotal)],
-    [`Tax (${number(estimate.taxRate)}%)`, money.format(totals.tax)],
-    ["Deposit", money.format(number(estimate.deposit))],
-    ["Total", money.format(totals.total)],
-    ["Balance Due", money.format(totals.balance)],
+    ["Subtotal", money.format(totals.subtotal), false],
+    [`Tax (${number(estimate.taxRate)}%)`, money.format(totals.tax), false],
+    ["Deposit", `\u2212${money.format(number(estimate.deposit))}`, false],
+    ["Total", money.format(totals.total), true],
+    ["Balance due on completion", money.format(totals.balance), false],
   ];
-  totalRows.forEach(([label, value], index) => {
-    const isTotal = index === 3;
-    if (isTotal) {
-      doc.setDrawColor(17, 17, 17);
-      doc.line(totalLabelX, cursor.y - 4, totalValueX, cursor.y - 4);
+
+  totalRows.forEach(([label, value, isGrand], i) => {
+    if (isGrand) {
+      doc.setDrawColor(12, 23, 48);
+      doc.setLineWidth(1.5);
+      doc.line(tlX, cursor.y - 4, tvX, cursor.y - 4);
+      doc.setLineWidth(0.5);
     }
-    doc.setFont("helvetica", isTotal ? "bold" : "normal");
-    doc.setFontSize(isTotal ? 12 : 10);
-    doc.setTextColor(isTotal ? 17 : 31, isTotal ? 17 : 41, isTotal ? 17 : 55);
-    doc.text(label, totalLabelX, cursor.y);
-    doc.text(value, totalValueX, cursor.y, { align: "right" });
-    cursor.y += isTotal ? 18 : 15;
+    doc.setFont("helvetica", isGrand ? "bold" : "normal");
+    doc.setFontSize(isGrand ? 12 : 9);
+    doc.setTextColor(isGrand ? 12 : 100, isGrand ? 23 : 116, isGrand ? 48 : 139);
+    doc.text(label, tlX, cursor.y);
+    doc.setTextColor(isGrand ? 12 : 12, isGrand ? 23 : 23, isGrand ? 48 : 48);
+    doc.text(value, tvX, cursor.y, { align: "right" });
+    cursor.y += isGrand ? 20 : 14;
   });
 
-  cursor.y += 12;
-  pdfAddPageIfNeeded(doc, cursor, 80);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(17, 17, 17);
-  doc.text("NOTES AND TERMS", left, cursor.y);
-  cursor.y += 14;
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(31, 41, 55);
-  pdfTextBlock(doc, estimate.notes || company.defaultTerms, left, cursor, tableWidth, { lineHeight: 11, after: 20 });
+  // ── Notes & Terms ─────────────────────────────────────────
+  const termsText = estimate.notes || company.defaultTerms || "";
+  if (termsText) {
+    cursor.y += 10;
+    pdfAddPageIfNeeded(doc, cursor, 72);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text("NOTES & TERMS", left, cursor.y);
+    cursor.y += 11;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(31, 41, 55);
+    pdfTextBlock(doc, termsText, left, cursor, tableWidth, { lineHeight: 10, after: 18 });
+  }
 
-  pdfAddPageIfNeeded(doc, cursor, 70);
+  // ── Signature lines ───────────────────────────────────────
+  pdfAddPageIfNeeded(doc, cursor, 60);
+  cursor.y += 10;
   doc.setDrawColor(31, 41, 55);
-  doc.line(left, cursor.y + 36, 260, cursor.y + 36);
-  doc.line(330, cursor.y + 36, right, cursor.y + 36);
-  doc.setFontSize(9);
-  doc.setTextColor(93, 99, 111);
-  doc.text("Customer Signature", left, cursor.y + 50);
-  doc.text("Date", 330, cursor.y + 50);
+  doc.setLineWidth(0.75);
+  doc.line(left, cursor.y + 32, left + 200, cursor.y + 32);
+  doc.line(left + 240, cursor.y + 32, left + 380, cursor.y + 32);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text("Customer signature", left, cursor.y + 44);
+  doc.text("Date", left + 240, cursor.y + 44);
+
+  // ── Footer bar ────────────────────────────────────────────
+  doc.setFillColor(246, 250, 255);
+  doc.setDrawColor(214, 227, 243);
+  doc.rect(0, PDF_PAGE_HEIGHT - 24, PDF_PAGE_WIDTH, 24, "FD");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(100, 116, 139);
+  const footerLeft = [company.name, company.website].filter(Boolean).join("  ·  ");
+  const footerRight = company.license || "";
+  doc.text(footerLeft, left, PDF_PAGE_HEIGHT - 9);
+  if (footerRight) doc.text(footerRight, right, PDF_PAGE_HEIGHT - 9, { align: "right" });
 
   const savedDocument = saveEstimatePdfDocument(estimate, contact, doc);
   saveState();
