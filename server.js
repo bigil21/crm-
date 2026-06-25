@@ -300,7 +300,21 @@ const server = http.createServer((req, res) => {
       send(res, 404, "Not found");
       return;
     }
-    send(res, 200, content, types[path.extname(filePath)] || "application/octet-stream");
+    const ext = path.extname(filePath);
+    const mimeType = types[ext] || "application/octet-stream";
+    // Never cache HTML — always serve fresh so version-bumped assets load immediately
+    if (ext === ".html" || ext === "") {
+      res.writeHead(200, {
+        "Content-Type": mimeType,
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "Surrogate-Control": "no-store",
+      });
+      res.end(content);
+    } else {
+      send(res, 200, content, mimeType);
+    }
   });
 });
 
