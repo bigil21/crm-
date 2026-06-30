@@ -294,23 +294,40 @@ async function handleSquareCreateInvoice(req, res) {
         return;
       }
 
-      // 4. Create the invoice referencing the order
+      // 4. Build payment requests — deposit first if provided, then balance
+      const scheduledDate = new Date();
+      scheduledDate.setDate(scheduledDate.getDate() + 1); // tomorrow at earliest
+      const scheduledStr = scheduledDate.toISOString().slice(0, 10);
+
+      const dueStr = dueDate && new Date(dueDate) > scheduledDate
+        ? dueDate
+        : new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+
+      const paymentRequests = [];
+      if (deposit > 0) {
+        paymentRequests.push({
+          request_type: "DEPOSIT",
+          due_date: scheduledStr,
+          fixed_amount_requested_money: {
+            amount: Math.round(Number(deposit) * 100),
+            currency: "USD",
+          },
+        });
+      }
+      paymentRequests.push({
+        request_type: "BALANCE",
+        due_date: dueStr,
+      });
+
+      // 5. Create the invoice referencing the order
       const invoiceBody = {
         idempotency_key: idempotencyKey,
         invoice: {
           location_id: locationId,
           order_id: orderId,
           ...(customerId ? { primary_recipient: { customer_id: customerId } } : {}),
-          payment_requests: [{
-            request_type: "BALANCE",
-            due_date: dueDate || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
-            ...(deposit > 0 ? {
-              fixed_amount_requested_money: {
-                amount: Math.round(Number(deposit) * 100),
-                currency: "USD",
-              },
-            } : {}),
-          }],
+          payment_requests: paymentRequests,
+          delivery_method: customerId ? "EMAIL" : "SHARE_MANUALLY",
           accepted_payment_methods: {
             card: true,
             square_gift_card: false,
