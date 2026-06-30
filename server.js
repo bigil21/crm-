@@ -311,6 +311,12 @@ async function handleSquareCreateInvoice(req, res) {
               },
             } : {}),
           }],
+          accepted_payment_methods: {
+            card: true,
+            square_gift_card: false,
+            bank_account: true,
+            buy_now_pay_later: false,
+          },
           title: `${estimateNumber} — ${contactName}`,
           description: body.projectTitle || "",
         },
