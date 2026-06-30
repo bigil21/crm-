@@ -183,6 +183,198 @@ function responseText(data) {
   return chunks.join("").trim();
 }
 
+// ── Square integration ────────────────────────────────────────────────────────
+
+const SQUARE_BASE = "https://connect.squareup.com/v2";
+const SQUARE_VERSION = "2024-01-18";
+
+function squareToken() {
+  return process.env.SQUARE_ACCESS_TOKEN || "";
+}
+
+function squareWebhookKey() {
+  return process.env.SQUARE_WEBHOOK_SIGNATURE_KEY || "";
+}
+
+async function squareRequest(method, path, body) {
+  const https = require("https");
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const url = new URL(SQUARE_BASE + path);
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method,
+      headers: {
+        "Authorization": `Bearer ${squareToken()}`,
+        "Square-Version": SQUARE_VERSION,
+        "Content-Type": "application/json",
+        ...(payload ? { "Content-Length": Buffer.byteLength(payload) } : {}),
+      },
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, body: data }); }
+      });
+    });
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function handleSquareCreateInvoice(req, res) {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", async () => {
+    try {
+      if (!squareToken()) {
+        send(res, 503, JSON.stringify({ error: "SQUARE_ACCESS_TOKEN not configured" }), "application/json");
+        return;
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const { estimateId, contactName, contactEmail, lineItems, total, taxRate, deposit, dueDate, estimateNumber } = body;
+
+      // 1. Get or create customer in Square
+      const searchRes = await squareRequest("POST", "/customers/search", {
+        query: { filter: { email_address: { exact: contactEmail } } },
+      });
+      let customerId = searchRes.body?.customers?.[0]?.id;
+      if (!customerId && contactEmail) {
+        const createRes = await squareRequest("POST", "/customers", {
+          given_name: contactName?.split(" ")[0] || contactName,
+          family_name: contactName?.split(" ").slice(1).join(" ") || "",
+          email_address: contactEmail,
+          reference_id: estimateId,
+        });
+        customerId = createRes.body?.customer?.id;
+      }
+
+      // 2. Get locations to pick primary
+      const locRes = await squareRequest("GET", "/locations", null);
+      const locationId = locRes.body?.locations?.[0]?.id;
+      if (!locationId) {
+        send(res, 503, JSON.stringify({ error: "No Square location found" }), "application/json");
+        return;
+      }
+
+      // 3. Create the invoice
+      const idempotencyKey = `crm-${estimateId}-${Date.now()}`;
+      const squareLineItems = lineItems.map((item) => ({
+        name: item.title || "Line item",
+        quantity: String(Number(item.quantity) || 1),
+        base_price_money: {
+          amount: Math.round((Number(item.rate) || 0) * 100),
+          currency: "USD",
+        },
+        note: item.description || "",
+      }));
+
+      const invoiceBody = {
+        idempotency_key: idempotencyKey,
+        invoice: {
+          location_id: locationId,
+          ...(customerId ? { primary_recipient: { customer_id: customerId } } : {}),
+          payment_requests: [{
+            request_type: "BALANCE",
+            due_date: dueDate || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+            ...(deposit > 0 ? {
+              fixed_amount_requested_money: {
+                amount: Math.round(Number(deposit) * 100),
+                currency: "USD",
+              },
+            } : {}),
+          }],
+          title: `${estimateNumber} — ${contactName}`,
+          description: body.projectTitle || "",
+          line_items: squareLineItems,
+          ...(taxRate > 0 ? {
+            custom_fields: [{ label: "Tax Rate", value: `${taxRate}%` }],
+          } : {}),
+        },
+      };
+
+      const invRes = await squareRequest("POST", "/invoices", invoiceBody);
+      if (invRes.status !== 200 || !invRes.body?.invoice?.id) {
+        send(res, 500, JSON.stringify({ error: "Square invoice creation failed", detail: invRes.body }), "application/json");
+        return;
+      }
+
+      const squareInvoiceId = invRes.body.invoice.id;
+
+      // 4. Publish invoice so it's sent to customer
+      const pubRes = await squareRequest("POST", `/invoices/${squareInvoiceId}/publish`, {
+        idempotency_key: `${idempotencyKey}-pub`,
+        version: invRes.body.invoice.version,
+      });
+
+      send(res, 200, JSON.stringify({
+        squareInvoiceId,
+        squareInvoiceUrl: pubRes.body?.invoice?.public_url || "",
+        status: pubRes.body?.invoice?.status || "DRAFT",
+      }), "application/json");
+
+    } catch (err) {
+      send(res, 500, JSON.stringify({ error: err.message }), "application/json");
+    }
+  });
+}
+
+async function handleSquareWebhook(req, res) {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", async () => {
+    try {
+      const rawBody = Buffer.concat(chunks).toString();
+      const event = JSON.parse(rawBody);
+
+      // Verify signature if key is configured
+      const sigKey = squareWebhookKey();
+      if (sigKey) {
+        const crypto = require("crypto");
+        const sigHeader = req.headers["x-square-hmacsha256-signature"] || "";
+        const webhookUrl = `https://${req.headers.host}/webhooks/square`;
+        const expected = crypto.createHmac("sha256", sigKey).update(webhookUrl + rawBody).digest("base64");
+        if (sigHeader !== expected) {
+          send(res, 401, "Invalid signature");
+          return;
+        }
+      }
+
+      // Handle payment completion events
+      const type = event.type || "";
+      if (type === "invoice.payment_made" || type === "payment.completed" || type === "invoice.paid") {
+        const invoiceId = event.data?.object?.invoice?.id || event.data?.object?.payment?.invoice_id || "";
+        const status = "PAID";
+        // Write to a simple JSON file so the CRM can poll it
+        const paidFile = path.join(__dirname, "square-payments.json");
+        let existing = {};
+        try { existing = JSON.parse(fs.readFileSync(paidFile, "utf8")); } catch {}
+        existing[invoiceId] = { status, paidAt: new Date().toISOString(), event: type };
+        fs.writeFileSync(paidFile, JSON.stringify(existing));
+      }
+
+      send(res, 200, JSON.stringify({ received: true }), "application/json");
+    } catch (err) {
+      send(res, 500, JSON.stringify({ error: err.message }), "application/json");
+    }
+  });
+}
+
+async function handleSquarePollPayments(req, res) {
+  try {
+    const paidFile = path.join(__dirname, "square-payments.json");
+    let data = {};
+    try { data = JSON.parse(fs.readFileSync(paidFile, "utf8")); } catch {}
+    send(res, 200, JSON.stringify(data), "application/json");
+  } catch (err) {
+    send(res, 500, JSON.stringify({ error: err.message }), "application/json");
+  }
+}
+
 async function handleAssistantRequest(req, res) {
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "method_not_allowed", reply: "Use POST for CRM AI messages." });
@@ -253,6 +445,21 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/api/assistant") {
     handleAssistantRequest(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/square/create-invoice" && req.method === "POST") {
+    handleSquareCreateInvoice(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/square/poll-payments" && req.method === "GET") {
+    handleSquarePollPayments(req, res);
+    return;
+  }
+
+  if (url.pathname === "/webhooks/square" && req.method === "POST") {
+    handleSquareWebhook(req, res);
     return;
   }
 

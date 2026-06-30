@@ -1717,6 +1717,59 @@ button:disabled {
 }
 
 /* Review warning banner */
+/* ── Square invoice styles ───────────────────────────────── */
+
+.invoice-summary-bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.invoice-summary-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.invoice-summary-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.invoice-summary-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.invoice-poll-indicator {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--green);
+  font-weight: 600;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.invoice-paid {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+/* ── Review warning banner ───────────────────────────────── */
 .review-warning {
   display: flex;
   align-items: center;

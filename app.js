@@ -763,6 +763,10 @@ function normalizeEstimate(estimate, contacts = []) {
     salesRepEmail: estimate.salesRepEmail || estimate.repEmail || "",
     salesRepPhone: estimate.salesRepPhone || estimate.repPhone || "",
     items: (estimate.items || []).map(normalizeLineItem),
+    squareInvoiceId: estimate.squareInvoiceId || "",
+    squareInvoiceUrl: estimate.squareInvoiceUrl || "",
+    squareStatus: estimate.squareStatus || "",
+    paidAt: estimate.paidAt || "",
   };
 }
 
@@ -2341,7 +2345,11 @@ function render() {
   renderCompanyDocuments();
   renderCalendar();
   renderTasksView();
-  renderInvoicesView();
+  if (state.view === "invoices") {
+    renderInvoicesView();
+  } else {
+    stopSquarePoll();
+  }
   renderReviewsView();
   renderReportsView();
   renderCompanyForm();
@@ -4305,32 +4313,182 @@ function renderTasksView() {
   hydrateIcons(els.tasksPageList);
 }
 
+function squareStatusPill(estimate) {
+  if (estimate.squareStatus === "PAID" || estimate.paidAt) return `<span class="status-pill pill-won">Paid ✓</span>`;
+  if (estimate.squareStatus === "SENT" || estimate.squareInvoiceId) return `<span class="status-pill pill-sent">Sent to Square</span>`;
+  if (estimate.status === "Approved") return `<span class="status-pill pill-inspection">Ready to Invoice</span>`;
+  return `<span class="status-pill pill-default">${escapeHtml(estimate.status)}</span>`;
+}
+
+async function sendToSquare(estimateId) {
+  const estimate = state.estimates.find((e) => e.id === estimateId);
+  const contact = getEstimateContact(estimate);
+  if (!estimate || !contact) { showToast("Missing estimate or contact"); return; }
+
+  const btn = document.querySelector(`[data-square-send="${estimateId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
+
+  try {
+    const totals = totalsFor(estimate);
+    const res = await fetch("/api/square/create-invoice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        estimateId: estimate.id,
+        estimateNumber: estimate.estimateNumber,
+        projectTitle: estimate.projectTitle,
+        contactName: contact.name,
+        contactEmail: contact.email,
+        lineItems: estimate.items,
+        total: totals.total,
+        taxRate: estimate.taxRate,
+        deposit: estimate.deposit,
+        dueDate: estimate.validUntil || "",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showToast(`Square error: ${data.error || "Unknown error"}`);
+      if (btn) { btn.disabled = false; btn.textContent = "Send to Square"; }
+      return;
+    }
+    estimate.squareInvoiceId = data.squareInvoiceId;
+    estimate.squareInvoiceUrl = data.squareInvoiceUrl;
+    estimate.squareStatus = data.status === "PUBLISHED" ? "SENT" : data.status;
+    saveState();
+    renderInvoicesView();
+    showToast("Invoice sent to Square ✓");
+  } catch (err) {
+    showToast(`Failed: ${err.message}`);
+    if (btn) { btn.disabled = false; btn.textContent = "Send to Square"; }
+  }
+}
+
+async function pollSquarePayments() {
+  try {
+    const res = await fetch("/api/square/poll-payments");
+    if (!res.ok) return;
+    const paid = await res.json();
+    let changed = false;
+    state.estimates.forEach((estimate) => {
+      if (!estimate.squareInvoiceId) return;
+      const record = paid[estimate.squareInvoiceId];
+      if (record && estimate.squareStatus !== "PAID") {
+        estimate.squareStatus = "PAID";
+        estimate.paidAt = record.paidAt;
+        changed = true;
+      }
+    });
+    if (changed) {
+      saveState();
+      renderInvoicesView();
+      showToast("Payment received! Invoice marked as Paid ✓");
+    }
+  } catch {}
+}
+
+// Poll Square every 30 seconds when the invoices view is open
+let squarePollInterval = null;
+function startSquarePoll() {
+  if (squarePollInterval) return;
+  pollSquarePayments();
+  squarePollInterval = setInterval(pollSquarePayments, 30000);
+}
+function stopSquarePoll() {
+  if (squarePollInterval) { clearInterval(squarePollInterval); squarePollInterval = null; }
+}
+
 function renderInvoicesView() {
   if (!els.invoicesList) return;
+  startSquarePoll();
+
   const estimates = [...state.estimates].sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
-  els.invoicesList.innerHTML = estimates.length
-    ? estimates
-        .map((estimate) => {
-          const contact = getEstimateContact(estimate);
-          const total = estimateTotal(estimate);
-          return `
-            <article class="record-card">
-              <span class="status-pill">${escapeHtml(estimate.status)}</span>
-              <strong>${escapeHtml(estimate.estimateNumber)}</strong>
-              <span>${escapeHtml(contact?.name || "Unknown client")} - ${money.format(total)}</span>
-              <p>${escapeHtml(estimate.projectTitle || "Untitled estimate")}</p>
-              <div class="row-actions">
-                <button class="secondary-button" type="button" data-action="select-estimate" data-estimate-id="${estimate.id}">
-                  <span aria-hidden="true" data-icon="file"></span>
-                  Open
-                </button>
+  const totalPaid = estimates.filter((e) => e.squareStatus === "PAID" || e.paidAt).reduce((s, e) => s + totalsFor(e).total, 0);
+  const totalPending = estimates.filter((e) => e.squareInvoiceId && e.squareStatus !== "PAID" && !e.paidAt).reduce((s, e) => s + totalsFor(e).total, 0);
+
+  const summaryBar = `
+    <div class="invoice-summary-bar">
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Paid</span>
+        <span class="invoice-summary-value" style="color:var(--green)">${money.format(totalPaid)}</span>
+      </div>
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Awaiting Payment</span>
+        <span class="invoice-summary-value" style="color:var(--gold)">${money.format(totalPending)}</span>
+      </div>
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Total Invoices</span>
+        <span class="invoice-summary-value">${estimates.length}</span>
+      </div>
+      <span class="invoice-poll-indicator" id="squarePollIndicator" title="Checking Square for payments every 30s">⟳ Live</span>
+    </div>
+  `;
+
+  els.invoicesList.innerHTML = summaryBar + (estimates.length
+    ? estimates.map((estimate) => {
+        const contact = getEstimateContact(estimate);
+        const totals = totalsFor(estimate);
+        const isPaid = estimate.squareStatus === "PAID" || !!estimate.paidAt;
+        const isSent = !!estimate.squareInvoiceId && !isPaid;
+        const canSend = !estimate.squareInvoiceId && (estimate.status === "Approved" || estimate.status === "Sent");
+        const initials = contactInitials(contact?.name || "?");
+        const avatarClass = initialsColor(contact?.name || "");
+
+        return `
+          <article class="record-card ${isPaid ? "invoice-paid" : ""}">
+            <div class="record-card-top">
+              <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <strong>${escapeHtml(estimate.estimateNumber)}</strong>
+                  ${squareStatusPill(estimate)}
+                </div>
+                <span style="font-size:12px;color:var(--muted)">${escapeHtml(contact?.name || "Unknown")} · ${escapeHtml(estimate.projectTitle || "")}</span>
               </div>
-            </article>
-          `;
-        })
-        .join("")
-    : '<div class="empty-state">Invoices will use approved estimates when they are ready for billing</div>';
+              <strong style="font-size:15px;white-space:nowrap">${money.format(totals.total)}</strong>
+            </div>
+            ${isPaid ? `<p style="font-size:12px;color:var(--green);margin:4px 0 0">Paid ${estimate.paidAt ? formatDate(estimate.paidAt) : ""} via Square</p>` : ""}
+            ${isSent && estimate.squareInvoiceUrl ? `<p style="font-size:12px;color:var(--muted);margin:4px 0 0">Awaiting payment · <a href="${escapeHtml(estimate.squareInvoiceUrl)}" target="_blank" class="tel-link">View in Square ↗</a></p>` : ""}
+            <div class="row-actions" style="margin-top:8px">
+              ${canSend ? `
+                <button class="primary-button" type="button" data-square-send="${estimate.id}">
+                  <span aria-hidden="true" data-icon="send"></span>
+                  Send to Square
+                </button>
+              ` : ""}
+              ${isSent ? `
+                <button class="secondary-button" type="button" data-square-mark-paid="${estimate.id}">
+                  <span aria-hidden="true" data-icon="check"></span>
+                  Mark Paid Manually
+                </button>
+              ` : ""}
+              <button class="secondary-button" type="button" data-action="select-estimate" data-estimate-id="${estimate.id}">
+                <span aria-hidden="true" data-icon="file"></span>
+                Open Estimate
+              </button>
+            </div>
+          </article>
+        `;
+      }).join("")
+    : '<div class="empty-state">Approved estimates will appear here ready to send as Square invoices</div>');
+
   hydrateIcons(els.invoicesList);
+
+  // Wire up send/mark-paid buttons
+  els.invoicesList.querySelectorAll("[data-square-send]").forEach((btn) => {
+    btn.addEventListener("click", () => sendToSquare(btn.dataset.squareSend));
+  });
+  els.invoicesList.querySelectorAll("[data-square-mark-paid]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const estimate = state.estimates.find((e) => e.id === btn.dataset.squareMarkPaid);
+      if (!estimate) return;
+      estimate.squareStatus = "PAID";
+      estimate.paidAt = new Date().toISOString();
+      saveState();
+      renderInvoicesView();
+      showToast("Invoice marked as paid");
+    });
+  });
 }
 
 function reviewRequestEmail(contact) {
