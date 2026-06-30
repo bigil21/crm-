@@ -7,7 +7,7 @@
     <title>Roofline CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=23" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=32" />
+    <link rel="stylesheet" href="styles.css?v=33" />
   </head>
   <body>
     <div class="app-shell">
@@ -880,6 +880,23 @@
                   <h2>Rep reminders</h2>
                 </div>
               </div>
+              <div class="cal-month-nav" id="calMonthNav">
+                <button class="mini-button" type="button" id="calPrevMonth" aria-label="Previous month">
+                  <span aria-hidden="true" data-icon="chevron-left"></span>
+                </button>
+                <h3 class="cal-month-title" id="calMonthTitle"></h3>
+                <button class="mini-button" type="button" id="calNextMonth" aria-label="Next month">
+                  <span aria-hidden="true" data-icon="chevron-right"></span>
+                </button>
+              </div>
+              <div id="calMonthGrid" class="cal-month-grid"></div>
+              <div class="cal-day-detail hidden" id="calDayDetail">
+                <p class="cal-day-detail-title" id="calDayDetailTitle"></p>
+                <div id="calDayDetailTasks"></div>
+              </div>
+              <div class="view-toolbar" style="margin-top:16px">
+                <p class="eyebrow">All tasks</p>
+              </div>
               <div id="calendarTasksList" class="task-list"></div>
             </section>
           </div>
@@ -1101,6 +1118,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=24" defer></script>
-    <script src="app.js?v=37" defer></script>
+    <script src="app.js?v=38" defer></script>
   </body>
 </html>

@@ -535,6 +535,13 @@ const els = {
   salesRepOptions: document.querySelector("#salesRepOptions"),
   calendarTaskContact: document.querySelector("#calendarTaskContact"),
   calendarTasksList: document.querySelector("#calendarTasksList"),
+  calMonthGrid: document.querySelector("#calMonthGrid"),
+  calMonthTitle: document.querySelector("#calMonthTitle"),
+  calPrevMonth: document.querySelector("#calPrevMonth"),
+  calNextMonth: document.querySelector("#calNextMonth"),
+  calDayDetail: document.querySelector("#calDayDetail"),
+  calDayDetailTitle: document.querySelector("#calDayDetailTitle"),
+  calDayDetailTasks: document.querySelector("#calDayDetailTasks"),
   companyForm: document.querySelector("#companyForm"),
   companyLogoInput: document.querySelector("#companyLogoInput"),
   uploadCompanyLogoButton: document.querySelector("#uploadCompanyLogoButton"),
@@ -4079,9 +4086,83 @@ function removeCompanyLogo() {
   showToast("Company logo removed");
 }
 
+let calendarMonthOffset = 0;
+
+function renderCalendarMonth() {
+  if (!els.calMonthGrid) return;
+  const now = new Date();
+  const viewDate = new Date(now.getFullYear(), now.getMonth() + calendarMonthOffset, 1);
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const monthName = viewDate.toLocaleString("en-US", { month: "long", year: "numeric" });
+  els.calMonthTitle.textContent = monthName;
+
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayStr = now.toISOString().slice(0, 10);
+
+  // Group tasks by date string YYYY-MM-DD
+  const tasksByDay = {};
+  state.calendarTasks.forEach((task) => {
+    const d = new Date(task.dueAt);
+    if (d.getFullYear() === year && d.getMonth() === month) {
+      const key = d.toISOString().slice(0, 10);
+      if (!tasksByDay[key]) tasksByDay[key] = [];
+      tasksByDay[key].push(task);
+    }
+  });
+
+  const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  let html = `<div class="cal-day-labels">${dayLabels.map((d) => `<div class="cal-day-label">${d}</div>`).join("")}</div><div class="cal-days">`;
+
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) {
+    html += `<div class="cal-day cal-day-empty"></div>`;
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const tasks = tasksByDay[dateStr] || [];
+    const isToday = dateStr === todayStr;
+    const hasCompleted = tasks.some((t) => t.completed);
+    const hasPending = tasks.some((t) => !t.completed);
+
+    html += `
+      <div class="cal-day${isToday ? " cal-today" : ""}${tasks.length ? " cal-has-tasks" : ""}" data-date="${dateStr}">
+        <span class="cal-day-num">${day}</span>
+        ${tasks.length ? `
+          <div class="cal-task-dots">
+            ${hasPending ? `<span class="cal-dot cal-dot-pending"></span>` : ""}
+            ${hasCompleted ? `<span class="cal-dot cal-dot-done"></span>` : ""}
+          </div>
+          <div class="cal-task-count">${tasks.length} task${tasks.length > 1 ? "s" : ""}</div>
+        ` : ""}
+      </div>`;
+  }
+
+  html += `</div>`;
+  els.calMonthGrid.innerHTML = html;
+
+  // Click a day to see its tasks
+  els.calMonthGrid.querySelectorAll(".cal-day[data-date]").forEach((cell) => {
+    cell.addEventListener("click", () => {
+      const dateStr = cell.dataset.date;
+      const tasks = tasksByDay[dateStr] || [];
+      if (!tasks.length) { els.calDayDetail.classList.add("hidden"); return; }
+      const label = new Date(dateStr + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+      els.calDayDetailTitle.textContent = label;
+      els.calDayDetailTasks.innerHTML = tasks.map((t) => renderTaskCard(t, { compact: true })).join("");
+      hydrateIcons(els.calDayDetailTasks);
+      els.calDayDetail.classList.remove("hidden");
+      els.calDayDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  });
+}
+
 function renderCalendar() {
   if (!els.calendarTasksList) return;
   renderCalendarFormOptions();
+  renderCalendarMonth();
   const tasks = [...state.calendarTasks].sort((a, b) => taskDueTime(a) - taskDueTime(b));
   els.calendarTasksList.innerHTML = tasks.length
     ? tasks.map((task) => renderTaskCard(task)).join("")
@@ -5774,6 +5855,15 @@ function bindEvents() {
   });
   els.removeCompanyLogoButton.addEventListener("click", removeCompanyLogo);
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
+
+  els.calPrevMonth?.addEventListener("click", () => {
+    calendarMonthOffset--;
+    renderCalendarMonth();
+  });
+  els.calNextMonth?.addEventListener("click", () => {
+    calendarMonthOffset++;
+    renderCalendarMonth();
+  });
   els.closeContactDialog.addEventListener("click", () => els.contactDialog.close());
   els.contactForm.addEventListener("submit", saveContactFromForm);
   els.deleteContactButton.addEventListener("click", () => {

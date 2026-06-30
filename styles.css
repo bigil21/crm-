@@ -1127,6 +1127,141 @@ button:disabled {
 
 .document-list,
 .conversation-list,
+/* ── Monthly calendar grid ───────────────────────────────── */
+
+.cal-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 12px;
+}
+
+.cal-month-title {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.cal-day-labels {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 2px;
+}
+
+.cal-day-label {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
+.cal-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.cal-day {
+  min-height: 64px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: default;
+  transition: background 0.1s, border-color 0.1s;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cal-day.cal-has-tasks {
+  cursor: pointer;
+  background: var(--surface-soft);
+  border-color: var(--line-strong);
+}
+
+.cal-day.cal-has-tasks:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.cal-day.cal-today {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cal-day.cal-today .cal-day-num {
+  background: var(--accent);
+  color: #ffffff;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cal-day-empty {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+}
+
+.cal-day-num {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.cal-task-dots {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.cal-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.cal-dot-pending { background: var(--accent); }
+.cal-dot-done    { background: var(--green); }
+
+.cal-task-count {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.cal-day-detail {
+  margin: 12px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--surface-soft);
+}
+
+.cal-day-detail.hidden { display: none; }
+
+.cal-day-detail-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+
+/* ── Task list ───────────────────────────────────────────── */
+
 .task-list,
 .job-list {
   display: grid;
