@@ -263,20 +263,43 @@ async function handleSquareCreateInvoice(req, res) {
 
       // 3. Create the invoice
       const idempotencyKey = `crm-${estimateId}-${Date.now()}`;
-      const squareLineItems = lineItems.map((item) => ({
-        name: item.title || "Line item",
-        quantity: String(Number(item.quantity) || 1),
-        base_price_money: {
-          amount: Math.round((Number(item.rate) || 0) * 100),
-          currency: "USD",
+      // 3. Create an order with the line items first
+      const orderRes = await squareRequest("POST", "/orders", {
+        idempotency_key: `${idempotencyKey}-order`,
+        order: {
+          location_id: locationId,
+          ...(customerId ? { customer_id: customerId } : {}),
+          line_items: lineItems.map((item) => ({
+            name: item.title || "Line item",
+            quantity: String(Math.max(Number(item.quantity) || 1, 1)),
+            base_price_money: {
+              amount: Math.round((Number(item.rate) || 0) * 100),
+              currency: "USD",
+            },
+            note: item.description || "",
+          })),
+          ...(taxRate > 0 ? {
+            taxes: [{
+              name: `Tax (${taxRate}%)`,
+              percentage: String(taxRate),
+              scope: "ORDER",
+            }],
+          } : {}),
         },
-        note: item.description || "",
-      }));
+      });
 
+      const orderId = orderRes.body?.order?.id;
+      if (!orderId) {
+        send(res, 500, JSON.stringify({ error: "Square order creation failed", detail: orderRes.body }), "application/json");
+        return;
+      }
+
+      // 4. Create the invoice referencing the order
       const invoiceBody = {
         idempotency_key: idempotencyKey,
         invoice: {
           location_id: locationId,
+          order_id: orderId,
           ...(customerId ? { primary_recipient: { customer_id: customerId } } : {}),
           payment_requests: [{
             request_type: "BALANCE",
@@ -290,10 +313,6 @@ async function handleSquareCreateInvoice(req, res) {
           }],
           title: `${estimateNumber} — ${contactName}`,
           description: body.projectTitle || "",
-          line_items: squareLineItems,
-          ...(taxRate > 0 ? {
-            custom_fields: [{ label: "Tax Rate", value: `${taxRate}%` }],
-          } : {}),
         },
       };
 
@@ -346,15 +365,19 @@ async function handleSquareWebhook(req, res) {
 
       // Handle payment completion events
       const type = event.type || "";
-      if (type === "invoice.payment_made" || type === "payment.completed" || type === "invoice.paid") {
-        const invoiceId = event.data?.object?.invoice?.id || event.data?.object?.payment?.invoice_id || "";
-        const status = "PAID";
-        // Write to a simple JSON file so the CRM can poll it
-        const paidFile = path.join(__dirname, "square-payments.json");
-        let existing = {};
-        try { existing = JSON.parse(fs.readFileSync(paidFile, "utf8")); } catch {}
-        existing[invoiceId] = { status, paidAt: new Date().toISOString(), event: type };
-        fs.writeFileSync(paidFile, JSON.stringify(existing));
+      const paidEvents = ["invoice.payment_made", "payment.completed", "invoice.paid", "invoice.updated"];
+      if (paidEvents.includes(type)) {
+        const invoice = event.data?.object?.invoice;
+        const invoiceId = invoice?.id || event.data?.object?.payment?.invoice_id || "";
+        const invoiceStatus = invoice?.status || "";
+        // Mark as paid if status is PAID or it's a payment_made event
+        if (invoiceId && (invoiceStatus === "PAID" || type === "invoice.payment_made" || type === "payment.completed")) {
+          const paidFile = path.join(__dirname, "square-payments.json");
+          let existing = {};
+          try { existing = JSON.parse(fs.readFileSync(paidFile, "utf8")); } catch {}
+          existing[invoiceId] = { status: "PAID", paidAt: new Date().toISOString(), event: type };
+          fs.writeFileSync(paidFile, JSON.stringify(existing));
+        }
       }
 
       send(res, 200, JSON.stringify({ received: true }), "application/json");
