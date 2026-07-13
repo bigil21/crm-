@@ -8,7 +8,21 @@
     "production",
     "viewer",
   ];
-  const config = window.ROOFLINE_SUPABASE_CONFIG || {};
+  const fallbackConfig = {
+    supabaseUrl: "https://vtiespnuwtxwiegruzrx.supabase.co",
+    supabaseAnonKey: "sb_publishable_D6_QuivTwcPFoyE0ANiG0g_s2lYPE4_",
+    allowedEmailDomain: "coastalcrestroofing.com",
+    adminEmails: "gil@coastalcrestroofing.com,devon@coastalcrestroofing.com",
+    defaultRole: "viewer",
+    authRequired: true,
+    syncEnabled: true,
+    stateId: "coastal-crest",
+  };
+  const runtimeConfig = window.ROOFLINE_SUPABASE_CONFIG || {};
+  const cleanRuntimeConfig = Object.fromEntries(
+    Object.entries(runtimeConfig).filter(([, value]) => value !== "" && value !== null && value !== undefined),
+  );
+  const config = { ...fallbackConfig, ...cleanRuntimeConfig };
 
   function hasConfig() {
     return Boolean(config.supabaseUrl && config.supabaseAnonKey);
