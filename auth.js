@@ -143,6 +143,208 @@
     return auth;
   }
 
+  function escapeText(value = "") {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function installDashboardSearchEnhancement() {
+    if (window.__rooflineDashboardSearchEnhancement) return;
+    window.__rooflineDashboardSearchEnhancement = true;
+
+    const style = document.createElement("style");
+    style.id = "dashboard-search-enhancement-styles";
+    style.textContent = `
+      .dashboard-search-results {
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 14px;
+      }
+      .dashboard-search-results.hidden {
+        display: none !important;
+      }
+      .dashboard-search-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 12px;
+      }
+      .dashboard-search-card {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid var(--line, #d6e3f3);
+        border-radius: var(--radius, 8px);
+        background: var(--surface-soft, #f6faff);
+        min-width: 0;
+      }
+      .dashboard-search-card header {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+      .dashboard-search-card strong,
+      .dashboard-search-card span,
+      .dashboard-search-card small {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .dashboard-search-card small,
+      .dashboard-search-meta {
+        color: var(--muted, #64748b);
+        font-size: 12px;
+      }
+      .dashboard-search-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+    `;
+    document.head.appendChild(style);
+
+    function normalizeJob(job = {}, contact = {}) {
+      return {
+        id: job.id || "",
+        name: job.name || job.title || `${contact.name || "Client"} Job`,
+        address: job.address || contact.address || "",
+        status: job.status || contact.status || "New",
+        salesRep: job.salesRep || contact.salesRep || "Unassigned",
+        notes: job.notes || "",
+        value: Number(job.value ?? contact.value) || 0,
+      };
+    }
+
+    function contactsFromStorage() {
+      const contacts = [];
+      const seen = new Set();
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index) || "";
+        if (!key.startsWith("roofline-crm-v1")) continue;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+          if (!Array.isArray(parsed.contacts)) continue;
+          parsed.contacts.forEach((contact) => {
+            if (!contact?.id || seen.has(contact.id)) return;
+            seen.add(contact.id);
+            const jobs = Array.isArray(contact.jobs) && contact.jobs.length
+              ? contact.jobs.map((job) => normalizeJob(job, contact))
+              : [normalizeJob({}, contact)];
+            contacts.push({ ...contact, jobs });
+          });
+        } catch {
+          // Ignore unrelated local storage records.
+        }
+      }
+      return contacts;
+    }
+
+    function contactSearchText(contact) {
+      return [
+        contact.name,
+        contact.type,
+        contact.status,
+        contact.source,
+        contact.salesRep,
+        contact.email,
+        contact.phone,
+        contact.address,
+        contact.notes,
+        ...(contact.jobs || []).flatMap((job) => [job.name, job.address, job.status, job.salesRep, job.notes]),
+        ...(contact.documents || []).flatMap((document) => [document.name, document.category, document.source]),
+        ...(contact.updates || []).flatMap((update) => [update.author, update.status, update.message]),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+    }
+
+    function ensurePanel() {
+      const layout = document.querySelector("#dashboardView .dashboard-layout");
+      if (!layout) return null;
+      let panel = document.querySelector("#dashboardSearchResults");
+      if (panel) return panel;
+      panel = document.createElement("section");
+      panel.id = "dashboardSearchResults";
+      panel.className = "surface dashboard-panel dashboard-search-results hidden";
+      layout.prepend(panel);
+      return panel;
+    }
+
+    function renderDashboardSearchResults() {
+      const search = document.querySelector("#globalSearch");
+      const dashboard = document.querySelector("#dashboardView");
+      const panel = ensurePanel();
+      if (!search || !dashboard || !panel) return;
+
+      const query = search.value.trim().toLowerCase();
+      if (!query) {
+        panel.classList.add("hidden");
+        panel.innerHTML = "";
+        return;
+      }
+
+      const contacts = contactsFromStorage();
+      const matches = contacts.filter((contact) => contactSearchText(contact).includes(query)).slice(0, 12);
+      panel.classList.remove("hidden");
+      panel.innerHTML = `
+        <div class="view-toolbar compact">
+          <div>
+            <p class="eyebrow">Search results</p>
+            <h2>${matches.length ? `${matches.length} result${matches.length === 1 ? "" : "s"} for "${escapeText(search.value.trim())}"` : `No results for "${escapeText(search.value.trim())}"`}</h2>
+          </div>
+          <button class="link-button" type="button" data-action="clear-dashboard-search">Clear</button>
+        </div>
+        <div class="dashboard-search-list">
+          ${
+            matches.length
+              ? matches
+                  .map((contact) => {
+                    const job = contact.jobs?.[0] || {};
+                    return `
+                      <article class="dashboard-search-card">
+                        <header>
+                          <strong>${escapeText(contact.name || "Unnamed lead")}</strong>
+                          <span class="status-pill">${escapeText(contact.status || "New")}</span>
+                        </header>
+                        <span class="dashboard-search-meta">${escapeText(contact.type || "Lead")} - ${escapeText(contact.salesRep || "Unassigned")}</span>
+                        <small>${escapeText(contact.phone || "No phone")} ${contact.email ? `- ${escapeText(contact.email)}` : ""}</small>
+                        <small>${escapeText(job.name || "No job name")} - ${escapeText((job.address || contact.address || "No address").split("\n")[0])}</small>
+                        <div class="dashboard-search-actions">
+                          <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${escapeText(contact.id)}">Open Lead</button>
+                          <button class="ghost-button" type="button" data-view="contacts">View Contacts</button>
+                          <button class="ghost-button" type="button" data-view="jobs">View Jobs</button>
+                        </div>
+                      </article>
+                    `;
+                  })
+                  .join("")
+              : '<div class="empty-state">No matching leads, contacts, jobs, or documents were found in this browser cache. Try opening Contacts or syncing again.</div>'
+          }
+        </div>
+      `;
+    }
+
+    document.addEventListener("input", (event) => {
+      if (event.target?.id === "globalSearch") window.setTimeout(renderDashboardSearchResults, 0);
+    });
+
+    document.addEventListener("click", (event) => {
+      const clearButton = event.target.closest?.('[data-action="clear-dashboard-search"]');
+      if (!clearButton) return;
+      const search = document.querySelector("#globalSearch");
+      if (!search) return;
+      search.value = "";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    window.addEventListener("storage", renderDashboardSearchResults);
+    window.setTimeout(renderDashboardSearchResults, 1200);
+  }
+
   window.RooflineAuth = {
     config,
     createClient,
@@ -157,4 +359,10 @@
     roleForUser,
     validRoles,
   };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", installDashboardSearchEnhancement, { once: true });
+  } else {
+    installDashboardSearchEnhancement();
+  }
 })();
