@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Roofline CRM Diagnostics</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #111827;
+        --muted: #64748b;
+        --line: #d9e2ef;
+        --surface: #ffffff;
+        --soft: #f5f7fb;
+        --pass: #15803d;
+        --warn: #b45309;
+        --fail: #b91c1c;
+        --blue: #0f5fe8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Arial, Helvetica, sans-serif;
+        background: var(--soft);
+        color: var(--ink);
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 18px 22px;
+        background: #0b1220;
+        color: #fff;
+      }
+      header h1 { margin: 0; font-size: 20px; }
+      header p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
+      button {
+        border: 0;
+        border-radius: 8px;
+        background: var(--blue);
+        color: #fff;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button.secondary { background: #334155; }
+      main { display: grid; grid-template-columns: 420px minmax(0, 1fr); min-height: calc(100vh - 74px); }
+      .panel { padding: 18px; border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
+      .runner-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+      .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+      .summary div { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--soft); }
+      .summary strong { display: block; font-size: 20px; }
+      .summary span { display: block; color: var(--muted); font-size: 12px; }
+      .result-list { display: grid; gap: 8px; }
+      .result {
+        border: 1px solid var(--line);
+        border-left-width: 5px;
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+      }
+      .result.pass { border-left-color: var(--pass); }
+      .result.warn { border-left-color: var(--warn); }
+      .result.fail { border-left-color: var(--fail); }
+      .result strong { display: block; font-size: 14px; }
+      .result span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+      iframe { width: 100%; height: 100%; min-height: calc(100vh - 74px); border: 0; background: #fff; }
+      pre {
+        max-height: 220px;
+        overflow: auto;
+        padding: 10px;
+        border-radius: 8px;
+        background: #0b1220;
+        color: #e2e8f0;
+        font-size: 12px;
+      }
+      @media (max-width: 900px) {
+        main { grid-template-columns: 1fr; }
+        iframe { min-height: 720px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>CRM Diagnostics</h1>
+        <p>Runs safe navigation and search checks inside your signed-in CRM session.</p>
+      </div>
+      <button id="runAgain" type="button">Run Test</button>
+    </header>
+    <main>
+      <section class="panel">
+        <div class="runner-actions">
+          <button id="copyResults" type="button" class="secondary">Copy Results</button>
+          <button id="openApp" type="button" class="secondary">Open CRM</button>
+        </div>
+        <div class="summary">
+          <div><strong id="passCount">0</strong><span>Pass</span></div>
+          <div><strong id="warnCount">0</strong><span>Warnings</span></div>
+          <div><strong id="failCount">0</strong><span>Fail</span></div>
+        </div>
+        <div id="results" class="result-list"></div>
+        <pre id="rawResults" hidden></pre>
+      </section>
+      <iframe id="crmFrame" title="CRM under test" src="./?diagnostics-frame=v1"></iframe>
+    </main>
+
+    <script>
+      const frame = document.querySelector("#crmFrame");
+      const resultsEl = document.querySelector("#results");
+      const rawResultsEl = document.querySelector("#rawResults");
+      const resultState = [];
+
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      function setCounts() {
+        document.querySelector("#passCount").textContent = resultState.filter((item) => item.status === "pass").length;
+        document.querySelector("#warnCount").textContent = resultState.filter((item) => item.status === "warn").length;
+        document.querySelector("#failCount").textContent = resultState.filter((item) => item.status === "fail").length;
+      }
+
+      function renderResults() {
+        resultsEl.innerHTML = resultState
+          .map((item) => `<article class="result ${item.status}"><strong>${item.name}</strong><span>${item.detail}</span></article>`)
+          .join("");
+        rawResultsEl.textContent = JSON.stringify({ ranAt: new Date().toISOString(), results: resultState }, null, 2);
+        setCounts();
+      }
+
+      function addResult(status, name, detail) {
+        resultState.push({ status, name, detail });
+        renderResults();
+      }
+
+      function crmDocument() {
+        try {
+          return frame.contentDocument || frame.contentWindow.document;
+        } catch {
+          return null;
+        }
+      }
+
+      function crmWindow() {
+        try {
+          return frame.contentWindow;
+        } catch {
+          return null;
+        }
+      }
+
+      function visible(node) {
+        if (!node) return false;
+        const styles = crmWindow().getComputedStyle(node);
+        return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
+      }
+
+      function readCrmStorage(win) {
+        const contacts = [];
+        const keys = [];
+        const seen = new Set();
+        for (let index = 0; index < win.localStorage.length; index += 1) {
+          const key = win.localStorage.key(index) || "";
+          if (!key.startsWith("roofline-crm-v1")) continue;
+          keys.push(key);
+          try {
+            const parsed = JSON.parse(win.localStorage.getItem(key) || "{}");
+            (parsed.contacts || []).forEach((contact) => {
+              if (!contact?.id || seen.has(contact.id)) return;
+              seen.add(contact.id);
+              contacts.push(contact);
+            });
+          } catch {
+            // Ignore non-CRM records.
+          }
+        }
+        return { keys, contacts };
+      }
+
+      async function waitForApp(timeoutMs = 12000) {
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          const doc = crmDocument();
+          if (doc?.querySelector("#globalSearch") && doc.querySelector("#dashboardView")) return doc;
+          if (doc?.querySelector("#loginForm")) return doc;
+          await sleep(250);
+        }
+        return crmDocument();
+      }
+
+      async function clickView(doc, view) {
+        const button = doc.querySelector(`[data-view="${view}"]`);
+        if (!button) {
+          addResult("fail", `Navigation: ${view}`, "Navigation button was not found.");
+          return false;
+        }
+        button.click();
+        await sleep(350);
+        const panelId = view === "companyDocuments" ? "companyDocumentsView" : `${view}View`;
+        const panel = doc.querySelector(`#${panelId}`);
+        if (visible(panel)) {
+          addResult("pass", `Navigation: ${view}`, `${panelId} became visible.`);
+          return true;
+        }
+        addResult("fail", `Navigation: ${view}`, `${panelId} did not become visible after click.`);
+        return false;
+      }
+
+      async function testDashboardSearch(doc, win) {
+        await clickView(doc, "dashboard");
+        const search = doc.querySelector("#globalSearch");
+        if (!search) {
+          addResult("fail", "Dashboard Search", "Global search input was not found.");
+          return;
+        }
+        search.value = "Olga";
+        search.dispatchEvent(new Event("input", { bubbles: true }));
+        await sleep(900);
+        const panel = doc.querySelector("#dashboardSearchResults");
+        const storage = readCrmStorage(win);
+        const olgaMatches = storage.contacts.filter((contact) => JSON.stringify(contact).toLowerCase().includes("olga"));
+        if (!panel) {
+          addResult("fail", "Dashboard Search", "Dashboard search results panel was not created.");
+          return;
+        }
+        if (!visible(panel)) {
+          addResult("fail", "Dashboard Search", "Search panel exists, but stayed hidden after typing Olga.");
+          return;
+        }
+        if (olgaMatches.length) {
+          const foundText = panel.textContent.toLowerCase().includes("olga");
+          addResult(foundText ? "pass" : "fail", "Dashboard Search", foundText ? `Found ${olgaMatches.length} Olga record(s).` : `${olgaMatches.length} Olga record(s) exist in storage, but dashboard results did not show Olga.`);
+        } else {
+          addResult("warn", "Dashboard Search", `Search UI works, but no Olga record exists in this browser's CRM storage. Total contacts visible to this session: ${storage.contacts.length}.`);
+        }
+      }
+
+      async function runDiagnostics() {
+        resultState.length = 0;
+        addResult("warn", "Diagnostics", "Starting CRM click test. No records will be created, edited, or deleted.");
+        const doc = await waitForApp();
+        const win = crmWindow();
+        if (!doc || !win) {
+          addResult("fail", "CRM Load", "Could not access the CRM frame.");
+          return;
+        }
+        if (doc.querySelector("#loginForm")) {
+          addResult("fail", "Authentication", "The CRM frame is on the login page. Sign in to the CRM, then reload diagnostics.html.");
+          return;
+        }
+        addResult("pass", "CRM Load", `Loaded ${win.location.pathname}${win.location.search}.`);
+
+        const required = [
+          ["#globalSearch", "Global search input"],
+          ["#dashboardView", "Dashboard view"],
+          ["#contactsView", "Contacts view"],
+          ["#jobsView", "Jobs view"],
+          ["#estimatesView", "Estimates view"],
+          ["#companyDocumentsView", "Company documents view"],
+          ["#calendarView", "Calendar view"],
+          ["#tasksView", "Tasks view"],
+          ["#companyView", "Settings view"],
+          ["#aiAssistant", "AI assistant shell"],
+        ];
+        required.forEach(([selector, label]) => {
+          addResult(doc.querySelector(selector) ? "pass" : "fail", `Required UI: ${label}`, selector);
+        });
+
+        const storage = readCrmStorage(win);
+        addResult(storage.keys.length ? "pass" : "warn", "CRM Storage", `${storage.contacts.length} contact(s) found across ${storage.keys.length} CRM storage key(s).`);
+
+        const views = ["dashboard", "leads", "contacts", "jobs", "estimates", "companyDocuments", "calendar", "tasks", "invoices", "reviews", "reports", "company"];
+        for (const view of views) await clickView(doc, view);
+        await testDashboardSearch(doc, win);
+      }
+
+      document.querySelector("#runAgain").addEventListener("click", runDiagnostics);
+      document.querySelector("#openApp").addEventListener("click", () => window.open("./", "_blank"));
+      document.querySelector("#copyResults").addEventListener("click", async () => {
+        rawResultsEl.hidden = false;
+        try {
+          await navigator.clipboard.writeText(rawResultsEl.textContent);
+          addResult("pass", "Copy Results", "Diagnostics JSON copied to clipboard.");
+        } catch {
+          addResult("warn", "Copy Results", "Clipboard was blocked. Results JSON is shown below.");
+        }
+      });
+      frame.addEventListener("load", () => setTimeout(runDiagnostics, 900), { once: true });
+    </script>
+  </body>
+</html>
