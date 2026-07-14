@@ -46,7 +46,7 @@
     <header>
       <div>
         <h1>Profit & Cost Role Test</h1>
-        <p>Creates one temporary lead for the signed-in account, checks financial tab access, then restores storage.</p>
+        <p>Creates one temporary lead using the CRM form, checks financial tab access, then deletes it.</p>
       </div>
       <button id="runTest" type="button">Run Profit Test</button>
     </header>
@@ -94,7 +94,7 @@
 
       function reset() {
         results.length = 0;
-        add("warn", "Diagnostics", "Starting profit/cost role test. A temporary QA lead will be created and then removed.");
+        add("warn", "Diagnostics", "Starting profit/cost role test. A temporary QA lead will be created through the CRM and then deleted.");
       }
 
       function doc() {
@@ -107,12 +107,10 @@
 
       function visible(node) {
         if (!node) return false;
-        const styles = win().getComputedStyle(node);
+        const currentWin = win();
+        if (!currentWin) return false;
+        const styles = currentWin.getComputedStyle(node);
         return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
-      }
-
-      function parseJson(value) {
-        try { return JSON.parse(value || "{}"); } catch { return {}; }
       }
 
       function expectedFinancials(role, email) {
@@ -135,56 +133,68 @@
       }
 
       async function reloadFrame(search) {
-        frame.src = `./?${search}&t=${Date.now()}`;
+        const nextSrc = `./?${search}&t=${Date.now()}`;
         await new Promise((resolve) => {
+          let settled = false;
           const done = () => {
+            if (settled) return;
+            settled = true;
             frame.removeEventListener("load", done);
             resolve();
           };
           frame.addEventListener("load", done);
+          frame.src = nextSrc;
+          window.setTimeout(done, 8000);
         });
         await waitForApp();
       }
 
-      function makeTempContact(id, email) {
-        return {
-          id,
-          type: "Lead",
-          status: "New",
-          name: "ZZ QA Profit Role Test",
-          source: "Diagnostic",
-          salesRep: email || "QA",
-          email: "qa-profit-role@example.com",
-          phone: "555-0100",
-          address: "100 QA Test Way",
-          value: 2500,
-          lastContact: new Date().toISOString().slice(0, 10),
-          notes: "Temporary diagnostic lead. This should be removed automatically.",
-          jobs: [{
-            id: `${id}_job`,
-            name: "QA Profit Role Test Job",
-            address: "100 QA Test Way",
-            status: "New",
-            salesRep: email || "QA",
-            value: 2500,
-            notes: "Temporary diagnostic job.",
-            costs: [{
-              id: `${id}_cost`,
-              date: new Date().toISOString().slice(0, 10),
-              category: "Materials",
-              vendor: "QA Vendor",
-              amount: 100,
-              description: "Temporary diagnostic cost.",
-              paid: false,
-            }],
-          }],
-          documents: [],
-          updates: [],
-        };
+      function setFormValue(form, name, value) {
+        const field = form?.elements?.[name];
+        if (field) field.value = value;
+      }
+
+      function createTempLead(currentWin, currentDoc, tempId, email) {
+        if (typeof currentWin.openContactDialog !== "function") {
+          throw new Error("openContactDialog() is not available in the CRM frame.");
+        }
+        const form = currentDoc.querySelector("#contactForm");
+        if (!form) throw new Error("Contact form was not found.");
+
+        currentWin.openContactDialog(null, { type: "Lead" });
+        setFormValue(form, "id", tempId);
+        setFormValue(form, "type", "Lead");
+        setFormValue(form, "status", "New");
+        setFormValue(form, "name", "ZZ QA Profit Role Test");
+        setFormValue(form, "source", "Diagnostic");
+        setFormValue(form, "salesRep", email || "QA");
+        setFormValue(form, "email", "qa-profit-role@example.com");
+        setFormValue(form, "phone", "555-0100");
+        setFormValue(form, "value", "2500");
+        setFormValue(form, "lastContact", new Date().toISOString().slice(0, 10));
+        setFormValue(form, "closedDate", "");
+        setFormValue(form, "address", "100 QA Test Way");
+        setFormValue(form, "notes", "Temporary diagnostic lead. This should be removed automatically.");
+        form.dispatchEvent(new currentWin.Event("submit", { bubbles: true, cancelable: true }));
+      }
+
+      async function deleteTempLead(currentWin, tempId) {
+        if (!currentWin || !tempId) return false;
+        if (typeof currentWin.deleteContact !== "function") return false;
+        const originalConfirm = currentWin.confirm;
+        try {
+          currentWin.confirm = () => true;
+          currentWin.deleteContact(tempId);
+          await sleep(900);
+          return true;
+        } finally {
+          currentWin.confirm = originalConfirm;
+        }
       }
 
       async function runProfitRoleTest() {
         reset();
+        await reloadFrame("profit-role-test=fresh");
         let currentDoc = await waitForApp();
         let currentWin = win();
         if (!currentDoc || !currentWin) {
@@ -207,15 +217,12 @@
 
         const email = String(auth?.user?.email || "").toLowerCase();
         const role = typeof currentWin.currentRole === "function" ? currentWin.currentRole() : auth?.role || "viewer";
-        const userId = auth?.user?.id || "";
-        const storageKey = userId ? `roofline-crm-v1:${userId}` : "";
         const canUseFinancials = expectedFinancials(role, email);
+        const tempId = `qa_profit_${Date.now()}`;
+        let cleanupStatus = "warn";
+        let cleanupDetail = "Cleanup did not run.";
 
         add(email ? "pass" : "fail", "Signed-In User", email ? `${email} / role: ${role}` : "No signed-in user email was available.");
-        if (!storageKey) {
-          add("fail", "Active User Storage", "No active user storage key could be resolved.");
-          return;
-        }
         expectBoolean(
           "Permission Function: Job Financials",
           currentWin.canManageJobFinancials?.() === true,
@@ -224,32 +231,26 @@
           `Financial permission function does not match ${role}/${email}.`,
         );
 
-        const original = currentWin.localStorage.getItem(storageKey);
-        const tempId = `qa_profit_${Date.now()}`;
-        const parsed = parseJson(original);
-        const contacts = Array.isArray(parsed.contacts) ? parsed.contacts : [];
-        const tempContact = makeTempContact(tempId, email);
-        let cleanupStatus = "warn";
-        let cleanupDetail = "Cleanup did not run.";
-
         try {
-          const updated = {
-            ...parsed,
-            contacts: [tempContact, ...contacts.filter((contact) => contact?.id !== tempId)],
-          };
-          currentWin.localStorage.setItem(storageKey, JSON.stringify(updated));
-          add("pass", "Temporary Lead", `Created temporary QA lead ${tempId} in ${storageKey}.`);
-
-          await reloadFrame(`profit-role-test=${encodeURIComponent(tempId)}`);
-          currentDoc = doc();
-          currentWin = win();
-          if (typeof currentWin.openLeadDetail !== "function") {
-            add("fail", "Profit/Cost Tab", "openLeadDetail() is not available.");
-            return;
-          }
+          createTempLead(currentWin, currentDoc, tempId, email);
+          await sleep(900);
+          add("pass", "Temporary Lead", `Created temporary QA lead ${tempId} through the CRM form.`);
 
           currentWin.openLeadDetail(tempId, "profit");
-          await sleep(800);
+          await sleep(900);
+          currentDoc = doc();
+          currentWin = win();
+
+          const titleText = currentDoc.querySelector("#leadDetailTitle")?.textContent || "";
+          const openedTempLead = titleText.includes("ZZ QA Profit Role Test");
+          expectBoolean(
+            "Temporary Lead Opened",
+            openedTempLead,
+            true,
+            "Temporary QA lead opened successfully.",
+            `Temporary QA lead did not open. Current lead title: ${titleText || "blank"}.`,
+          );
+
           const profitTab = currentDoc.querySelector('[data-lead-tab="profit"]');
           const profitPanel = currentDoc.querySelector("#leadProfitPanel");
           const tabVisible = visible(profitTab);
@@ -280,20 +281,15 @@
               "Profit/cost panel should open for upper admin account.",
             );
           }
+        } catch (error) {
+          add("fail", "Profit Role Test", error.message || String(error));
         } finally {
-          const latestWin = win();
-          if (latestWin) {
-            if (original === null) latestWin.localStorage.removeItem(storageKey);
-            else latestWin.localStorage.setItem(storageKey, original);
-            cleanupStatus = "pass";
-            cleanupDetail = `Temporary QA lead ${tempId} was removed and ${storageKey} was restored.`;
-          }
+          const cleaned = await deleteTempLead(win(), tempId);
+          cleanupStatus = cleaned ? "pass" : "warn";
+          cleanupDetail = cleaned
+            ? `Temporary QA lead ${tempId} was deleted through the CRM.`
+            : `Could not confirm automatic cleanup for ${tempId}. Search for ZZ QA Profit Role Test and delete it if present.`;
           add(cleanupStatus, "Cleanup", cleanupDetail);
-          try {
-            await reloadFrame("profit-role-test=cleanup");
-          } catch {
-            // The storage cleanup already completed.
-          }
         }
       }
 
