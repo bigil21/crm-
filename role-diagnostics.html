@@ -65,7 +65,7 @@
         <div id="results" class="results"></div>
         <pre id="rawResults" hidden></pre>
       </section>
-      <iframe id="crmFrame" title="CRM under role test" src="./?role-diagnostics=v52"></iframe>
+      <iframe id="crmFrame" title="CRM under role test" src="./?role-diagnostics=v53&initial=1"></iframe>
     </main>
 
     <script>
@@ -73,9 +73,9 @@
       const runButton = document.querySelector("#runTest");
       const resultsEl = document.querySelector("#results");
       const rawResultsEl = document.querySelector("#rawResults");
+      const upperFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
       const results = [];
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const upperFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
 
       function counts() {
         document.querySelector("#passCount").textContent = results.filter((item) => item.status === "pass").length;
@@ -115,21 +115,44 @@
         return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
       }
 
-      async function waitForApp(timeoutMs = 18000) {
+      function frameDetails() {
+        const currentDoc = doc();
+        const currentWin = win();
+        if (!currentDoc || !currentWin) return "Frame document is not accessible.";
+        let href = "unknown";
+        try { href = `${currentWin.location.pathname}${currentWin.location.search}`; } catch {}
+        const bodyText = String(currentDoc.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        const flags = [];
+        if (currentDoc.querySelector("#globalSearch")) flags.push("has global search");
+        if (currentDoc.querySelector("#dashboardView")) flags.push("has dashboard");
+        if (currentDoc.querySelector("#loginForm")) flags.push("has login form");
+        if (currentWin.RooflineAuth) flags.push("has auth helper");
+        return `URL: ${href}; readyState: ${currentDoc.readyState}; title: ${currentDoc.title || "none"}; ${flags.join(", ") || "no app markers"}; text: ${bodyText || "none"}`;
+      }
+
+      function reloadFrame() {
+        frame.src = `./?role-diagnostics=v53&t=${Date.now()}`;
+      }
+
+      async function waitForApp(timeoutMs = 10000) {
         const started = Date.now();
-        let lastProgress = 0;
+        let lastProgress = -1;
         while (Date.now() - started < timeoutMs) {
           const currentDoc = doc();
-          if (currentDoc?.querySelector("#globalSearch") && currentDoc.querySelector("#dashboardView")) return currentDoc;
-          if (currentDoc?.querySelector("#loginForm")) return currentDoc;
+          if (currentDoc?.querySelector("#globalSearch") && currentDoc.querySelector("#dashboardView")) {
+            return { status: "app", document: currentDoc };
+          }
+          if (currentDoc?.querySelector("#loginForm")) {
+            return { status: "login", document: currentDoc };
+          }
           const elapsed = Math.floor((Date.now() - started) / 1000);
-          if (elapsed && elapsed % 5 === 0 && elapsed !== lastProgress) {
+          if (elapsed !== lastProgress && (elapsed === 0 || elapsed % 2 === 0)) {
             lastProgress = elapsed;
-            add("warn", "CRM Frame", `Still waiting for the CRM iframe to finish loading (${elapsed}s).`);
+            add("warn", "CRM Frame Status", frameDetails());
           }
           await sleep(250);
         }
-        return doc();
+        return { status: "timeout", document: doc() };
       }
 
       function parseJson(value) {
@@ -171,16 +194,16 @@
         add(actual === expected ? "pass" : "fail", name, actual === expected ? passDetail : failDetail);
       }
 
-      async function testRestrictedView(currentDoc, currentWin, view, shouldAllow) {
+      async function testRestrictedView(currentWin, view, shouldAllow) {
         if (typeof currentWin.setView !== "function") {
           add("fail", `Restricted View: ${view}`, "setView() is not available.");
           return;
         }
         currentWin.setView(view);
         await sleep(450);
-        const latestDoc = doc() || currentDoc;
+        const latestDoc = doc();
         const panelId = view === "companyDocuments" ? "companyDocumentsView" : `${view}View`;
-        const isVisible = visible(latestDoc.querySelector(`#${panelId}`));
+        const isVisible = visible(latestDoc?.querySelector(`#${panelId}`));
         expectBoolean(
           `Restricted View: ${view}`,
           isVisible,
@@ -190,9 +213,9 @@
         );
       }
 
-      async function testProfitTab(currentDoc, currentWin, canUseFinancials, activeContacts) {
+      async function testProfitTab(currentWin, canUseFinancials, activeContacts) {
         if (!activeContacts.length) {
-          add("warn", "Profit/Cost Tab", "No contacts in the active user storage key, so tab visibility could not be tested. Use profit-role-test.html for a temporary-lead financial access test.");
+          add("warn", "Profit/Cost Tab", "No contacts in the active user storage key, so tab visibility could not be tested here. Use profit-role-test.html for the temporary-lead financial access test.");
           return;
         }
         if (typeof currentWin.openLeadDetail !== "function") {
@@ -201,11 +224,9 @@
         }
         currentWin.openLeadDetail(activeContacts[0].id, "profit");
         await sleep(600);
-        const latestDoc = doc() || currentDoc;
-        const profitTab = latestDoc.querySelector('[data-lead-tab="profit"]');
-        const profitPanel = latestDoc.querySelector("#leadProfitPanel");
-        const tabVisible = visible(profitTab);
-        const panelVisible = visible(profitPanel);
+        const latestDoc = doc();
+        const tabVisible = visible(latestDoc?.querySelector('[data-lead-tab="profit"]'));
+        const panelVisible = visible(latestDoc?.querySelector("#leadProfitPanel"));
         expectBoolean(
           "Profit/Cost Tab Visibility",
           tabVisible,
@@ -224,7 +245,7 @@
         }
       }
 
-      async function testSearchIsolation(currentDoc, currentWin) {
+      async function testSearchIsolation(currentWin) {
         const canaryKey = "roofline-crm-v1:security-canary-user";
         const canaryName = "ZZ Forbidden Security Canary";
         const original = currentWin.localStorage.getItem(canaryKey);
@@ -244,8 +265,8 @@
           }));
           if (typeof currentWin.setView === "function") currentWin.setView("dashboard");
           await sleep(500);
-          const latestDoc = doc() || currentDoc;
-          const search = latestDoc.querySelector("#globalSearch");
+          const latestDoc = doc();
+          const search = latestDoc?.querySelector("#globalSearch");
           if (!search) {
             add("fail", "Dashboard Search Isolation", "Global search input was not found.");
             return;
@@ -273,26 +294,34 @@
         runButton.disabled = true;
         runButton.textContent = "Running...";
         try {
-          add("warn", "CRM Frame", "Waiting for the already-loaded CRM iframe.");
-          const currentDoc = await waitForApp();
+          add("warn", "CRM Frame", "Reloading the CRM iframe with a fresh cache-busting URL.");
+          reloadFrame();
+          await sleep(500);
+          const frameResult = await waitForApp();
+          const currentDoc = frameResult.document;
           const currentWin = win();
           if (!currentDoc || !currentWin) {
             add("fail", "CRM Load", "Could not access the CRM frame.");
             return;
           }
-          if (currentDoc.querySelector("#loginForm")) {
-            add("fail", "Authentication", "The CRM frame is on the login page. Sign in first, then reload this page.");
+          if (frameResult.status === "login") {
+            add("fail", "Authentication", `The CRM frame is on the login page. Sign in first, then reload this page. ${frameDetails()}`);
             return;
           }
-          if (!currentDoc.querySelector("#globalSearch")) {
-            add("fail", "CRM Load", "The CRM frame did not finish loading. Open the CRM in another tab first, then rerun this test.");
+          if (frameResult.status !== "app") {
+            add("fail", "CRM Load", `The CRM frame did not reach the app within 10 seconds. ${frameDetails()}`);
             return;
           }
           add("pass", "CRM Load", `Loaded ${currentWin.location.pathname}${currentWin.location.search}.`);
 
+          if (!currentWin.RooflineAuth?.getTrustedUser) {
+            add("fail", "Authentication", "RooflineAuth.getTrustedUser() is not available in the CRM frame.");
+            return;
+          }
+
           let auth = null;
           try {
-            auth = await currentWin.RooflineAuth?.getTrustedUser?.();
+            auth = await currentWin.RooflineAuth.getTrustedUser();
           } catch (error) {
             add("fail", "Authentication", error.message || String(error));
             return;
@@ -324,10 +353,10 @@
           expectBoolean("Permission: Manage Company Action", currentWin.canAction("manageCompany") === true, role === "admin" || role === "office_manager", `Manage-company action matches ${role}.`, `Manage-company action is incorrect for ${role}.`);
           expectBoolean("Permission: Manage Financial Action", currentWin.canAction("manageJobFinancials") === true, shouldFinancials, `Manage-financials action matches ${role}/${email}.`, `Manage-financials action is incorrect for ${role}/${email}.`);
 
-          await testRestrictedView(currentDoc, currentWin, "company", shouldCompany);
-          await testRestrictedView(currentDoc, currentWin, "estimates", shouldEstimates);
-          await testProfitTab(currentDoc, currentWin, shouldFinancials, activeContacts);
-          await testSearchIsolation(currentDoc, currentWin);
+          await testRestrictedView(currentWin, "company", shouldCompany);
+          await testRestrictedView(currentWin, "estimates", shouldEstimates);
+          await testProfitTab(currentWin, shouldFinancials, activeContacts);
+          await testSearchIsolation(currentWin);
         } catch (error) {
           add("fail", "Role Diagnostic", error.message || String(error));
         } finally {
