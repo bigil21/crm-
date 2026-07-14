@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v54";
+const CACHE_NAME = "roofline-crm-v55";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -8,6 +8,8 @@ const APP_SHELL = [
   "./diagnostics.html",
   "./role-diagnostics.html",
   "./role-security-check.html",
+  "./role-direct-launch.html",
+  "./role-direct-check.js",
   "./profit-role-test.html",
   "./auth-config.js",
   "./auth-config.js?v=43",
@@ -52,6 +54,21 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+function patchIndexHtml(html, url) {
+  let patched = html
+    .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
+    .replaceAll('auth.js?v=24', 'auth.js?v=43');
+
+  if (url.searchParams.has("role-direct-check") && !patched.includes("role-direct-check.js")) {
+    patched = patched.replace(
+      "</body>",
+      '    <script src="role-direct-check.js?v=55" defer></script>\n  </body>',
+    );
+  }
+
+  return patched;
+}
+
 async function freshHtmlResponse(request) {
   const response = await fetch(request);
   const url = new URL(request.url);
@@ -62,16 +79,11 @@ async function freshHtmlResponse(request) {
   headers.set("cache-control", "no-store");
 
   const html = await response.text();
-  return new Response(
-    html
-      .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
-      .replaceAll('auth.js?v=24', 'auth.js?v=43'),
-    {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    },
-  );
+  return new Response(patchIndexHtml(html, url), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 self.addEventListener("fetch", (event) => {
