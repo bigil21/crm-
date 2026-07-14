@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Roofline CRM Role Diagnostics</title>
+    <style>
+      :root {
+        --ink: #111827;
+        --muted: #64748b;
+        --line: #d9e2ef;
+        --surface: #ffffff;
+        --soft: #f5f7fb;
+        --pass: #15803d;
+        --warn: #b45309;
+        --fail: #b91c1c;
+        --blue: #0f5fe8;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: var(--soft); color: var(--ink); }
+      header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; background: #0b1220; color: #fff; }
+      h1 { margin: 0; font-size: 20px; }
+      header p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
+      button { border: 0; border-radius: 8px; background: var(--blue); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+      button.secondary { background: #334155; }
+      main { display: grid; grid-template-columns: 430px minmax(0, 1fr); min-height: calc(100vh - 74px); }
+      .panel { padding: 18px; border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+      .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+      .summary div { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--soft); }
+      .summary strong { display: block; font-size: 20px; }
+      .summary span { display: block; color: var(--muted); font-size: 12px; }
+      .results { display: grid; gap: 8px; }
+      .result { border: 1px solid var(--line); border-left-width: 5px; border-radius: 8px; padding: 10px; background: #fff; }
+      .result.pass { border-left-color: var(--pass); }
+      .result.warn { border-left-color: var(--warn); }
+      .result.fail { border-left-color: var(--fail); }
+      .result strong { display: block; font-size: 14px; }
+      .result span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+      iframe { width: 100%; height: 100%; min-height: calc(100vh - 74px); border: 0; background: #fff; }
+      pre { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; background: #0b1220; color: #e2e8f0; font-size: 12px; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } iframe { min-height: 720px; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Role & Security Diagnostics</h1>
+        <p>Checks account role, restricted views, profit/cost access, and dashboard search isolation.</p>
+      </div>
+      <button id="runTest" type="button">Run Role Test</button>
+    </header>
+    <main>
+      <section class="panel">
+        <div class="actions">
+          <button id="copyResults" type="button" class="secondary">Copy Results</button>
+          <button id="openApp" type="button" class="secondary">Open CRM</button>
+        </div>
+        <div class="summary">
+          <div><strong id="passCount">0</strong><span>Pass</span></div>
+          <div><strong id="warnCount">0</strong><span>Warnings</span></div>
+          <div><strong id="failCount">0</strong><span>Fail</span></div>
+        </div>
+        <div id="results" class="results"></div>
+        <pre id="rawResults" hidden></pre>
+      </section>
+      <iframe id="crmFrame" title="CRM under role test" src="./?role-diagnostics=v1"></iframe>
+    </main>
+
+    <script>
+      const frame = document.querySelector("#crmFrame");
+      const resultsEl = document.querySelector("#results");
+      const rawResultsEl = document.querySelector("#rawResults");
+      const results = [];
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const upperFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
+
+      function counts() {
+        document.querySelector("#passCount").textContent = results.filter((item) => item.status === "pass").length;
+        document.querySelector("#warnCount").textContent = results.filter((item) => item.status === "warn").length;
+        document.querySelector("#failCount").textContent = results.filter((item) => item.status === "fail").length;
+      }
+
+      function render() {
+        resultsEl.innerHTML = results.map((item) => `<article class="result ${item.status}"><strong>${item.name}</strong><span>${item.detail}</span></article>`).join("");
+        rawResultsEl.textContent = JSON.stringify({ ranAt: new Date().toISOString(), results }, null, 2);
+        counts();
+      }
+
+      function add(status, name, detail) {
+        results.push({ status, name, detail });
+        render();
+      }
+
+      function reset() {
+        results.length = 0;
+        add("warn", "Diagnostics", "Starting role/security test. No real CRM records will be created, edited, or deleted.");
+      }
+
+      function doc() {
+        try { return frame.contentDocument || frame.contentWindow.document; } catch { return null; }
+      }
+
+      function win() {
+        try { return frame.contentWindow; } catch { return null; }
+      }
+
+      function visible(node) {
+        if (!node) return false;
+        const styles = win().getComputedStyle(node);
+        return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
+      }
+
+      async function waitForApp(timeoutMs = 12000) {
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          const currentDoc = doc();
+          if (currentDoc?.querySelector("#globalSearch") && currentDoc.querySelector("#dashboardView")) return currentDoc;
+          if (currentDoc?.querySelector("#loginForm")) return currentDoc;
+          await sleep(250);
+        }
+        return doc();
+      }
+
+      function parseJson(value) {
+        try { return JSON.parse(value || "{}"); } catch { return {}; }
+      }
+
+      function readStorage(currentWin, userId) {
+        const activeKey = userId ? `roofline-crm-v1:${userId}` : "roofline-crm-v1";
+        const active = parseJson(currentWin.localStorage.getItem(activeKey));
+        const crmKeys = [];
+        for (let index = 0; index < currentWin.localStorage.length; index += 1) {
+          const key = currentWin.localStorage.key(index) || "";
+          if (key.startsWith("roofline-crm-v1")) crmKeys.push(key);
+        }
+        return { activeKey, active, crmKeys };
+      }
+
+      function expectedCompanyView(role) {
+        return role === "admin" || role === "office_manager";
+      }
+
+      function expectedTeamData(role) {
+        return ["admin", "office_manager", "sales_manager", "operations_manager"].includes(role);
+      }
+
+      function expectedFinancials(role, email) {
+        return role === "admin" || upperFinancialEmails.includes(String(email || "").toLowerCase());
+      }
+
+      function expectedEstimatesView(role) {
+        return ["admin", "office_manager", "sales_manager", "sales", "viewer"].includes(role);
+      }
+
+      function expectedLeadsView(role) {
+        return ["admin", "office_manager", "sales_manager", "sales", "viewer"].includes(role);
+      }
+
+      function expectBoolean(name, actual, expected, passDetail, failDetail) {
+        add(actual === expected ? "pass" : "fail", name, actual === expected ? passDetail : failDetail);
+      }
+
+      async function testRestrictedView(currentDoc, currentWin, view, shouldAllow) {
+        if (typeof currentWin.setView !== "function") {
+          add("fail", `Restricted View: ${view}`, "setView() is not available.");
+          return;
+        }
+        currentWin.setView(view);
+        await sleep(450);
+        const panelId = view === "companyDocuments" ? "companyDocumentsView" : `${view}View`;
+        const isVisible = visible(currentDoc.querySelector(`#${panelId}`));
+        expectBoolean(
+          `Restricted View: ${view}`,
+          isVisible,
+          shouldAllow,
+          shouldAllow ? `${panelId} is accessible as expected.` : `${panelId} stayed hidden as expected.`,
+          shouldAllow ? `${panelId} should be accessible but was hidden.` : `${panelId} should be restricted but became visible.`,
+        );
+      }
+
+      async function testProfitTab(currentDoc, currentWin, canUseFinancials, activeContacts) {
+        if (!activeContacts.length) {
+          add("warn", "Profit/Cost Tab", "No contacts in the active user storage key, so tab visibility could not be tested.");
+          return;
+        }
+        if (typeof currentWin.openLeadDetail !== "function") {
+          add("fail", "Profit/Cost Tab", "openLeadDetail() is not available.");
+          return;
+        }
+        currentWin.openLeadDetail(activeContacts[0].id, "profit");
+        await sleep(600);
+        const profitTab = currentDoc.querySelector('[data-lead-tab="profit"]');
+        const profitPanel = currentDoc.querySelector("#leadProfitPanel");
+        const tabVisible = visible(profitTab);
+        const panelVisible = visible(profitPanel);
+        expectBoolean(
+          "Profit/Cost Tab Visibility",
+          tabVisible,
+          canUseFinancials,
+          canUseFinancials ? "Profit/cost tab is visible for this account." : "Profit/cost tab is hidden for this account.",
+          canUseFinancials ? "Profit/cost tab should be visible but is hidden." : "Profit/cost tab should be hidden but is visible.",
+        );
+        if (!canUseFinancials) {
+          expectBoolean(
+            "Profit/Cost Panel Access",
+            panelVisible,
+            false,
+            "Profit/cost panel did not open for restricted account.",
+            "Profit/cost panel opened for restricted account.",
+          );
+        }
+      }
+
+      async function testSearchIsolation(currentDoc, currentWin) {
+        const canaryKey = "roofline-crm-v1:security-canary-user";
+        const canaryName = "ZZ Forbidden Security Canary";
+        const original = currentWin.localStorage.getItem(canaryKey);
+        try {
+          currentWin.localStorage.setItem(canaryKey, JSON.stringify({
+            contacts: [{
+              id: "security_canary_contact",
+              type: "Lead",
+              status: "New",
+              name: canaryName,
+              phone: "555-9999",
+              email: "security-canary@example.com",
+              address: "Hidden Address",
+              salesRep: "Hidden Rep",
+              jobs: [{ id: "security_canary_job", name: "Hidden Job", address: "Hidden Address", status: "New" }],
+            }],
+          }));
+          if (typeof currentWin.setView === "function") currentWin.setView("dashboard");
+          await sleep(500);
+          const search = currentDoc.querySelector("#globalSearch");
+          if (!search) {
+            add("fail", "Dashboard Search Isolation", "Global search input was not found.");
+            return;
+          }
+          search.value = "Forbidden Security Canary";
+          search.dispatchEvent(new currentWin.Event("input", { bubbles: true }));
+          await sleep(1100);
+          const panel = currentDoc.querySelector("#dashboardSearchResults");
+          const leaked = Boolean(panel?.textContent?.includes(canaryName));
+          expectBoolean(
+            "Dashboard Search Isolation",
+            leaked,
+            false,
+            "Dashboard search ignored a record stored under another user key.",
+            "Dashboard search leaked a record from another user storage key.",
+          );
+        } finally {
+          if (original === null) currentWin.localStorage.removeItem(canaryKey);
+          else currentWin.localStorage.setItem(canaryKey, original);
+        }
+      }
+
+      async function runRoleDiagnostics() {
+        reset();
+        const currentDoc = await waitForApp();
+        const currentWin = win();
+        if (!currentDoc || !currentWin) {
+          add("fail", "CRM Load", "Could not access the CRM frame.");
+          return;
+        }
+        if (currentDoc.querySelector("#loginForm")) {
+          add("fail", "Authentication", "The CRM frame is on the login page. Sign in first, then reload this page.");
+          return;
+        }
+        add("pass", "CRM Load", `Loaded ${currentWin.location.pathname}${currentWin.location.search}.`);
+
+        let auth = null;
+        try {
+          auth = await currentWin.RooflineAuth?.getTrustedUser?.();
+        } catch (error) {
+          add("fail", "Authentication", error.message || String(error));
+          return;
+        }
+        const email = String(auth?.user?.email || "").toLowerCase();
+        const role = typeof currentWin.currentRole === "function" ? currentWin.currentRole() : auth?.role || "viewer";
+        add(email ? "pass" : "fail", "Signed-In User", email ? `${email} / role: ${role}` : "No signed-in user email was available.");
+
+        const storage = readStorage(currentWin, auth?.user?.id || "");
+        const activeContacts = Array.isArray(storage.active.contacts) ? storage.active.contacts : [];
+        add(storage.activeKey ? "pass" : "fail", "Active User Storage", `${storage.activeKey}; ${activeContacts.length} contact(s). CRM keys in this browser: ${storage.crmKeys.length}.`);
+
+        if (typeof currentWin.canView !== "function" || typeof currentWin.canAction !== "function") {
+          add("fail", "Permission Functions", "canView() or canAction() is not available.");
+          return;
+        }
+
+        const shouldCompany = expectedCompanyView(role);
+        const shouldTeam = expectedTeamData(role);
+        const shouldFinancials = expectedFinancials(role, email);
+        const shouldEstimates = expectedEstimatesView(role);
+        const shouldLeads = expectedLeadsView(role);
+
+        expectBoolean("Permission: Team Data", currentWin.canManageTeamData?.() === true, shouldTeam, `Team-data permission matches ${role}.`, `Team-data permission is incorrect for ${role}.`);
+        expectBoolean("Permission: Job Financials", currentWin.canManageJobFinancials?.() === true, shouldFinancials, `Financial permission matches ${role}/${email}.`, `Financial permission is incorrect for ${role}/${email}.`);
+        expectBoolean("Permission: Company Settings", currentWin.canView("company") === true, shouldCompany, `Company settings visibility matches ${role}.`, `Company settings visibility is incorrect for ${role}.`);
+        expectBoolean("Permission: Estimates View", currentWin.canView("estimates") === true, shouldEstimates, `Estimate visibility matches ${role}.`, `Estimate visibility is incorrect for ${role}.`);
+        expectBoolean("Permission: Leads View", currentWin.canView("leads") === true, shouldLeads, `Lead visibility matches ${role}.`, `Lead visibility is incorrect for ${role}.`);
+        expectBoolean("Permission: Manage Company Action", currentWin.canAction("manageCompany") === true, role === "admin" || role === "office_manager", `Manage-company action matches ${role}.`, `Manage-company action is incorrect for ${role}.`);
+        expectBoolean("Permission: Manage Financial Action", currentWin.canAction("manageJobFinancials") === true, shouldFinancials, `Manage-financials action matches ${role}/${email}.`, `Manage-financials action is incorrect for ${role}/${email}.`);
+
+        await testRestrictedView(currentDoc, currentWin, "company", shouldCompany);
+        await testRestrictedView(currentDoc, currentWin, "estimates", shouldEstimates);
+        await testProfitTab(currentDoc, currentWin, shouldFinancials, activeContacts);
+        await testSearchIsolation(currentDoc, currentWin);
+      }
+
+      document.querySelector("#runTest").addEventListener("click", runRoleDiagnostics);
+      document.querySelector("#openApp").addEventListener("click", () => window.open("./", "_blank"));
+      document.querySelector("#copyResults").addEventListener("click", async () => {
+        rawResultsEl.hidden = false;
+        try {
+          await navigator.clipboard.writeText(rawResultsEl.textContent);
+          add("pass", "Copy Results", "Diagnostics JSON copied to clipboard.");
+        } catch {
+          add("warn", "Copy Results", "Clipboard was blocked. Results JSON is shown below.");
+        }
+      });
+    </script>
+  </body>
+</html>
