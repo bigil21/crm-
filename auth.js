@@ -23,6 +23,7 @@
     Object.entries(runtimeConfig).filter(([, value]) => value !== "" && value !== null && value !== undefined),
   );
   const config = { ...fallbackConfig, ...cleanRuntimeConfig };
+  const CRM_STORAGE_KEY = "roofline-crm-v1";
 
   function hasConfig() {
     return Boolean(config.supabaseUrl && config.supabaseAnonKey);
@@ -218,15 +219,28 @@
       };
     }
 
-    function contactsFromStorage() {
+    async function storageKeysForCurrentUser() {
+      if (!isAuthRequired()) return [CRM_STORAGE_KEY];
+      try {
+        const trusted = await getTrustedUser();
+        const userId = trusted?.user?.id || "";
+        if (!userId) return [];
+        const keys = [`${CRM_STORAGE_KEY}:${userId}`];
+        if (isAdminEmail(trusted.user.email)) keys.push(CRM_STORAGE_KEY);
+        return keys;
+      } catch {
+        return [];
+      }
+    }
+
+    async function contactsFromStorage() {
       const contacts = [];
       const seen = new Set();
-      for (let index = 0; index < localStorage.length; index += 1) {
-        const key = localStorage.key(index) || "";
-        if (!key.startsWith("roofline-crm-v1")) continue;
+      const keys = await storageKeysForCurrentUser();
+      keys.forEach((key) => {
         try {
           const parsed = JSON.parse(localStorage.getItem(key) || "{}");
-          if (!Array.isArray(parsed.contacts)) continue;
+          if (!Array.isArray(parsed.contacts)) return;
           parsed.contacts.forEach((contact) => {
             if (!contact?.id || seen.has(contact.id)) return;
             seen.add(contact.id);
@@ -236,9 +250,9 @@
             contacts.push({ ...contact, jobs });
           });
         } catch {
-          // Ignore unrelated local storage records.
+          // Ignore unrelated or malformed local storage records.
         }
-      }
+      });
       return contacts;
     }
 
@@ -274,7 +288,7 @@
       return panel;
     }
 
-    function renderDashboardSearchResults() {
+    async function renderDashboardSearchResults() {
       const search = document.querySelector("#globalSearch");
       const dashboard = document.querySelector("#dashboardView");
       const panel = ensurePanel();
@@ -287,7 +301,7 @@
         return;
       }
 
-      const contacts = contactsFromStorage();
+      const contacts = await contactsFromStorage();
       const matches = contacts.filter((contact) => contactSearchText(contact).includes(query)).slice(0, 12);
       panel.classList.remove("hidden");
       panel.innerHTML = `
@@ -322,7 +336,7 @@
                     `;
                   })
                   .join("")
-              : '<div class="empty-state">No matching leads, contacts, jobs, or documents were found in this browser cache. Try opening Contacts or syncing again.</div>'
+              : '<div class="empty-state">No matching leads, contacts, jobs, or documents were found in your signed-in CRM data. Try opening Contacts or syncing again.</div>'
           }
         </div>
       `;
