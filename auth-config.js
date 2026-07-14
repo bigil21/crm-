@@ -9,7 +9,7 @@ window.ROOFLINE_SUPABASE_CONFIG = {
   stateId: "coastal-crest",
 };
 
-window.ROOFLINE_AUTH_CONFIG_VERSION = "scoped-search-v43";
+window.ROOFLINE_AUTH_CONFIG_VERSION = "scoped-search-v46";
 
 (function installScopedDashboardSearchOverride() {
   const CRM_STORAGE_KEY = "roofline-crm-v1";
