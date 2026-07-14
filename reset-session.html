@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111111" />
+    <title>Reset Session | Roofline CRM</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #111827;
+        --muted: #64748b;
+        --line: #d9e2ef;
+        --surface: #ffffff;
+        --soft: #f5f7fb;
+        --blue: #1d4ed8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--soft);
+        color: var(--ink);
+        font-family: Arial, Helvetica, sans-serif;
+      }
+      main {
+        width: min(520px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+        padding: 26px;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+      }
+      h1 { margin: 0 0 10px; font-size: 26px; }
+      p { margin: 0; color: var(--muted); line-height: 1.5; }
+      .status { margin-top: 18px; color: var(--ink); font-weight: 700; }
+      .steps { margin-top: 18px; display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
+      .steps span { display: flex; gap: 8px; align-items: center; }
+      .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--blue); flex: 0 0 auto; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Resetting CRM session</h1>
+      <p>This clears the signed-in Supabase session, old service-worker caches, and cached app shell files. It does not delete CRM lead, job, estimate, or document records stored under <strong>roofline-crm-v1</strong>.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Starting cleanup...</p>
+      <div class="steps" aria-hidden="true">
+        <span><i class="dot"></i> Clear Supabase auth tokens</span>
+        <span><i class="dot"></i> Remove old app caches</span>
+        <span><i class="dot"></i> Open a fresh login page</span>
+      </div>
+    </main>
+
+    <script>
+      (async function () {
+        const status = document.querySelector("#status");
+
+        function setStatus(message) {
+          status.textContent = message;
+        }
+
+        function isSupabaseAuthKey(key) {
+          return key.startsWith("sb-") || key.includes("supabase.auth.token") || key.includes("supabase.auth");
+        }
+
+        function clearAuthStorage(store) {
+          const keys = [];
+          for (let index = 0; index < store.length; index += 1) {
+            const key = store.key(index) || "";
+            if (isSupabaseAuthKey(key)) keys.push(key);
+          }
+          keys.forEach((key) => store.removeItem(key));
+        }
+
+        async function deleteAuthDatabases() {
+          if (!indexedDB.databases) return;
+          const databases = await indexedDB.databases();
+          await Promise.all(
+            databases
+              .map((database) => database.name || "")
+              .filter((name) => name.toLowerCase().includes("supabase"))
+              .map((name) => new Promise((resolve) => {
+                const request = indexedDB.deleteDatabase(name);
+                request.onsuccess = resolve;
+                request.onerror = resolve;
+                request.onblocked = resolve;
+              })),
+          );
+        }
+
+        async function clearAppCaches() {
+          if (window.caches?.keys) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map((key) => caches.delete(key)));
+          }
+        }
+
+        async function unregisterServiceWorkers() {
+          if (navigator.serviceWorker?.getRegistrations) {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(registrations.map((registration) => registration.unregister()));
+          }
+        }
+
+        try {
+          setStatus("Clearing auth tokens...");
+          clearAuthStorage(localStorage);
+          clearAuthStorage(sessionStorage);
+          await deleteAuthDatabases();
+
+          setStatus("Clearing app cache...");
+          await clearAppCaches();
+          await unregisterServiceWorkers();
+
+          setStatus("Opening a clean login page...");
+        } catch (error) {
+          console.warn("CRM session reset completed with a non-blocking cleanup error", error);
+          setStatus("Cleanup finished. Opening login...");
+        }
+
+        window.setTimeout(() => {
+          location.replace("/login?v=45&switchAccount=1&reason=session-reset");
+        }, 800);
+      })();
+    </script>
+  </body>
+</html>
