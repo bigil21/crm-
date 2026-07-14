@@ -28,6 +28,46 @@
     return false;
   }
 
+  function clearSupabaseAuthStorage() {
+    [localStorage, sessionStorage].forEach((store) => {
+      const keys = [];
+      for (let index = 0; index < store.length; index += 1) {
+        const key = store.key(index) || "";
+        if (key.startsWith("sb-") || key.includes("supabase.auth.token")) keys.push(key);
+      }
+      keys.forEach((key) => store.removeItem(key));
+    });
+  }
+
+  async function signOutCurrentSession() {
+    try {
+      await client.auth.signOut({ scope: "global" });
+    } catch {
+      try {
+        await client.auth.signOut();
+      } catch {
+        // Local cleanup below still removes stale browser session data.
+      }
+    }
+    clearSupabaseAuthStorage();
+  }
+
+  async function verifySignedInEmail(expectedEmail) {
+    const { data, error } = await client.auth.getUser();
+    const signedInEmail = String(data?.user?.email || "").toLowerCase();
+    if (error || signedInEmail !== expectedEmail) {
+      await signOutCurrentSession();
+      setStatus(
+        signedInEmail
+          ? `Still signed in as ${signedInEmail}. Please try again after logging out.`
+          : "Sign-in did not create a verified CRM session. Please try again.",
+        "error",
+      );
+      return false;
+    }
+    return true;
+  }
+
   if (domainHint) domainHint.textContent = `Only @${config.allowedEmailDomain} accounts can sign in.`;
 
   if (!window.RooflineAuth.hasConfig()) {
@@ -41,8 +81,7 @@
   const client = window.RooflineAuth.createClient();
   const existing = await window.RooflineAuth.getTrustedUser();
   if (existing.user && window.RooflineAuth.isAllowedEmail(existing.user.email)) {
-    location.replace(sanitizeRedirect(redirect));
-    return;
+    setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts.`);
   }
 
   form.addEventListener("submit", async (event) => {
@@ -56,16 +95,18 @@
     }
 
     setStatus("Signing in...");
+    await signOutCurrentSession();
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) {
       setStatus(error.message, "error");
       return;
     }
     if (!window.RooflineAuth.isAllowedEmail(data.user?.email)) {
-      await client.auth.signOut();
+      await signOutCurrentSession();
       setStatus(`This CRM only allows @${config.allowedEmailDomain} users.`, "error");
       return;
     }
+    if (!(await verifySignedInEmail(email))) return;
     location.replace(sanitizeRedirect(redirect));
   });
 
@@ -79,6 +120,7 @@
     }
 
     setStatus("Creating account...");
+    await signOutCurrentSession();
     const { data, error } = await client.auth.signUp({
       email,
       password,
@@ -94,6 +136,7 @@
       return;
     }
     if (data.session) {
+      if (!(await verifySignedInEmail(email))) return;
       location.replace(sanitizeRedirect(redirect));
       return;
     }
@@ -105,6 +148,7 @@
     if (!validateEmailDomain(email)) return;
 
     setStatus("Sending magic link...");
+    await signOutCurrentSession();
     const { error } = await client.auth.signInWithOtp({
       email,
       options: {
