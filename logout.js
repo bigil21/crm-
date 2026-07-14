@@ -6,7 +6,7 @@
       const keys = [];
       for (let index = 0; index < store.length; index += 1) {
         const key = store.key(index) || "";
-        if (key.startsWith("sb-") || key.includes("supabase.auth.token")) keys.push(key);
+        if (key.startsWith("sb-") || key.includes("supabase.auth.token") || key.includes("supabase.auth")) keys.push(key);
       }
       keys.forEach((key) => store.removeItem(key));
     });
@@ -28,6 +28,6 @@
     status.textContent = "You are signed out locally.";
   }
   window.setTimeout(() => {
-    location.replace("/login?reason=logout&switchAccount=1");
+    location.replace("/login?v=46&reason=logout&switchAccount=1");
   }, 900);
 })();
