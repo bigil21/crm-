@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v40";
+const CACHE_NAME = "roofline-crm-v41";
 const APP_SHELL = [
   "./",
   "./index.html",
