@@ -23,6 +23,7 @@
       header p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
       button { border: 0; border-radius: 8px; background: var(--blue); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; }
       button.secondary { background: #334155; }
+      button:disabled { opacity: 0.55; cursor: not-allowed; }
       main { display: grid; grid-template-columns: 430px minmax(0, 1fr); min-height: calc(100vh - 74px); }
       .panel { padding: 18px; border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -64,11 +65,12 @@
         <div id="results" class="results"></div>
         <pre id="rawResults" hidden></pre>
       </section>
-      <iframe id="crmFrame" title="CRM under profit role test" src="./?profit-role-test=ready"></iframe>
+      <iframe id="crmFrame" title="CRM under profit role test" src="./?profit-role-test=ready&v=51"></iframe>
     </main>
 
     <script>
       const frame = document.querySelector("#crmFrame");
+      const runButton = document.querySelector("#runTest");
       const resultsEl = document.querySelector("#results");
       const rawResultsEl = document.querySelector("#rawResults");
       const results = [];
@@ -121,32 +123,21 @@
         add(actual === expected ? "pass" : "fail", name, actual === expected ? passDetail : failDetail);
       }
 
-      async function waitForApp(timeoutMs = 12000) {
+      async function waitForApp(timeoutMs = 18000) {
         const started = Date.now();
+        let lastProgress = 0;
         while (Date.now() - started < timeoutMs) {
           const currentDoc = doc();
           if (currentDoc?.querySelector("#globalSearch") && currentDoc.querySelector("#dashboardView")) return currentDoc;
           if (currentDoc?.querySelector("#loginForm")) return currentDoc;
+          const elapsed = Math.floor((Date.now() - started) / 1000);
+          if (elapsed && elapsed % 5 === 0 && elapsed !== lastProgress) {
+            lastProgress = elapsed;
+            add("warn", "CRM Frame", `Still waiting for the CRM iframe to finish loading (${elapsed}s).`);
+          }
           await sleep(250);
         }
         return doc();
-      }
-
-      async function reloadFrame(search) {
-        const nextSrc = `./?${search}&t=${Date.now()}`;
-        await new Promise((resolve) => {
-          let settled = false;
-          const done = () => {
-            if (settled) return;
-            settled = true;
-            frame.removeEventListener("load", done);
-            resolve();
-          };
-          frame.addEventListener("load", done);
-          frame.src = nextSrc;
-          window.setTimeout(done, 8000);
-        });
-        await waitForApp();
       }
 
       function setFormValue(form, name, value) {
@@ -194,44 +185,49 @@
 
       async function runProfitRoleTest() {
         reset();
-        await reloadFrame("profit-role-test=fresh");
-        let currentDoc = await waitForApp();
-        let currentWin = win();
-        if (!currentDoc || !currentWin) {
-          add("fail", "CRM Load", "Could not access the CRM frame.");
-          return;
-        }
-        if (currentDoc.querySelector("#loginForm")) {
-          add("fail", "Authentication", "The CRM frame is on the login page. Sign in first, then reload this page.");
-          return;
-        }
-        add("pass", "CRM Load", `Loaded ${currentWin.location.pathname}${currentWin.location.search}.`);
-
-        let auth = null;
+        runButton.disabled = true;
+        runButton.textContent = "Running...";
+        let tempId = "";
         try {
-          auth = await currentWin.RooflineAuth?.getTrustedUser?.();
-        } catch (error) {
-          add("fail", "Authentication", error.message || String(error));
-          return;
-        }
+          add("warn", "CRM Frame", "Waiting for the already-loaded CRM iframe.");
+          let currentDoc = await waitForApp();
+          let currentWin = win();
+          if (!currentDoc || !currentWin) {
+            add("fail", "CRM Load", "Could not access the CRM frame.");
+            return;
+          }
+          if (currentDoc.querySelector("#loginForm")) {
+            add("fail", "Authentication", "The CRM frame is on the login page. Sign in first, then reload this page.");
+            return;
+          }
+          if (!currentDoc.querySelector("#globalSearch")) {
+            add("fail", "CRM Load", "The CRM frame did not finish loading. Open the CRM in another tab first, then rerun this test.");
+            return;
+          }
+          add("pass", "CRM Load", `Loaded ${currentWin.location.pathname}${currentWin.location.search}.`);
 
-        const email = String(auth?.user?.email || "").toLowerCase();
-        const role = typeof currentWin.currentRole === "function" ? currentWin.currentRole() : auth?.role || "viewer";
-        const canUseFinancials = expectedFinancials(role, email);
-        const tempId = `qa_profit_${Date.now()}`;
-        let cleanupStatus = "warn";
-        let cleanupDetail = "Cleanup did not run.";
+          let auth = null;
+          try {
+            auth = await currentWin.RooflineAuth?.getTrustedUser?.();
+          } catch (error) {
+            add("fail", "Authentication", error.message || String(error));
+            return;
+          }
 
-        add(email ? "pass" : "fail", "Signed-In User", email ? `${email} / role: ${role}` : "No signed-in user email was available.");
-        expectBoolean(
-          "Permission Function: Job Financials",
-          currentWin.canManageJobFinancials?.() === true,
-          canUseFinancials,
-          canUseFinancials ? `Financial permission is allowed for ${role}/${email}.` : `Financial permission is denied for ${role}/${email}.`,
-          `Financial permission function does not match ${role}/${email}.`,
-        );
+          const email = String(auth?.user?.email || "").toLowerCase();
+          const role = typeof currentWin.currentRole === "function" ? currentWin.currentRole() : auth?.role || "viewer";
+          const canUseFinancials = expectedFinancials(role, email);
+          tempId = `qa_profit_${Date.now()}`;
 
-        try {
+          add(email ? "pass" : "fail", "Signed-In User", email ? `${email} / role: ${role}` : "No signed-in user email was available.");
+          expectBoolean(
+            "Permission Function: Job Financials",
+            currentWin.canManageJobFinancials?.() === true,
+            canUseFinancials,
+            canUseFinancials ? `Financial permission is allowed for ${role}/${email}.` : `Financial permission is denied for ${role}/${email}.`,
+            `Financial permission function does not match ${role}/${email}.`,
+          );
+
           createTempLead(currentWin, currentDoc, tempId, email);
           await sleep(900);
           add("pass", "Temporary Lead", `Created temporary QA lead ${tempId} through the CRM form.`);
@@ -284,12 +280,18 @@
         } catch (error) {
           add("fail", "Profit Role Test", error.message || String(error));
         } finally {
-          const cleaned = await deleteTempLead(win(), tempId);
-          cleanupStatus = cleaned ? "pass" : "warn";
-          cleanupDetail = cleaned
-            ? `Temporary QA lead ${tempId} was deleted through the CRM.`
-            : `Could not confirm automatic cleanup for ${tempId}. Search for ZZ QA Profit Role Test and delete it if present.`;
-          add(cleanupStatus, "Cleanup", cleanupDetail);
+          if (tempId) {
+            const cleaned = await deleteTempLead(win(), tempId);
+            add(
+              cleaned ? "pass" : "warn",
+              "Cleanup",
+              cleaned
+                ? `Temporary QA lead ${tempId} was deleted through the CRM.`
+                : `Could not confirm automatic cleanup for ${tempId}. Search for ZZ QA Profit Role Test and delete it if present.`,
+            );
+          }
+          runButton.disabled = false;
+          runButton.textContent = "Run Profit Test";
         }
       }
 
