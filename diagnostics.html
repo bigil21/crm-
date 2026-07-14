@@ -18,34 +18,14 @@
         --blue: #0f5fe8;
       }
       * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        font-family: Arial, Helvetica, sans-serif;
-        background: var(--soft);
-        color: var(--ink);
-      }
-      header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        padding: 18px 22px;
-        background: #0b1220;
-        color: #fff;
-      }
+      body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: var(--soft); color: var(--ink); }
+      header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; background: #0b1220; color: #fff; }
       header h1 { margin: 0; font-size: 20px; }
       header p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
-      button {
-        border: 0;
-        border-radius: 8px;
-        background: var(--blue);
-        color: #fff;
-        padding: 10px 14px;
-        font-weight: 700;
-        cursor: pointer;
-      }
+      button { border: 0; border-radius: 8px; background: var(--blue); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; }
       button.secondary { background: #334155; }
-      main { display: grid; grid-template-columns: 420px minmax(0, 1fr); min-height: calc(100vh - 74px); }
+      button.danger { background: #b91c1c; }
+      main { display: grid; grid-template-columns: 430px minmax(0, 1fr); min-height: calc(100vh - 74px); }
       .panel { padding: 18px; border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
       .runner-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
       .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
@@ -53,45 +33,29 @@
       .summary strong { display: block; font-size: 20px; }
       .summary span { display: block; color: var(--muted); font-size: 12px; }
       .result-list { display: grid; gap: 8px; }
-      .result {
-        border: 1px solid var(--line);
-        border-left-width: 5px;
-        border-radius: 8px;
-        padding: 10px;
-        background: #fff;
-      }
+      .result { border: 1px solid var(--line); border-left-width: 5px; border-radius: 8px; padding: 10px; background: #fff; }
       .result.pass { border-left-color: var(--pass); }
       .result.warn { border-left-color: var(--warn); }
       .result.fail { border-left-color: var(--fail); }
       .result strong { display: block; font-size: 14px; }
       .result span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
       iframe { width: 100%; height: 100%; min-height: calc(100vh - 74px); border: 0; background: #fff; }
-      pre {
-        max-height: 220px;
-        overflow: auto;
-        padding: 10px;
-        border-radius: 8px;
-        background: #0b1220;
-        color: #e2e8f0;
-        font-size: 12px;
-      }
-      @media (max-width: 900px) {
-        main { grid-template-columns: 1fr; }
-        iframe { min-height: 720px; }
-      }
+      pre { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; background: #0b1220; color: #e2e8f0; font-size: 12px; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } iframe { min-height: 720px; } }
     </style>
   </head>
   <body>
     <header>
       <div>
         <h1>CRM Diagnostics</h1>
-        <p>Runs safe navigation and search checks inside your signed-in CRM session.</p>
+        <p>Runs safe checks inside your signed-in CRM session.</p>
       </div>
-      <button id="runAgain" type="button">Run Test</button>
+      <button id="runAgain" type="button">Run Smoke Test</button>
     </header>
     <main>
       <section class="panel">
         <div class="runner-actions">
+          <button id="runAdminWorkflow" type="button" class="danger">Run Admin Workflow Test</button>
           <button id="copyResults" type="button" class="secondary">Copy Results</button>
           <button id="openApp" type="button" class="secondary">Open CRM</button>
         </div>
@@ -103,7 +67,7 @@
         <div id="results" class="result-list"></div>
         <pre id="rawResults" hidden></pre>
       </section>
-      <iframe id="crmFrame" title="CRM under test" src="./?diagnostics-frame=v1"></iframe>
+      <iframe id="crmFrame" title="CRM under test" src="./?diagnostics-frame=v2"></iframe>
     </main>
 
     <script>
@@ -111,7 +75,6 @@
       const resultsEl = document.querySelector("#results");
       const rawResultsEl = document.querySelector("#rawResults");
       const resultState = [];
-
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
       function setCounts() {
@@ -121,9 +84,7 @@
       }
 
       function renderResults() {
-        resultsEl.innerHTML = resultState
-          .map((item) => `<article class="result ${item.status}"><strong>${item.name}</strong><span>${item.detail}</span></article>`)
-          .join("");
+        resultsEl.innerHTML = resultState.map((item) => `<article class="result ${item.status}"><strong>${item.name}</strong><span>${item.detail}</span></article>`).join("");
         rawResultsEl.textContent = JSON.stringify({ ranAt: new Date().toISOString(), results: resultState }, null, 2);
         setCounts();
       }
@@ -133,20 +94,17 @@
         renderResults();
       }
 
+      function resetResults(message) {
+        resultState.length = 0;
+        addResult("warn", "Diagnostics", message);
+      }
+
       function crmDocument() {
-        try {
-          return frame.contentDocument || frame.contentWindow.document;
-        } catch {
-          return null;
-        }
+        try { return frame.contentDocument || frame.contentWindow.document; } catch { return null; }
       }
 
       function crmWindow() {
-        try {
-          return frame.contentWindow;
-        } catch {
-          return null;
-        }
+        try { return frame.contentWindow; } catch { return null; }
       }
 
       function visible(node) {
@@ -155,26 +113,52 @@
         return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
       }
 
+      function parseCrmRecord(value) {
+        try { return JSON.parse(value || "{}"); } catch { return {}; }
+      }
+
+      function snapshotCrmStorage(win) {
+        const snapshot = {};
+        for (let index = 0; index < win.localStorage.length; index += 1) {
+          const key = win.localStorage.key(index) || "";
+          if (key.startsWith("roofline-crm-v1")) snapshot[key] = win.localStorage.getItem(key);
+        }
+        return snapshot;
+      }
+
+      function restoreCrmStorage(win, snapshot) {
+        const keys = [];
+        for (let index = 0; index < win.localStorage.length; index += 1) {
+          const key = win.localStorage.key(index) || "";
+          if (key.startsWith("roofline-crm-v1")) keys.push(key);
+        }
+        keys.forEach((key) => win.localStorage.removeItem(key));
+        Object.entries(snapshot).forEach(([key, value]) => win.localStorage.setItem(key, value));
+      }
+
       function readCrmStorage(win) {
         const contacts = [];
+        const estimates = [];
         const keys = [];
-        const seen = new Set();
+        const seenContacts = new Set();
+        const seenEstimates = new Set();
         for (let index = 0; index < win.localStorage.length; index += 1) {
           const key = win.localStorage.key(index) || "";
           if (!key.startsWith("roofline-crm-v1")) continue;
           keys.push(key);
-          try {
-            const parsed = JSON.parse(win.localStorage.getItem(key) || "{}");
-            (parsed.contacts || []).forEach((contact) => {
-              if (!contact?.id || seen.has(contact.id)) return;
-              seen.add(contact.id);
-              contacts.push(contact);
-            });
-          } catch {
-            // Ignore non-CRM records.
-          }
+          const parsed = parseCrmRecord(win.localStorage.getItem(key));
+          (parsed.contacts || []).forEach((contact) => {
+            if (!contact?.id || seenContacts.has(contact.id)) return;
+            seenContacts.add(contact.id);
+            contacts.push(contact);
+          });
+          (parsed.estimates || []).forEach((estimate) => {
+            if (!estimate?.id || seenEstimates.has(estimate.id)) return;
+            seenEstimates.add(estimate.id);
+            estimates.push(estimate);
+          });
         }
-        return { keys, contacts };
+        return { keys, contacts, estimates };
       }
 
       async function waitForApp(timeoutMs = 12000) {
@@ -186,6 +170,21 @@
           await sleep(250);
         }
         return crmDocument();
+      }
+
+      async function loadReadyApp() {
+        const doc = await waitForApp();
+        const win = crmWindow();
+        if (!doc || !win) {
+          addResult("fail", "CRM Load", "Could not access the CRM frame.");
+          return null;
+        }
+        if (doc.querySelector("#loginForm")) {
+          addResult("fail", "Authentication", "The CRM frame is on the login page. Sign in to the CRM, then reload diagnostics.html.");
+          return null;
+        }
+        addResult("pass", "CRM Load", `Loaded ${win.location.pathname}${win.location.search}.`);
+        return { doc, win };
       }
 
       async function clickView(doc, view) {
@@ -204,6 +203,27 @@
         }
         addResult("fail", `Navigation: ${view}`, `${panelId} did not become visible after click.`);
         return false;
+      }
+
+      function setFormField(win, form, name, value) {
+        const field = form?.elements?.[name];
+        if (!field) throw new Error(`Missing form field: ${name}`);
+        field.value = value;
+        field.dispatchEvent(new win.Event("input", { bubbles: true }));
+        field.dispatchEvent(new win.Event("change", { bubbles: true }));
+      }
+
+      function submitForm(win, form) {
+        if (!form) throw new Error("Missing form");
+        form.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }));
+      }
+
+      function findContactByName(win, name) {
+        return readCrmStorage(win).contacts.find((contact) => contact.name === name);
+      }
+
+      function findEstimateForContact(win, contactId) {
+        return readCrmStorage(win).estimates.find((estimate) => estimate.contactId === contactId);
       }
 
       async function testDashboardSearch(doc, win) {
@@ -236,45 +256,166 @@
       }
 
       async function runDiagnostics() {
-        resultState.length = 0;
-        addResult("warn", "Diagnostics", "Starting CRM click test. No records will be created, edited, or deleted.");
-        const doc = await waitForApp();
-        const win = crmWindow();
-        if (!doc || !win) {
-          addResult("fail", "CRM Load", "Could not access the CRM frame.");
-          return;
-        }
-        if (doc.querySelector("#loginForm")) {
-          addResult("fail", "Authentication", "The CRM frame is on the login page. Sign in to the CRM, then reload diagnostics.html.");
-          return;
-        }
-        addResult("pass", "CRM Load", `Loaded ${win.location.pathname}${win.location.search}.`);
-
+        resetResults("Starting CRM click test. No records will be created, edited, or deleted.");
+        const ready = await loadReadyApp();
+        if (!ready) return;
+        const { doc, win } = ready;
         const required = [
-          ["#globalSearch", "Global search input"],
-          ["#dashboardView", "Dashboard view"],
-          ["#contactsView", "Contacts view"],
-          ["#jobsView", "Jobs view"],
-          ["#estimatesView", "Estimates view"],
-          ["#companyDocumentsView", "Company documents view"],
-          ["#calendarView", "Calendar view"],
-          ["#tasksView", "Tasks view"],
-          ["#companyView", "Settings view"],
-          ["#aiAssistant", "AI assistant shell"],
+          ["#globalSearch", "Global search input"], ["#dashboardView", "Dashboard view"], ["#contactsView", "Contacts view"],
+          ["#jobsView", "Jobs view"], ["#estimatesView", "Estimates view"], ["#companyDocumentsView", "Company documents view"],
+          ["#calendarView", "Calendar view"], ["#tasksView", "Tasks view"], ["#companyView", "Settings view"], ["#aiAssistant", "AI assistant shell"],
         ];
-        required.forEach(([selector, label]) => {
-          addResult(doc.querySelector(selector) ? "pass" : "fail", `Required UI: ${label}`, selector);
-        });
-
+        required.forEach(([selector, label]) => addResult(doc.querySelector(selector) ? "pass" : "fail", `Required UI: ${label}`, selector));
         const storage = readCrmStorage(win);
-        addResult(storage.keys.length ? "pass" : "warn", "CRM Storage", `${storage.contacts.length} contact(s) found across ${storage.keys.length} CRM storage key(s).`);
-
+        addResult(storage.keys.length ? "pass" : "warn", "CRM Storage", `${storage.contacts.length} contact(s) and ${storage.estimates.length} estimate(s) found across ${storage.keys.length} CRM storage key(s).`);
         const views = ["dashboard", "leads", "contacts", "jobs", "estimates", "companyDocuments", "calendar", "tasks", "invoices", "reviews", "reports", "company"];
         for (const view of views) await clickView(doc, view);
         await testDashboardSearch(doc, win);
       }
 
+      async function runAdminWorkflow() {
+        resetResults("Starting admin workflow test. A temporary lead, job, estimate, and document will be created, then deleted.");
+        const ready = await loadReadyApp();
+        if (!ready) return;
+        const { doc, win } = ready;
+        const snapshot = snapshotCrmStorage(win);
+        const originalConfirm = win.confirm;
+        const originalPrompt = win.prompt;
+        const id = Date.now().toString(36);
+        const contactName = `ZZ QA Admin Workflow ${id}`;
+        const jobName = `QA Roof Replacement ${id}`;
+        const renamedDocName = `QA Estimate Document ${id}.pdf`;
+        let contact = null;
+        let estimate = null;
+        let cleanupPassed = false;
+
+        try {
+          win.confirm = () => true;
+          win.prompt = () => renamedDocName;
+
+          if (typeof win.openContactDialog === "function") {
+            win.openContactDialog(null, { type: "Lead" });
+          } else {
+            doc.querySelector("#addContactButton")?.click();
+          }
+          await sleep(250);
+          const contactForm = doc.querySelector("#contactForm");
+          setFormField(win, contactForm, "type", "Lead");
+          setFormField(win, contactForm, "status", "Inspection");
+          setFormField(win, contactForm, "name", contactName);
+          setFormField(win, contactForm, "source", "QA Diagnostics");
+          setFormField(win, contactForm, "salesRep", "QA Admin");
+          setFormField(win, contactForm, "email", `qa-${id}@coastalcrestroofing.com`);
+          setFormField(win, contactForm, "phone", "555-0100");
+          setFormField(win, contactForm, "address", "100 QA Test Lane\nAustin, TX 78701");
+          setFormField(win, contactForm, "value", "12345");
+          setFormField(win, contactForm, "lastContact", new Date().toISOString().slice(0, 10));
+          setFormField(win, contactForm, "notes", "Temporary diagnostics record. Safe to delete.");
+          submitForm(win, contactForm);
+          await sleep(1200);
+          contact = findContactByName(win, contactName);
+          addResult(contact ? "pass" : "fail", "Admin Workflow: Create Lead", contact ? `Created temporary lead ${contact.id}.` : "Temporary lead was not found in CRM storage after save.");
+          if (!contact) throw new Error("Lead create failed");
+
+          if (typeof win.openLeadDetail !== "function") throw new Error("openLeadDetail is not available");
+          win.openLeadDetail(contact.id, "jobs");
+          await sleep(500);
+          const jobForm = doc.querySelector("#leadJobForm");
+          setFormField(win, jobForm, "jobId", "");
+          setFormField(win, jobForm, "name", jobName);
+          setFormField(win, jobForm, "status", "Inspection");
+          setFormField(win, jobForm, "value", "23456");
+          setFormField(win, jobForm, "salesRep", "QA Admin");
+          setFormField(win, jobForm, "lastContact", new Date().toISOString().slice(0, 10));
+          setFormField(win, jobForm, "closedDate", "");
+          setFormField(win, jobForm, "address", "200 QA Job Avenue\nAustin, TX 78702");
+          setFormField(win, jobForm, "notes", "Temporary QA job created by diagnostics.");
+          submitForm(win, jobForm);
+          await sleep(1200);
+          contact = findContactByName(win, contactName);
+          const job = contact?.jobs?.find((item) => item.name === jobName);
+          addResult(job ? "pass" : "fail", "Admin Workflow: Add Job", job ? `Added job ${job.id}.` : "Temporary job was not found under the lead.");
+          if (!job) throw new Error("Job create failed");
+
+          if (typeof win.createEstimate !== "function") throw new Error("createEstimate is not available");
+          win.createEstimate(contact.id, true, job.id);
+          await sleep(1000);
+          estimate = findEstimateForContact(win, contact.id);
+          addResult(estimate?.jobId === job.id ? "pass" : "fail", "Admin Workflow: Create Estimate", estimate ? `Created estimate ${estimate.estimateNumber || estimate.id} attached to job ${estimate.jobId}.` : "Estimate was not created for the temporary lead.");
+          if (!estimate) throw new Error("Estimate create failed");
+
+          const titleInput = doc.querySelector('[data-line-field="title"]');
+          const descInput = doc.querySelector('[data-line-field="description"]');
+          const qtyInput = doc.querySelector('[data-line-field="quantity"]');
+          const rateInput = doc.querySelector('[data-line-field="rate"]');
+          if (titleInput && descInput && qtyInput && rateInput) {
+            titleInput.value = "QA Architectural Shingle System";
+            titleInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+            descInput.value = "Temporary diagnostic line item with title and description.";
+            descInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+            qtyInput.value = "2";
+            qtyInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+            rateInput.value = "1500";
+            rateInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+            await sleep(700);
+          }
+          estimate = findEstimateForContact(win, contact.id);
+          const editedLine = estimate?.items?.some((item) => item.title === "QA Architectural Shingle System" && item.description);
+          addResult(editedLine ? "pass" : "fail", "Admin Workflow: Estimate Line Items", editedLine ? "Line item title, description, quantity, and rate saved." : "Line item edits did not save to CRM storage.");
+
+          if (typeof win.downloadEstimatePdf !== "function") throw new Error("downloadEstimatePdf is not available");
+          addResult("warn", "Admin Workflow: PDF Download", "The browser may download one temporary QA estimate PDF during this step.");
+          await win.downloadEstimatePdf({ silent: true });
+          await sleep(1600);
+          contact = findContactByName(win, contactName);
+          estimate = findEstimateForContact(win, contact.id);
+          const pdfDoc = contact?.documents?.find((document) => document.source === "Estimate PDF" && document.estimateId === estimate?.id);
+          addResult(pdfDoc ? "pass" : "fail", "Admin Workflow: Save PDF To Lead", pdfDoc ? `Estimate PDF saved under lead documents as ${pdfDoc.name}.` : "No estimate PDF document was saved under the lead.");
+          if (!pdfDoc) throw new Error("PDF document save failed");
+
+          if (typeof win.renameLeadDocument !== "function") throw new Error("renameLeadDocument is not available");
+          win.openLeadDetail(contact.id, "documents");
+          await sleep(500);
+          win.renameLeadDocument(pdfDoc.id);
+          await sleep(1000);
+          contact = findContactByName(win, contactName);
+          const renamedDoc = contact?.documents?.find((document) => document.id === pdfDoc.id && document.name === renamedDocName);
+          addResult(renamedDoc ? "pass" : "fail", "Admin Workflow: Rename Document", renamedDoc ? `Renamed document to ${renamedDoc.name}.` : "Document rename did not persist.");
+
+          if (typeof win.deleteContact !== "function") throw new Error("deleteContact is not available");
+          win.deleteContact(contact.id);
+          await sleep(1800);
+          const afterDelete = readCrmStorage(win);
+          const stillHasContact = afterDelete.contacts.some((item) => item.id === contact.id || item.name === contactName);
+          const stillHasEstimate = afterDelete.estimates.some((item) => item.contactId === contact.id);
+          cleanupPassed = !stillHasContact && !stillHasEstimate;
+          addResult(cleanupPassed ? "pass" : "fail", "Admin Workflow: Cleanup", cleanupPassed ? "Temporary lead and related estimates were deleted." : "Temporary lead or estimate still exists after cleanup.");
+        } catch (error) {
+          addResult("fail", "Admin Workflow Error", error.message || String(error));
+        } finally {
+          win.confirm = originalConfirm;
+          win.prompt = originalPrompt;
+          if (!cleanupPassed && contact) {
+            try {
+              if (typeof win.deleteContact === "function") {
+                win.confirm = () => true;
+                win.deleteContact(contact.id);
+                await sleep(1200);
+              }
+            } catch {}
+            win.confirm = originalConfirm;
+            const storage = readCrmStorage(win);
+            const stillExists = storage.contacts.some((item) => item.name === contactName);
+            if (stillExists) {
+              restoreCrmStorage(win, snapshot);
+              addResult("warn", "Admin Workflow: Emergency Restore", "Local CRM storage was restored to the pre-test snapshot because cleanup did not complete.");
+            }
+          }
+        }
+      }
+
       document.querySelector("#runAgain").addEventListener("click", runDiagnostics);
+      document.querySelector("#runAdminWorkflow").addEventListener("click", runAdminWorkflow);
       document.querySelector("#openApp").addEventListener("click", () => window.open("./", "_blank"));
       document.querySelector("#copyResults").addEventListener("click", async () => {
         rawResultsEl.hidden = false;
