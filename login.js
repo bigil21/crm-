@@ -7,7 +7,9 @@
   const status = document.querySelector("#loginStatus");
   const domainHint = document.querySelector("#domainHint");
   const config = window.RooflineAuth?.config || {};
-  const redirect = new URLSearchParams(location.search).get("redirect") || "/";
+  const params = new URLSearchParams(location.search);
+  const redirect = params.get("redirect") || "/";
+  const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
 
   function setStatus(message, tone = "") {
     status.textContent = message;
@@ -33,7 +35,7 @@
       const keys = [];
       for (let index = 0; index < store.length; index += 1) {
         const key = store.key(index) || "";
-        if (key.startsWith("sb-") || key.includes("supabase.auth.token")) keys.push(key);
+        if (key.startsWith("sb-") || key.includes("supabase.auth.token") || key.includes("supabase.auth")) keys.push(key);
       }
       keys.forEach((key) => store.removeItem(key));
     });
@@ -59,7 +61,7 @@
       await signOutCurrentSession();
       setStatus(
         signedInEmail
-          ? `Still signed in as ${signedInEmail}. Please try again after logging out.`
+          ? `Still signed in as ${signedInEmail}. Open /reset-session.html?v=46, then try again.`
           : "Sign-in did not create a verified CRM session. Please try again.",
         "error",
       );
@@ -79,9 +81,16 @@
   }
 
   const client = window.RooflineAuth.createClient();
+  if (forceAccountSwitch) {
+    setStatus("Clearing the prior CRM session. Sign in with the account you want to use.");
+    await signOutCurrentSession();
+  }
+
   const existing = await window.RooflineAuth.getTrustedUser();
   if (existing.user && window.RooflineAuth.isAllowedEmail(existing.user.email)) {
     setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts.`);
+  } else if (forceAccountSwitch) {
+    setStatus("Prior CRM session cleared. Sign in with the account you want to use.", "success");
   }
 
   form.addEventListener("submit", async (event) => {
