@@ -23,6 +23,7 @@
       header p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
       button { border: 0; border-radius: 8px; background: var(--blue); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; }
       button.secondary { background: #334155; }
+      button:disabled { opacity: 0.55; cursor: not-allowed; }
       main { display: grid; grid-template-columns: 430px minmax(0, 1fr); min-height: calc(100vh - 74px); }
       .panel { padding: 18px; border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -64,11 +65,12 @@
         <div id="results" class="results"></div>
         <pre id="rawResults" hidden></pre>
       </section>
-      <iframe id="crmFrame" title="CRM under role test" src="./?role-diagnostics=v1"></iframe>
+      <iframe id="crmFrame" title="CRM under role test" src="./?role-diagnostics=v52"></iframe>
     </main>
 
     <script>
       const frame = document.querySelector("#crmFrame");
+      const runButton = document.querySelector("#runTest");
       const resultsEl = document.querySelector("#results");
       const rawResultsEl = document.querySelector("#rawResults");
       const results = [];
@@ -107,16 +109,24 @@
 
       function visible(node) {
         if (!node) return false;
-        const styles = win().getComputedStyle(node);
+        const currentWin = win();
+        if (!currentWin) return false;
+        const styles = currentWin.getComputedStyle(node);
         return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
       }
 
-      async function waitForApp(timeoutMs = 12000) {
+      async function waitForApp(timeoutMs = 18000) {
         const started = Date.now();
+        let lastProgress = 0;
         while (Date.now() - started < timeoutMs) {
           const currentDoc = doc();
           if (currentDoc?.querySelector("#globalSearch") && currentDoc.querySelector("#dashboardView")) return currentDoc;
           if (currentDoc?.querySelector("#loginForm")) return currentDoc;
+          const elapsed = Math.floor((Date.now() - started) / 1000);
+          if (elapsed && elapsed % 5 === 0 && elapsed !== lastProgress) {
+            lastProgress = elapsed;
+            add("warn", "CRM Frame", `Still waiting for the CRM iframe to finish loading (${elapsed}s).`);
+          }
           await sleep(250);
         }
         return doc();
@@ -168,8 +178,9 @@
         }
         currentWin.setView(view);
         await sleep(450);
+        const latestDoc = doc() || currentDoc;
         const panelId = view === "companyDocuments" ? "companyDocumentsView" : `${view}View`;
-        const isVisible = visible(currentDoc.querySelector(`#${panelId}`));
+        const isVisible = visible(latestDoc.querySelector(`#${panelId}`));
         expectBoolean(
           `Restricted View: ${view}`,
           isVisible,
@@ -181,7 +192,7 @@
 
       async function testProfitTab(currentDoc, currentWin, canUseFinancials, activeContacts) {
         if (!activeContacts.length) {
-          add("warn", "Profit/Cost Tab", "No contacts in the active user storage key, so tab visibility could not be tested.");
+          add("warn", "Profit/Cost Tab", "No contacts in the active user storage key, so tab visibility could not be tested. Use profit-role-test.html for a temporary-lead financial access test.");
           return;
         }
         if (typeof currentWin.openLeadDetail !== "function") {
@@ -190,8 +201,9 @@
         }
         currentWin.openLeadDetail(activeContacts[0].id, "profit");
         await sleep(600);
-        const profitTab = currentDoc.querySelector('[data-lead-tab="profit"]');
-        const profitPanel = currentDoc.querySelector("#leadProfitPanel");
+        const latestDoc = doc() || currentDoc;
+        const profitTab = latestDoc.querySelector('[data-lead-tab="profit"]');
+        const profitPanel = latestDoc.querySelector("#leadProfitPanel");
         const tabVisible = visible(profitTab);
         const panelVisible = visible(profitPanel);
         expectBoolean(
@@ -232,7 +244,8 @@
           }));
           if (typeof currentWin.setView === "function") currentWin.setView("dashboard");
           await sleep(500);
-          const search = currentDoc.querySelector("#globalSearch");
+          const latestDoc = doc() || currentDoc;
+          const search = latestDoc.querySelector("#globalSearch");
           if (!search) {
             add("fail", "Dashboard Search Isolation", "Global search input was not found.");
             return;
@@ -240,7 +253,7 @@
           search.value = "Forbidden Security Canary";
           search.dispatchEvent(new currentWin.Event("input", { bubbles: true }));
           await sleep(1100);
-          const panel = currentDoc.querySelector("#dashboardSearchResults");
+          const panel = latestDoc.querySelector("#dashboardSearchResults");
           const leaked = Boolean(panel?.textContent?.includes(canaryName));
           expectBoolean(
             "Dashboard Search Isolation",
@@ -257,56 +270,70 @@
 
       async function runRoleDiagnostics() {
         reset();
-        const currentDoc = await waitForApp();
-        const currentWin = win();
-        if (!currentDoc || !currentWin) {
-          add("fail", "CRM Load", "Could not access the CRM frame.");
-          return;
-        }
-        if (currentDoc.querySelector("#loginForm")) {
-          add("fail", "Authentication", "The CRM frame is on the login page. Sign in first, then reload this page.");
-          return;
-        }
-        add("pass", "CRM Load", `Loaded ${currentWin.location.pathname}${currentWin.location.search}.`);
-
-        let auth = null;
+        runButton.disabled = true;
+        runButton.textContent = "Running...";
         try {
-          auth = await currentWin.RooflineAuth?.getTrustedUser?.();
+          add("warn", "CRM Frame", "Waiting for the already-loaded CRM iframe.");
+          const currentDoc = await waitForApp();
+          const currentWin = win();
+          if (!currentDoc || !currentWin) {
+            add("fail", "CRM Load", "Could not access the CRM frame.");
+            return;
+          }
+          if (currentDoc.querySelector("#loginForm")) {
+            add("fail", "Authentication", "The CRM frame is on the login page. Sign in first, then reload this page.");
+            return;
+          }
+          if (!currentDoc.querySelector("#globalSearch")) {
+            add("fail", "CRM Load", "The CRM frame did not finish loading. Open the CRM in another tab first, then rerun this test.");
+            return;
+          }
+          add("pass", "CRM Load", `Loaded ${currentWin.location.pathname}${currentWin.location.search}.`);
+
+          let auth = null;
+          try {
+            auth = await currentWin.RooflineAuth?.getTrustedUser?.();
+          } catch (error) {
+            add("fail", "Authentication", error.message || String(error));
+            return;
+          }
+          const email = String(auth?.user?.email || "").toLowerCase();
+          const role = typeof currentWin.currentRole === "function" ? currentWin.currentRole() : auth?.role || "viewer";
+          add(email ? "pass" : "fail", "Signed-In User", email ? `${email} / role: ${role}` : "No signed-in user email was available.");
+
+          const storage = readStorage(currentWin, auth?.user?.id || "");
+          const activeContacts = Array.isArray(storage.active.contacts) ? storage.active.contacts : [];
+          add(storage.activeKey ? "pass" : "fail", "Active User Storage", `${storage.activeKey}; ${activeContacts.length} contact(s). CRM keys in this browser: ${storage.crmKeys.length}.`);
+
+          if (typeof currentWin.canView !== "function" || typeof currentWin.canAction !== "function") {
+            add("fail", "Permission Functions", "canView() or canAction() is not available.");
+            return;
+          }
+
+          const shouldCompany = expectedCompanyView(role);
+          const shouldTeam = expectedTeamData(role);
+          const shouldFinancials = expectedFinancials(role, email);
+          const shouldEstimates = expectedEstimatesView(role);
+          const shouldLeads = expectedLeadsView(role);
+
+          expectBoolean("Permission: Team Data", currentWin.canManageTeamData?.() === true, shouldTeam, `Team-data permission matches ${role}.`, `Team-data permission is incorrect for ${role}.`);
+          expectBoolean("Permission: Job Financials", currentWin.canManageJobFinancials?.() === true, shouldFinancials, `Financial permission matches ${role}/${email}.`, `Financial permission is incorrect for ${role}/${email}.`);
+          expectBoolean("Permission: Company Settings", currentWin.canView("company") === true, shouldCompany, `Company settings visibility matches ${role}.`, `Company settings visibility is incorrect for ${role}.`);
+          expectBoolean("Permission: Estimates View", currentWin.canView("estimates") === true, shouldEstimates, `Estimate visibility matches ${role}.`, `Estimate visibility is incorrect for ${role}.`);
+          expectBoolean("Permission: Leads View", currentWin.canView("leads") === true, shouldLeads, `Lead visibility matches ${role}.`, `Lead visibility is incorrect for ${role}.`);
+          expectBoolean("Permission: Manage Company Action", currentWin.canAction("manageCompany") === true, role === "admin" || role === "office_manager", `Manage-company action matches ${role}.`, `Manage-company action is incorrect for ${role}.`);
+          expectBoolean("Permission: Manage Financial Action", currentWin.canAction("manageJobFinancials") === true, shouldFinancials, `Manage-financials action matches ${role}/${email}.`, `Manage-financials action is incorrect for ${role}/${email}.`);
+
+          await testRestrictedView(currentDoc, currentWin, "company", shouldCompany);
+          await testRestrictedView(currentDoc, currentWin, "estimates", shouldEstimates);
+          await testProfitTab(currentDoc, currentWin, shouldFinancials, activeContacts);
+          await testSearchIsolation(currentDoc, currentWin);
         } catch (error) {
-          add("fail", "Authentication", error.message || String(error));
-          return;
+          add("fail", "Role Diagnostic", error.message || String(error));
+        } finally {
+          runButton.disabled = false;
+          runButton.textContent = "Run Role Test";
         }
-        const email = String(auth?.user?.email || "").toLowerCase();
-        const role = typeof currentWin.currentRole === "function" ? currentWin.currentRole() : auth?.role || "viewer";
-        add(email ? "pass" : "fail", "Signed-In User", email ? `${email} / role: ${role}` : "No signed-in user email was available.");
-
-        const storage = readStorage(currentWin, auth?.user?.id || "");
-        const activeContacts = Array.isArray(storage.active.contacts) ? storage.active.contacts : [];
-        add(storage.activeKey ? "pass" : "fail", "Active User Storage", `${storage.activeKey}; ${activeContacts.length} contact(s). CRM keys in this browser: ${storage.crmKeys.length}.`);
-
-        if (typeof currentWin.canView !== "function" || typeof currentWin.canAction !== "function") {
-          add("fail", "Permission Functions", "canView() or canAction() is not available.");
-          return;
-        }
-
-        const shouldCompany = expectedCompanyView(role);
-        const shouldTeam = expectedTeamData(role);
-        const shouldFinancials = expectedFinancials(role, email);
-        const shouldEstimates = expectedEstimatesView(role);
-        const shouldLeads = expectedLeadsView(role);
-
-        expectBoolean("Permission: Team Data", currentWin.canManageTeamData?.() === true, shouldTeam, `Team-data permission matches ${role}.`, `Team-data permission is incorrect for ${role}.`);
-        expectBoolean("Permission: Job Financials", currentWin.canManageJobFinancials?.() === true, shouldFinancials, `Financial permission matches ${role}/${email}.`, `Financial permission is incorrect for ${role}/${email}.`);
-        expectBoolean("Permission: Company Settings", currentWin.canView("company") === true, shouldCompany, `Company settings visibility matches ${role}.`, `Company settings visibility is incorrect for ${role}.`);
-        expectBoolean("Permission: Estimates View", currentWin.canView("estimates") === true, shouldEstimates, `Estimate visibility matches ${role}.`, `Estimate visibility is incorrect for ${role}.`);
-        expectBoolean("Permission: Leads View", currentWin.canView("leads") === true, shouldLeads, `Lead visibility matches ${role}.`, `Lead visibility is incorrect for ${role}.`);
-        expectBoolean("Permission: Manage Company Action", currentWin.canAction("manageCompany") === true, role === "admin" || role === "office_manager", `Manage-company action matches ${role}.`, `Manage-company action is incorrect for ${role}.`);
-        expectBoolean("Permission: Manage Financial Action", currentWin.canAction("manageJobFinancials") === true, shouldFinancials, `Manage-financials action matches ${role}/${email}.`, `Manage-financials action is incorrect for ${role}/${email}.`);
-
-        await testRestrictedView(currentDoc, currentWin, "company", shouldCompany);
-        await testRestrictedView(currentDoc, currentWin, "estimates", shouldEstimates);
-        await testProfitTab(currentDoc, currentWin, shouldFinancials, activeContacts);
-        await testSearchIsolation(currentDoc, currentWin);
       }
 
       document.querySelector("#runTest").addEventListener("click", runRoleDiagnostics);
