@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v45";
+const CACHE_NAME = "roofline-crm-v46";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -9,6 +9,7 @@ const APP_SHELL = [
   "./role-diagnostics.html",
   "./auth-config.js",
   "./auth-config.js?v=43",
+  "./auth-config.js?v=46",
   "./styles.css?v=32",
   "./styles.css?v=34",
   "./app.js?v=37",
@@ -18,6 +19,7 @@ const APP_SHELL = [
   "./auth.js?v=43",
   "./login.js",
   "./login.js?v=44",
+  "./login.js?v=46",
   "./logout.js",
   "./logout.js?v=44",
   "./vendor/jspdf.umd.min.js",
