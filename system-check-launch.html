@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CRM System Check</title>
+    <style>
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Arial, Helvetica, sans-serif; background: #f5f7fb; color: #111827; }
+      .status { width: min(560px, calc(100vw - 32px)); padding: 22px; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; box-shadow: 0 18px 46px rgba(15, 23, 42, .14); }
+      h1 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0; color: #64748b; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <main class="status">
+      <h1>Loading CRM system check...</h1>
+      <p>This opens a fresh CRM shell and adds the upper-admin, AI, and PDF diagnostics.</p>
+    </main>
+    <script>
+      (async () => {
+        try {
+          const response = await fetch(`/index.html?system-check=v62&t=${Date.now()}`, { cache: "no-store" });
+          let html = await response.text();
+          html = html
+            .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
+            .replaceAll('auth.js?v=24', 'auth.js?v=43')
+            .replaceAll('login.js?v=44', 'login.js?v=58')
+            .replaceAll('login.js?v=46', 'login.js?v=58');
+          html = html.replace("<head>", '<head><base href="/">');
+          html = html.replace(
+            "</body>",
+            '    <script>window.__ROOFLINE_SYSTEM_CHECK = true; history.replaceState(null, "", "/?system-check=v62");<\\/script>\n    <script src="system-check-v62.js?v=62" defer><\\/script>\n  </body>',
+          );
+          document.open();
+          document.write(html);
+          document.close();
+        } catch (error) {
+          document.querySelector(".status").innerHTML = `<h1>System check could not load</h1><p>${String(error.message || error)}</p>`;
+        }
+      })();
+    </script>
+  </body>
+</html>
