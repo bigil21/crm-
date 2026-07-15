@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v55";
+const CACHE_NAME = "roofline-crm-v57";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -10,6 +10,8 @@ const APP_SHELL = [
   "./role-security-check.html",
   "./role-direct-launch.html",
   "./role-direct-check.js",
+  "./role-direct-check-v56.js",
+  "./role-direct-check-v57.js",
   "./profit-role-test.html",
   "./auth-config.js",
   "./auth-config.js?v=43",
@@ -59,10 +61,10 @@ function patchIndexHtml(html, url) {
     .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
     .replaceAll('auth.js?v=24', 'auth.js?v=43');
 
-  if (url.searchParams.has("role-direct-check") && !patched.includes("role-direct-check.js")) {
+  if (url.searchParams.has("role-direct-check") && !patched.includes("role-direct-check-v57.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="role-direct-check.js?v=55" defer></script>\n  </body>',
+      '    <script>window.__ROOFLINE_DIRECT_ROLE_CHECK = true;</script>\n    <script src="role-direct-check-v57.js?v=57" defer></script>\n  </body>',
     );
   }
 
