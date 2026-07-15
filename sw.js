@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v58";
+const CACHE_NAME = "roofline-crm-v59";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -57,6 +57,10 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+function isHtmlShellPath(url) {
+  return url.pathname === "/" || url.pathname === "/login" || url.pathname.endsWith("/index.html") || url.pathname.endsWith("/login.html");
+}
+
 function patchIndexHtml(html, url) {
   let patched = html
     .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
@@ -77,7 +81,7 @@ function patchIndexHtml(html, url) {
 async function freshHtmlResponse(request) {
   const response = await fetch(request);
   const url = new URL(request.url);
-  if (!(url.pathname === "/" || url.pathname.endsWith("/index.html") || url.pathname.endsWith("/login.html"))) return response;
+  if (!isHtmlShellPath(url)) return response;
 
   const headers = new Headers(response.headers);
   headers.set("content-type", "text/html; charset=utf-8");
@@ -103,7 +107,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   // Always fetch HTML fresh so new deploys and diagnostics are not blocked by stale cache.
-  if (url.pathname === "/" || url.pathname.endsWith(".html") || url.pathname === "/login") {
+  if (isHtmlShellPath(url) || url.pathname.endsWith(".html")) {
     event.respondWith(freshHtmlResponse(event.request));
     return;
   }
