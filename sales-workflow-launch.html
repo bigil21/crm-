@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Launching Sales Workflow Check | Roofline CRM</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f5f7fb;
+        color: #111827;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+      main {
+        width: min(580px, calc(100vw - 32px));
+        border: 1px solid #d9e2ef;
+        border-radius: 10px;
+        padding: 22px;
+        background: #fff;
+        box-shadow: 0 20px 55px rgba(15, 23, 42, 0.12);
+      }
+      h1 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0; color: #64748b; line-height: 1.5; }
+      #status { margin-top: 14px; color: #0f5fe8; font-weight: 700; }
+      a { color: #0f5fe8; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Preparing Sales Workflow Check</h1>
+      <p>This loads a fresh CRM shell and injects the workflow test into the signed-in app. The test creates temporary QA records, verifies them, and deletes them.</p>
+      <p id="status">Starting...</p>
+    </main>
+    <script>
+      const status = document.querySelector("#status");
+
+      function patchCrmHtml(html) {
+        let patched = html
+          .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
+          .replaceAll('auth.js?v=24', 'auth.js?v=43')
+          .replaceAll('login.js?v=44', 'login.js?v=58')
+          .replaceAll('login.js?v=46', 'login.js?v=58');
+
+        if (!patched.includes('<base href="/">')) {
+          patched = patched.replace("<head>", '<head>\n    <base href="/">');
+        }
+
+        const injection = `
+          <script>
+            window.__ROOFLINE_SALES_WORKFLOW_CHECK = true;
+            history.replaceState(null, "", "/?sales-workflow-check=v61");
+          <\/script>
+          <script src="sales-workflow-check-v61.js?v=61" defer><\/script>
+        `;
+
+        if (!patched.includes("sales-workflow-check-v61.js")) {
+          patched = patched.replace("</body>", `${injection}\n  </body>`);
+        }
+        return patched;
+      }
+
+      async function launch() {
+        try {
+          status.textContent = "Fetching a fresh CRM shell...";
+          const response = await fetch(`/index.html?sales-workflow-check=v61&t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`CRM shell returned ${response.status}`);
+          const html = patchCrmHtml(await response.text());
+          status.textContent = "Opening CRM workflow check...";
+          document.open();
+          document.write(html);
+          document.close();
+        } catch (error) {
+          status.innerHTML = `Could not launch the workflow check: ${error.message || error}. Try <a href="/?sales-workflow-check=v61">opening the CRM check directly</a>.`;
+        }
+      }
+
+      launch();
+    </script>
+  </body>
+</html>
