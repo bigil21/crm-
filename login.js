@@ -4,6 +4,7 @@
   const passwordField = document.querySelector("#loginPassword");
   const createAccountButton = document.querySelector("#createAccountButton");
   const magicLinkButton = document.querySelector("#magicLinkButton");
+  const clearSessionButton = document.querySelector("#clearSessionButton");
   const status = document.querySelector("#loginStatus");
   const domainHint = document.querySelector("#domainHint");
   const config = window.RooflineAuth?.config || {};
@@ -14,6 +15,29 @@
   function setStatus(message, tone = "") {
     status.textContent = message;
     status.dataset.tone = tone;
+  }
+
+  function authErrorMessage(error, action = "sign-in") {
+    const message = String(error?.message || error || "Authentication failed");
+    if (/email not confirmed/i.test(message)) {
+      return "This account exists, but the email is not confirmed yet. In Supabase, go to Authentication > Users, open this email, click Confirm email, then sign in again.";
+    }
+    if (/invalid login credentials/i.test(message)) {
+      return "Sign-in failed. Check the password. If this account was just created, confirm the email in Supabase first, or use Magic Link.";
+    }
+    if (/user already registered|already registered|already exists/i.test(message)) {
+      return "That account already exists. Use Sign In or Magic Link instead of Create Account.";
+    }
+    if (/rate limit|too many|security purposes/i.test(message)) {
+      return "Supabase is temporarily rate-limiting this email. Wait a few minutes, then try again.";
+    }
+    if (/signup.*disabled|signups not allowed/i.test(message)) {
+      return "New account creation is disabled in Supabase. Create or invite the user from Supabase Authentication > Users.";
+    }
+    if (/otp|magic link/i.test(message) && action === "magic-link") {
+      return "Magic link could not be sent. Confirm the user exists in Supabase and that email sending is enabled.";
+    }
+    return message;
   }
 
   function sanitizeRedirect(value) {
@@ -61,8 +85,8 @@
       await signOutCurrentSession();
       setStatus(
         signedInEmail
-          ? `Still signed in as ${signedInEmail}. Open /reset-session.html?v=46, then try again.`
-          : "Sign-in did not create a verified CRM session. Please try again.",
+          ? `Still signed in as ${signedInEmail}. Click Clear Saved Session, then try again.`
+          : "Sign-in did not create a verified CRM session. Click Clear Saved Session, then try again.",
         "error",
       );
       return false;
@@ -88,10 +112,18 @@
 
   const existing = await window.RooflineAuth.getTrustedUser();
   if (existing.user && window.RooflineAuth.isAllowedEmail(existing.user.email)) {
-    setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts.`);
+    setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts, or click Clear Saved Session first.`);
   } else if (forceAccountSwitch) {
     setStatus("Prior CRM session cleared. Sign in with the account you want to use.", "success");
   }
+
+  clearSessionButton?.addEventListener("click", async () => {
+    setStatus("Clearing saved browser session...");
+    await signOutCurrentSession();
+    setStatus("Saved session cleared. Enter the email and password for the account you want to use.", "success");
+    passwordField.value = "";
+    passwordField.focus();
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -107,7 +139,7 @@
     await signOutCurrentSession();
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) {
-      setStatus(error.message, "error");
+      setStatus(authErrorMessage(error, "sign-in"), "error");
       return;
     }
     if (!window.RooflineAuth.isAllowedEmail(data.user?.email)) {
@@ -141,7 +173,7 @@
       },
     });
     if (error) {
-      setStatus(error.message, "error");
+      setStatus(authErrorMessage(error, "create-account"), "error");
       return;
     }
     if (data.session) {
@@ -149,7 +181,7 @@
       location.replace(sanitizeRedirect(redirect));
       return;
     }
-    setStatus("Account created. Check your email to confirm it, then come back here and sign in.", "success");
+    setStatus("Account created. Check your email to confirm it, then come back here and sign in. If you are the admin, you can also confirm the user in Supabase Authentication > Users.", "success");
   });
 
   magicLinkButton.addEventListener("click", async () => {
@@ -166,7 +198,7 @@
       },
     });
     if (error) {
-      setStatus(error.message, "error");
+      setStatus(authErrorMessage(error, "magic-link"), "error");
       return;
     }
     setStatus("Magic link sent. Check your email.", "success");
