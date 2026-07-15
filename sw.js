@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v57";
+const CACHE_NAME = "roofline-crm-v58";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -26,6 +26,7 @@ const APP_SHELL = [
   "./login.js",
   "./login.js?v=44",
   "./login.js?v=46",
+  "./login.js?v=58",
   "./logout.js",
   "./logout.js?v=44",
   "./logout.js?v=46",
@@ -59,7 +60,9 @@ self.addEventListener("activate", (event) => {
 function patchIndexHtml(html, url) {
   let patched = html
     .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
-    .replaceAll('auth.js?v=24', 'auth.js?v=43');
+    .replaceAll('auth.js?v=24', 'auth.js?v=43')
+    .replaceAll('login.js?v=44', 'login.js?v=58')
+    .replaceAll('login.js?v=46', 'login.js?v=58');
 
   if (url.searchParams.has("role-direct-check") && !patched.includes("role-direct-check-v57.js")) {
     patched = patched.replace(
@@ -74,7 +77,7 @@ function patchIndexHtml(html, url) {
 async function freshHtmlResponse(request) {
   const response = await fetch(request);
   const url = new URL(request.url);
-  if (!(url.pathname === "/" || url.pathname.endsWith("/index.html"))) return response;
+  if (!(url.pathname === "/" || url.pathname.endsWith("/index.html") || url.pathname.endsWith("/login.html"))) return response;
 
   const headers = new Headers(response.headers);
   headers.set("content-type", "text/html; charset=utf-8");
@@ -93,7 +96,6 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (
     url.pathname === "/auth-config.js" ||
-    url.pathname === "/login" ||
     url.pathname === "/logout" ||
     url.pathname === "/reset-session.html"
   ) {
@@ -101,7 +103,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   // Always fetch HTML fresh so new deploys and diagnostics are not blocked by stale cache.
-  if (url.pathname === "/" || url.pathname.endsWith(".html")) {
+  if (url.pathname === "/" || url.pathname.endsWith(".html") || url.pathname === "/login") {
     event.respondWith(freshHtmlResponse(event.request));
     return;
   }
