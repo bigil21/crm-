@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v62";
+const CACHE_NAME = "roofline-crm-v64";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -17,6 +17,9 @@ const APP_SHELL = [
   "./sales-workflow-check-v61.js",
   "./system-check-launch.html",
   "./system-check-v62.js",
+  "./production-flow-launch.html",
+  "./production-flow-v64.js",
+  "./production-flow-check-v64.js",
   "./profit-role-test.html",
   "./auth-config.js",
   "./auth-config.js?v=43",
@@ -62,6 +65,10 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+function isCrmIndexPath(url) {
+  return url.pathname === "/" || url.pathname.endsWith("/index.html");
+}
+
 function isHtmlShellPath(url) {
   return url.pathname === "/" || url.pathname === "/login" || url.pathname.endsWith("/index.html") || url.pathname.endsWith("/login.html");
 }
@@ -72,6 +79,13 @@ function patchIndexHtml(html, url) {
     .replaceAll('auth.js?v=24', 'auth.js?v=43')
     .replaceAll('login.js?v=44', 'login.js?v=58')
     .replaceAll('login.js?v=46', 'login.js?v=58');
+
+  if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
+    patched = patched.replace(
+      "</body>",
+      '    <script src="production-flow-v64.js?v=64" defer></script>\n  </body>',
+    );
+  }
 
   if (url.searchParams.has("role-direct-check") && !patched.includes("role-direct-check-v57.js")) {
     patched = patched.replace(
@@ -91,6 +105,13 @@ function patchIndexHtml(html, url) {
     patched = patched.replace(
       "</body>",
       '    <script>window.__ROOFLINE_SYSTEM_CHECK = true;</script>\n    <script src="system-check-v62.js?v=62" defer></script>\n  </body>',
+    );
+  }
+
+  if (url.searchParams.has("production-flow-check") && !patched.includes("production-flow-check-v64.js")) {
+    patched = patched.replace(
+      "</body>",
+      '    <script>window.__ROOFLINE_PRODUCTION_FLOW_CHECK = true;</script>\n    <script src="production-flow-check-v64.js?v=64" defer></script>\n  </body>',
     );
   }
 
