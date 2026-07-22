@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Production Flow Check</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f4f6f8;
+        color: #111827;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+      }
+      .loader {
+        width: min(460px, calc(100vw - 32px));
+        border: 1px solid #d8dee7;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+        padding: 22px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      p {
+        margin: 0;
+        color: #4b5563;
+      }
+      .error {
+        color: #b91c1c;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="loader">
+      <h1>Loading production workflow...</h1>
+      <p>The CRM will open with the new lead-to-production order flow and run a temporary QA check.</p>
+      <p class="error" id="errorText"></p>
+    </main>
+    <script>
+      (async () => {
+        const errorText = document.getElementById("errorText");
+        try {
+          const url = new URL("/", window.location.origin);
+          url.searchParams.set("production-flow-check", "v64");
+          url.searchParams.set("v", Date.now().toString());
+          const response = await fetch(url.toString(), { cache: "no-store", credentials: "include" });
+          if (!response.ok) throw new Error(`Could not load CRM shell (${response.status})`);
+          let html = await response.text();
+          const injection = [
+            '<script src="production-flow-v64.js?v=64" defer><\/script>',
+            '<script>window.__ROOFLINE_PRODUCTION_FLOW_CHECK = true;<\/script>',
+            '<script src="production-flow-check-v64.js?v=64" defer><\/script>',
+          ].join("\n    ");
+          if (!html.includes("production-flow-v64.js")) {
+            html = html.replace("</body>", `    ${injection}\n  </body>`);
+          }
+          document.open();
+          document.write(html);
+          document.close();
+        } catch (error) {
+          errorText.textContent = error.message || "Production workflow launcher failed.";
+        }
+      })();
+    </script>
+  </body>
+</html>
