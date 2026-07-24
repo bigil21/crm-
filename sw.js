@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v66";
+const CACHE_NAME = "roofline-crm-v67";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -20,6 +20,7 @@ const APP_SHELL = [
   "./production-flow-launch.html",
   "./production-flow-v64.js",
   "./workflow-checklists-v65.js",
+  "./project-conversations-v67.js",
   "./production-flow-check-v64.js",
   "./profit-role-test.html",
   "./auth-config.js",
@@ -92,6 +93,13 @@ function patchIndexHtml(html, url) {
     patched = patched.replace(
       "</body>",
       '    <script src="workflow-checklists-v65.js?v=66" defer></script>\n  </body>',
+    );
+  }
+
+  if (isCrmIndexPath(url) && !patched.includes("project-conversations-v67.js")) {
+    patched = patched.replace(
+      "</body>",
+      '    <script src="project-conversations-v67.js?v=67" defer></script>\n  </body>',
     );
   }
 
