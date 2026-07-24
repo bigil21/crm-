@@ -951,6 +951,19 @@
         .workflow-action-buttons { justify-content: stretch; }
         .workflow-action-buttons button { flex: 1 1 auto; }
       }
+      @media (max-width: 820px) {
+        .nav-list[data-workflow-navigation="65"],
+        .nav-list[data-workflow-navigation="65"] .workflow-nav-group {
+          flex-direction: row;
+          gap: 8px;
+        }
+        .nav-list[data-workflow-navigation="65"] {
+          flex: 0 0 auto;
+        }
+        .nav-list[data-workflow-navigation="65"] .workflow-nav-heading {
+          display: none;
+        }
+      }
     `;
     document.head.appendChild(style);
   }
