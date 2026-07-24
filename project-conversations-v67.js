@@ -95,6 +95,21 @@
     };
   }
 
+  function strongerRole(first = "", second = "") {
+    const rank = {
+      viewer: 0,
+      sales: 1,
+      production: 2,
+      office_manager: 3,
+      sales_manager: 4,
+      operations_manager: 5,
+      admin: 6,
+    };
+    const left = String(first || "sales");
+    const right = String(second || "sales");
+    return (rank[right] ?? 1) > (rank[left] ?? 1) ? right : left;
+  }
+
   function mergeMember(directory, member) {
     const normalized = normalizeMember(member);
     if (!normalized.email && !normalized.userId) return;
@@ -117,7 +132,7 @@
         normalized.name && normalized.name !== "CRM User"
           ? normalized.name
           : existing.name || normalized.name,
-      role: normalized.role || existing.role || "sales",
+      role: strongerRole(existing.role, normalized.role),
     }));
   }
 
