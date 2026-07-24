@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v67";
+const CACHE_NAME = "roofline-crm-v68";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -99,7 +99,7 @@ function patchIndexHtml(html, url) {
   if (isCrmIndexPath(url) && !patched.includes("project-conversations-v67.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="project-conversations-v67.js?v=67" defer></script>\n  </body>',
+      '    <script src="project-conversations-v67.js?v=68" defer></script>\n  </body>',
     );
   }
 
