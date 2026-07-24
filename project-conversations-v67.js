@@ -573,7 +573,21 @@
   }
 
   function trailingMentionQuery(textarea) {
-…141 tokens truncated…query === null) return;
+    const cursor = textarea.selectionStart ?? textarea.value.length;
+    const before = textarea.value.slice(0, cursor);
+    const match = before.match(/(?:^|\s)@([A-Za-z0-9._-]*)$/);
+    return match ? match[1] : null;
+  }
+
+  function handleMentionInput(event) {
+    if (event.target?.id === "jobMentionSearch") {
+      mentionSuggestionQuery = event.target.value;
+      refreshMentionPicker({ showSuggestions: true });
+      return;
+    }
+    if (event.target?.id === "jobConversationMessage") {
+      const query = trailingMentionQuery(event.target);
+      if (query === null) return;
       mentionSuggestionQuery = query;
       refreshMentionPicker({ showSuggestions: true });
     }
@@ -1210,4 +1224,3 @@
   }, 200);
   window.setTimeout(() => window.clearInterval(timer), 20000);
 })();
-
