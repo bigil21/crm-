@@ -1,11 +1,16 @@
 (() => {
-  const VERSION = "67";
+  const VERSION = "77";
+  const CONVERSATION_TABLE = "crm_conversation_messages";
   const soldStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
   let selectedConversationJobId = "";
   let selectedMentionKeys = new Set();
   let mentionSuggestionQuery = "";
   let previousRender = null;
   let previousRenderLeadDetail = null;
+  let conversationCloudReady = false;
+  let conversationCloudLoading = false;
+  let conversationCloudSubscription = null;
+  const durableConversationRows = new Map();
 
   function hasAppGlobals() {
     try {
@@ -231,6 +236,197 @@
     saveState();
   }
 
+  function cloudConversationConfigured() {
+    try {
+      return Boolean(canUseCloudSync());
+    } catch {
+      return false;
+    }
+  }
+
+  function cloudConversationAvailable() {
+    try {
+      return Boolean(cloudConversationConfigured() && cloudReady && cloudClient && authSession?.user?.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function conversationMessageRow(contact, job, message) {
+    return {
+      id: message.id,
+      company_state_id: supabaseStateId(),
+      lead_id: contact.id,
+      job_id: job.id,
+      contact_name: contact.name || "",
+      job_name: job.name || "",
+      job_status: job.status || "",
+      author_user_id: message.authorUserId || null,
+      author_email: message.authorEmail || "",
+      author_name: message.authorName || "CRM user",
+      author_role: message.authorRole || "",
+      message_text: message.text || message.message || "Project update",
+      mentions: Array.isArray(message.mentions) ? message.mentions : [],
+      read_by: Array.isArray(message.readBy) ? message.readBy : [],
+      created_at: message.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function messageFromConversationRow(row) {
+    return {
+      id: row.id,
+      authorUserId: row.author_user_id || "",
+      authorEmail: row.author_email || "",
+      authorName: row.author_name || row.author_email || "CRM user",
+      authorRole: row.author_role || "",
+      text: row.message_text || "Project update",
+      mentions: Array.isArray(row.mentions) ? row.mentions : [],
+      readBy: Array.isArray(row.read_by) ? row.read_by : [],
+      createdAt: row.created_at,
+      syncState: "saved",
+    };
+  }
+
+  function mergeCloudConversationRows(rows = []) {
+    if (!rows.length) return false;
+    const nextStore = { ...conversationStore() };
+    let changed = false;
+    rows.forEach((row) => {
+      if (!row?.id || !row.lead_id || !row.job_id) return;
+      durableConversationRows.set(row.id, row);
+      const key = conversationKey(row.lead_id, row.job_id);
+      const existing = nextStore[key] || {};
+      const messages = Array.isArray(existing.messages) ? [...existing.messages] : [];
+      const nextMessage = messageFromConversationRow(row);
+      const index = messages.findIndex((message) => message.id === nextMessage.id);
+      if (index >= 0) messages[index] = { ...messages[index], ...nextMessage };
+      else messages.push(nextMessage);
+      messages.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+      nextStore[key] = {
+        ...existing,
+        key,
+        contactId: row.lead_id,
+        jobId: row.job_id,
+        contactName: row.contact_name || existing.contactName || "Client",
+        jobName: row.job_name || existing.jobName || "Project",
+        status: row.job_status || existing.status || "",
+        updatedAt: messages[messages.length - 1]?.createdAt || existing.updatedAt || "",
+        messages: messages.slice(-500),
+      };
+      changed = true;
+    });
+    if (!changed) return false;
+    state.company = { ...state.company, jobConversations: nextStore };
+    saveState({ localOnly: true });
+    return true;
+  }
+
+  function restoreDurableConversationCache() {
+    const missing = [...durableConversationRows.values()].filter((row) => {
+      const entry = conversationStore()[conversationKey(row.lead_id, row.job_id)];
+      return !(entry?.messages || []).some((message) => message.id === row.id);
+    });
+    if (missing.length) mergeCloudConversationRows(missing);
+  }
+
+  function legacyConversationRows() {
+    const rows = [];
+    Object.values(conversationStore()).forEach((entry) => {
+      const contact = getContact(entry.contactId);
+      if (!contact) return;
+      const job = contactJobs(contact).find((item) => item.id === entry.jobId);
+      if (!job) return;
+      (entry.messages || []).forEach((message) => rows.push(conversationMessageRow(contact, job, message)));
+    });
+    return rows;
+  }
+
+  async function migrateLegacyConversationMessages(existingIds = new Set()) {
+    if (!conversationCloudReady) return;
+    const current = currentIdentity();
+    const canMigrateTeam = canManageTeamData();
+    const rows = legacyConversationRows().filter(
+      (row) =>
+        !existingIds.has(row.id) &&
+        (canMigrateTeam || row.author_user_id === current.userId || row.author_email.toLowerCase() === current.email),
+    );
+    for (let index = 0; index < rows.length; index += 100) {
+      const batch = rows.slice(index, index + 100);
+      const { error } = await cloudClient.from(CONVERSATION_TABLE).upsert(batch, { onConflict: "id" });
+      if (error) {
+        console.warn("Legacy conversation migration paused", error);
+        return;
+      }
+    }
+  }
+
+  function subscribeToConversationMessages() {
+    if (!conversationCloudReady || conversationCloudSubscription || !cloudClient?.channel) return;
+    conversationCloudSubscription = cloudClient
+      .channel(`crm-conversations-${supabaseStateId()}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: CONVERSATION_TABLE,
+          filter: `company_state_id=eq.${supabaseStateId()}`,
+        },
+        (payload) => {
+          const row = payload.new;
+          if (!row || !mergeCloudConversationRows([row])) return;
+          renderJobConversation();
+          updateMentionButton();
+        },
+      )
+      .subscribe();
+  }
+
+  async function initializeConversationPersistence() {
+    if (!cloudConversationAvailable() || conversationCloudLoading) return false;
+    conversationCloudLoading = true;
+    const { data, error } = await cloudClient
+      .from(CONVERSATION_TABLE)
+      .select("*")
+      .eq("company_state_id", supabaseStateId())
+      .order("created_at", { ascending: true });
+    conversationCloudLoading = false;
+    if (error) {
+      conversationCloudReady = false;
+      console.warn("Durable conversation storage is not ready. Run the latest Supabase schema.", error);
+      return false;
+    }
+    conversationCloudReady = true;
+    mergeCloudConversationRows(data || []);
+    await migrateLegacyConversationMessages(new Set((data || []).map((row) => row.id)));
+    subscribeToConversationMessages();
+    renderJobConversation();
+    updateMentionButton();
+    return true;
+  }
+
+  function updateMessageSyncState(contactId, jobId, messageId, syncState) {
+    const key = conversationKey(contactId, jobId);
+    const entry = conversationStore()[key];
+    if (!entry) return;
+    saveSharedConversation({
+      ...entry,
+      messages: (entry.messages || []).map((message) =>
+        message.id === messageId ? { ...message, syncState } : message,
+      ),
+    });
+  }
+
+  async function persistConversationMessage(contact, job, message) {
+    if (!cloudConversationConfigured()) return { syncState: "local" };
+    if (!conversationCloudReady) await initializeConversationPersistence();
+    if (!conversationCloudReady) return { syncState: "failed" };
+    const { error } = await cloudClient
+      .from(CONVERSATION_TABLE)
+      .upsert(conversationMessageRow(contact, job, message), { onConflict: "id" });
+    return { syncState: error ? "failed" : "saved", error };
+  }
+
   function currentConversationJob(contact) {
     const jobs = contactJobs(contact);
     const selected = jobs.find((job) => job.id === selectedConversationJobId);
@@ -262,7 +458,7 @@
     }));
   }
 
-  function appendMessage(contact, job, text) {
+  async function appendMessage(contact, job, text) {
     const author = currentIdentity();
     const entry = sharedConversation(contact, job);
     const message = {
@@ -275,6 +471,7 @@
       mentions: selectedMentionsFromMessage(text),
       readBy: [author.key],
       createdAt: new Date().toISOString(),
+      syncState: cloudConversationConfigured() ? "saving" : "local",
     };
     const next = {
       ...entry,
@@ -285,7 +482,10 @@
       messages: [...entry.messages, message].slice(-500),
     };
     saveSharedConversation(next);
-    return message;
+    renderJobConversation();
+    const result = await persistConversationMessage(contact, job, message);
+    updateMessageSyncState(contact.id, job.id, message.id, result.syncState);
+    return { ...message, ...result };
   }
 
   function safeText(value = "") {
@@ -359,6 +559,15 @@
           </div>
           ${message.status ? `<span class="status-pill">${escapeHtml(message.status)}</span>` : ""}
           <p>${highlightedMessage(message)}</p>
+          ${
+            message.syncState === "saving"
+              ? '<div class="conversation-save-state is-saving">Saving…</div>'
+              : message.syncState === "failed"
+                ? `<div class="conversation-save-state is-failed">Not saved to the cloud <button type="button" data-collab-action="retry-message" data-message-id="${escapeHtml(message.id)}">Retry</button></div>`
+                : message.syncState === "local"
+                  ? '<div class="conversation-save-state is-local">Saved on this device · Cloud sync is off</div>'
+                  : '<div class="conversation-save-state is-saved">Saved</div>'
+          }
         </div>
       </article>
     `;
@@ -513,7 +722,7 @@
     });
   }
 
-  function submitJobConversation(event) {
+  async function submitJobConversation(event) {
     const form = event.target;
     if (form?.id !== "leadConversationForm" || form.dataset.jobConversationEnhanced !== VERSION) return;
     event.preventDefault();
@@ -528,17 +737,37 @@
       return;
     }
 
-    const posted = appendMessage(contact, job, message);
+    const posted = await appendMessage(contact, job, message);
     selectedMentionKeys = new Set();
     mentionSuggestionQuery = "";
     state.leadDetailTab = "conversation";
     render();
     const mentionCount = posted.mentions.length;
-    showToast(
-      mentionCount
-        ? `Update posted and ${mentionCount} teammate${mentionCount === 1 ? "" : "s"} mentioned`
-        : "Project update posted",
-    );
+    if (posted.syncState === "failed") {
+      showToast("Update kept locally, but cloud save failed. Use Retry in the conversation.");
+    } else if (posted.syncState === "local") {
+      showToast("Update saved on this device. Cloud sync is off.");
+    } else {
+      showToast(
+        mentionCount
+          ? `Update saved and ${mentionCount} teammate${mentionCount === 1 ? "" : "s"} mentioned`
+          : "Update saved",
+      );
+    }
+  }
+
+  async function retryConversationMessage(messageId) {
+    const contact = getSelectedContact();
+    const job = contact ? currentConversationJob(contact) : null;
+    const entry = contact && job ? sharedConversation(contact, job) : null;
+    const message = entry?.messages?.find((item) => item.id === messageId);
+    if (!contact || !job || !message) return;
+    updateMessageSyncState(contact.id, job.id, message.id, "saving");
+    renderJobConversation();
+    const result = await persistConversationMessage(contact, job, message);
+    updateMessageSyncState(contact.id, job.id, message.id, result.syncState);
+    renderJobConversation();
+    showToast(result.syncState === "saved" ? "Update saved" : "Cloud save still unavailable. Your local copy is retained.");
   }
 
   function addMentionToDraft(memberKey) {
@@ -895,6 +1124,10 @@
       closeMentionsDialog();
       return;
     }
+    if (action === "retry-message") {
+      retryConversationMessage(button.dataset.messageId);
+      return;
+    }
     if (action === "open-mentioned-conversation") {
       closeMentionsDialog();
       openJobConversation(button.dataset.contactId, button.dataset.jobId);
@@ -1076,6 +1309,28 @@
       .project-message-body > .status-pill {
         margin-top: 8px;
       }
+      .conversation-save-state {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .conversation-save-state.is-saved { color: var(--green); }
+      .conversation-save-state.is-saving { color: var(--accent-strong); }
+      .conversation-save-state.is-failed { color: var(--danger); }
+      .conversation-save-state button {
+        min-height: 26px;
+        padding: 0 8px;
+        border: 1px solid currentColor;
+        border-radius: 5px;
+        background: transparent;
+        color: inherit;
+        font-size: 10px;
+        font-weight: 800;
+      }
       .collab-mention {
         padding: 1px 3px;
         border-radius: 3px;
@@ -1203,6 +1458,7 @@
     previousRender = render;
     assignGlobal("render", function projectConversationRenderWrapper() {
       previousRender();
+      restoreDurableConversationCache();
       ensureTeamDirectory();
       renderJobConversation();
       augmentProjectsView();
@@ -1216,6 +1472,8 @@
     document.addEventListener("change", handleConversationJobChange, true);
     document.addEventListener("input", handleMentionInput, true);
     document.addEventListener("focusin", handleMentionFocus, true);
+
+    initializeConversationPersistence();
 
     window.RooflineProjectConversations = {
       version: VERSION,

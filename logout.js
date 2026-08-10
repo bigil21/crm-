@@ -28,6 +28,6 @@
     status.textContent = "You are signed out locally.";
   }
   window.setTimeout(() => {
-    location.replace("/login?v=46&reason=logout&switchAccount=1");
+    location.replace("/login?v=79&reason=logout&switchAccount=1");
   }, 900);
 })();

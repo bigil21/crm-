@@ -32,11 +32,12 @@
           </label>
           <label>
             Password
-            <input id="loginPassword" type="password" autocomplete="current-password" />
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
           </label>
           <button class="primary-button" type="submit">Sign In</button>
           <button class="secondary-button" id="createAccountButton" type="button">Create Account</button>
           <button class="secondary-button" id="magicLinkButton" type="button">Send Magic Link</button>
+          <button class="ghost-button" id="resetPasswordButton" type="button">Reset Password</button>
           <button class="ghost-button" id="clearSessionButton" type="button">Clear Saved Session</button>
         </form>
 
@@ -46,7 +47,7 @@
 
     <script src="auth-config.js?v=46" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
-    <script src="auth.js?v=43" defer></script>
-    <script src="login.js?v=58" defer></script>
+    <script src="auth.js?v=79" defer></script>
+    <script src="login.js?v=79" defer></script>
   </body>
 </html>

@@ -1,5 +1,8 @@
 const STORAGE_KEY = "roofline-crm-v1";
 const SUPABASE_CRM_TABLE = "crm_state";
+const SUPABASE_RECORDS_TABLE = "crm_records";
+const SUPABASE_AUDIT_TABLE = "crm_audit_events";
+const SUPABASE_DOCUMENT_BUCKET = "crm-documents";
 const CLOUD_SAVE_DELAY = 700;
 const COMPANY_STATE_SUFFIX = "company";
 
@@ -146,6 +149,13 @@ const actionPermissions = {
   "rename-document": "manageDocuments",
   "remove-company-document": "manageDocuments",
   "rename-company-document": "manageDocuments",
+  "upload-to-category": "manageDocuments",
+  "edit-document-category": "manageCompany",
+  "toggle-document-category": "manageCompany",
+  "delete-document-category": "manageCompany",
+  "merge-document-category": "manageCompany",
+  "move-document-category-up": "manageCompany",
+  "move-document-category-down": "manageCompany",
   "edit-job": "manageJobs",
   "delete-job": "manageJobs",
   "edit-cost-item": "manageJobFinancials",
@@ -178,6 +188,23 @@ const defaultCurrentUser = {
 const privilegedFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
 
 const costCategories = ["Materials", "Labor", "Subcontractor", "Permits", "Dump Fees", "Equipment", "Other"];
+
+const DOCUMENT_CATEGORY_CREATED_AT = "2026-08-07T00:00:00.000Z";
+const defaultDocumentCategories = [
+  { id: "doccat_permits", name: "Permits", displayOrder: 0, icon: "file", color: "#2563eb" },
+  { id: "doccat_contracts", name: "Contracts", displayOrder: 1, icon: "check", color: "#059669" },
+  { id: "doccat_estimates", name: "Estimates", displayOrder: 2, icon: "dollar", color: "#7c3aed" },
+  { id: "doccat_invoices", name: "Invoices", displayOrder: 3, icon: "invoice", color: "#ea580c" },
+  { id: "doccat_material_orders", name: "Material Orders", displayOrder: 4, icon: "folder", color: "#ca8a04" },
+  { id: "doccat_other", name: "Other", displayOrder: 5, icon: "folder", color: "#64748b" },
+].map((category) => ({
+  ...category,
+  active: true,
+  createdAt: DOCUMENT_CATEGORY_CREATED_AT,
+  updatedAt: DOCUMENT_CATEGORY_CREATED_AT,
+}));
+
+const documentCategoryIcons = ["folder", "file", "check", "dollar", "invoice", "upload"];
 
 const estimateTemplates = [
   {
@@ -242,13 +269,6 @@ const weatherState = {
   daily: [],
   error: "",
 };
-
-const assistantSuggestions = [
-  "What is 1500 x 25?",
-  "Create a detailed tear off process for shingle roofs",
-  "Find lead Aakritie",
-  "Open company documents",
-];
 
 const seedContacts = [
   {
@@ -374,8 +394,6 @@ const createInitialState = () => ({
   newEstimateContactId: "",
   newEstimateJobId: "",
   selectedProfitJobId: "",
-  assistantOpen: false,
-  assistantMessages: [],
   company: defaultCompany,
   currentUser: defaultCurrentUser,
   companyDocuments: [],
@@ -405,6 +423,12 @@ let lastCloudSnapshot = "";
 let cloudSubscription = null;
 let applyingCloudState = false;
 let cloudKnownOwners = new Map();
+let durableRecordsReady = false;
+let durableSaveTimer = null;
+let durableSaveInFlight = false;
+let durableRecordFingerprints = new Map();
+let durableAuditIds = new Set();
+let durableRecordsSubscription = null;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -483,6 +507,7 @@ const els = {
   copyLeadEmailButton: document.querySelector("#copyLeadEmailButton"),
   leadDocumentsPanel: document.querySelector("#leadDocumentsPanel"),
   leadDocumentsList: document.querySelector("#leadDocumentsList"),
+  leadDocumentCategory: document.querySelector("#leadDocumentCategory"),
   uploadLeadDocumentButton: document.querySelector("#uploadLeadDocumentButton"),
   leadDocumentInput: document.querySelector("#leadDocumentInput"),
   leadConversationPanel: document.querySelector("#leadConversationPanel"),
@@ -495,6 +520,12 @@ const els = {
   estimateFromContactButton: document.querySelector("#estimateFromContactButton"),
   closeContactDialog: document.querySelector("#closeContactDialog"),
   estimateList: document.querySelector("#estimateList"),
+  estimateHistoryPanel: document.querySelector("#estimateHistoryPanel"),
+  estimateHistoryCount: document.querySelector("#estimateHistoryCount"),
+  toggleEstimateHistoryButton: document.querySelector("#toggleEstimateHistoryButton"),
+  estimateCreatePanel: document.querySelector("#estimateCreatePanel"),
+  toggleEstimateCreateButton: document.querySelector("#toggleEstimateCreateButton"),
+  estimateActiveSummary: document.querySelector("#estimateActiveSummary"),
   estimateForm: document.querySelector("#estimateForm"),
   newEstimateContact: document.querySelector("#newEstimateContact"),
   newEstimateJob: document.querySelector("#newEstimateJob"),
@@ -547,14 +578,8 @@ const els = {
   uploadCompanyLogoButton: document.querySelector("#uploadCompanyLogoButton"),
   removeCompanyLogoButton: document.querySelector("#removeCompanyLogoButton"),
   companyLogoPreview: document.querySelector("#companyLogoPreview"),
-  aiAssistant: document.querySelector("#aiAssistant"),
-  aiToggle: document.querySelector("#aiToggle"),
-  aiPanel: document.querySelector("#aiPanel"),
-  aiClear: document.querySelector("#aiClear"),
-  aiSuggestions: document.querySelector("#aiSuggestions"),
-  aiMessages: document.querySelector("#aiMessages"),
-  aiForm: document.querySelector("#aiForm"),
-  aiInput: document.querySelector("#aiInput"),
+  documentCategoryCreateForm: document.querySelector("#documentCategoryCreateForm"),
+  documentCategoriesList: document.querySelector("#documentCategoriesList"),
   toast: document.querySelector("#toast"),
 };
 
@@ -591,7 +616,9 @@ function loadState(storageKey = activeStorageKey()) {
 }
 
 function normalizeState(nextState) {
-  const contacts = (nextState.contacts || []).map(normalizeContact);
+  const company = normalizeCompany(nextState.company);
+  company.documentCategories = categoriesWithLegacyDocuments(company.documentCategories, nextState.contacts || []);
+  const contacts = (nextState.contacts || []).map((contact) => normalizeContact(contact, company.documentCategories));
   return {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
@@ -599,12 +626,10 @@ function normalizeState(nextState) {
     newEstimateContactId: nextState.newEstimateContactId || "",
     newEstimateJobId: nextState.newEstimateJobId || "",
     selectedProfitJobId: nextState.selectedProfitJobId || "",
-    assistantOpen: Boolean(nextState.assistantOpen),
-    assistantMessages: (nextState.assistantMessages || []).slice(-12).map(normalizeAssistantMessage),
-    company: normalizeCompany(nextState.company),
+    company,
     currentUser: { ...defaultCurrentUser, ...(nextState.currentUser || {}) },
     contacts,
-    companyDocuments: (nextState.companyDocuments || []).map(normalizeDocument),
+    companyDocuments: (nextState.companyDocuments || []).map((document) => normalizeDocument(document)),
     calendarTasks: (nextState.calendarTasks || []).map(normalizeCalendarTask),
     estimates: (nextState.estimates || []).map((estimate) => normalizeEstimate(estimate, contacts)),
   };
@@ -618,10 +643,80 @@ function normalizeCompany(company = {}) {
     address: merged.address || officeAddress,
     officeAddress,
     logoDataUrl: merged.logoDataUrl || "",
+    documentCategories: normalizeDocumentCategories(merged.documentCategories),
   };
 }
 
-function normalizeContact(contact) {
+function normalizeDocumentCategory(category = {}, index = 0) {
+  const now = new Date().toISOString();
+  return {
+    id: category.id || uid("doccat"),
+    name: String(category.name || `Category ${index + 1}`).trim(),
+    displayOrder: Number.isFinite(Number(category.displayOrder)) ? Number(category.displayOrder) : index,
+    icon: documentCategoryIcons.includes(category.icon) ? category.icon : "folder",
+    color: /^#[0-9a-f]{6}$/i.test(String(category.color || "")) ? category.color : "#64748b",
+    active: category.active !== false,
+    createdAt: category.createdAt || now,
+    updatedAt: category.updatedAt || category.lastModifiedAt || category.createdAt || now,
+  };
+}
+
+function normalizeDocumentCategories(categories) {
+  const source = Array.isArray(categories) && categories.length ? categories : defaultDocumentCategories;
+  return source
+    .map(normalizeDocumentCategory)
+    .sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name))
+    .map((category, displayOrder) => ({ ...category, displayOrder }));
+}
+
+function documentCategoryNameKey(name = "") {
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/s$/, "");
+}
+
+function categoriesWithLegacyDocuments(categories, contacts) {
+  const migrated = [...categories];
+  contacts.forEach((contact) => {
+    (contact.documents || []).forEach((document) => {
+      const name = String(document.category || "").trim();
+      if (!name) return;
+      const nameKey = documentCategoryNameKey(name);
+      const exists = migrated.some(
+        (category) => category.id === document.categoryId || documentCategoryNameKey(category.name) === nameKey,
+      );
+      if (exists) return;
+      const slug = nameKey || Math.random().toString(36).slice(2, 8);
+      const createdAt = document.uploadedAt || DOCUMENT_CATEGORY_CREATED_AT;
+      migrated.push(
+        normalizeDocumentCategory({
+          id: document.categoryId || `doccat_${slug}`,
+          name,
+          displayOrder: migrated.length,
+          icon: "folder",
+          color: "#64748b",
+          active: true,
+          createdAt,
+          updatedAt: createdAt,
+        }),
+      );
+    });
+  });
+  return normalizeDocumentCategories(migrated);
+}
+
+function categoryForLegacyName(name, categories = defaultDocumentCategories) {
+  const normalizedName = documentCategoryNameKey(name || "Other");
+  return (
+    categories.find((category) => documentCategoryNameKey(category.name) === normalizedName) ||
+    categories.find((category) => category.name.toLowerCase() === "other") ||
+    categories[0]
+  );
+}
+
+function normalizeContact(contact, categories = defaultDocumentCategories) {
   const status = contact.status || "New";
   const seeded = seedContacts.find((seed) => seed.id === contact.id);
   const savedRep = contact.salesRep && contact.salesRep !== "Unassigned" ? contact.salesRep : "";
@@ -641,7 +736,9 @@ function normalizeContact(contact) {
     createdAt: contact.createdAt || todayISO(),
     lastContact: contact.lastContact || todayISO(),
     closedDate,
-    documents: (contact.documents || []).map(normalizeDocument),
+    documents: (contact.documents || []).map((document) =>
+      normalizeDocument(document, { leadId: contact.id, categories }),
+    ),
     updates: (contact.updates || contact.activity || []).map(normalizeUpdate),
   };
   const jobs = contact.jobs?.length
@@ -691,28 +788,30 @@ function normalizeCostItem(item = {}) {
   };
 }
 
-function normalizeAssistantMessage(message = {}) {
-  return {
-    id: message.id || uid("chat"),
-    role: message.role === "user" ? "user" : "assistant",
-    text: String(message.text || "").slice(0, 4000),
-    createdAt: message.createdAt || new Date().toISOString(),
-  };
-}
-
-function normalizeDocument(document) {
+function normalizeDocument(document, { leadId = "", categoryId = "", categories = defaultDocumentCategories } = {}) {
+  const resolvedLeadId = document.leadId || document.contactId || leadId;
+  const isLeadDocument = Boolean(resolvedLeadId);
+  const category =
+    isLeadDocument
+      ? categories?.find((item) => item.id === (document.categoryId || categoryId)) ||
+        categoryForLegacyName(document.category, categories || defaultDocumentCategories)
+      : null;
   return {
     id: document.id || uid("doc"),
     name: document.name || "Document",
-    category: document.category || "Other",
+    leadId: resolvedLeadId,
+    categoryId: isLeadDocument ? document.categoryId || categoryId || category?.id || "" : document.categoryId || "",
+    category: isLeadDocument ? category?.name || document.category || "Other" : document.category || "Other",
     type: document.type || "application/octet-stream",
     size: number(document.size),
     dataUrl: document.dataUrl || "",
+    storagePath: document.storagePath || document.storage_path || "",
     uploadedAt: document.uploadedAt || new Date().toISOString(),
     uploadedBy: document.uploadedBy || "Local user",
+    versionNumber: Math.max(1, number(document.versionNumber || document.version) || 1),
     source: document.source || "",
     estimateId: document.estimateId || "",
-    contactId: document.contactId || "",
+    contactId: document.contactId || resolvedLeadId,
     jobId: document.jobId || "",
   };
 }
@@ -784,7 +883,10 @@ function normalizeLineItem(item) {
 
 function saveState(options = {}) {
   localStorage.setItem(activeStorageKey(), JSON.stringify(state));
-  if (!options.localOnly && !applyingCloudState) queueCloudSave();
+  if (!options.localOnly && !applyingCloudState) {
+    queueCloudSave();
+    queueDurableRecordsSave();
+  }
 }
 
 function supabaseConfig() {
@@ -1132,6 +1234,275 @@ function subscribeToCloudState() {
       },
     )
     .subscribe();
+}
+
+function durableRecordKey(record = {}) {
+  return `${record.record_type}:${record.id}`;
+}
+
+function durableRecordData(record = {}) {
+  const { jobs, documents, updates, dataUrl, downloadUrl, ...data } = record;
+  if (record.storagePath) return data;
+  return dataUrl ? { ...data, dataUrl } : data;
+}
+
+function durableRowsFromState() {
+  const companyStateId = supabaseStateId();
+  const updatedBy = authSession?.user?.id || null;
+  const rows = [];
+  state.contacts.forEach((contact) => {
+    const ownerId = contactOwnerId(contact) || updatedBy;
+    rows.push({
+      company_state_id: companyStateId,
+      record_type: "contact",
+      id: contact.id,
+      lead_id: contact.id,
+      job_id: null,
+      owner_id: ownerId,
+      data: durableRecordData(contact),
+      updated_by: updatedBy,
+      deleted_at: null,
+    });
+    contactJobs(contact).forEach((job) => rows.push({
+      company_state_id: companyStateId,
+      record_type: "job",
+      id: job.id,
+      lead_id: contact.id,
+      job_id: job.id,
+      owner_id: job.ownerUserId || ownerId,
+      data: durableRecordData(job),
+      updated_by: updatedBy,
+      deleted_at: null,
+    }));
+    (contact.documents || []).forEach((document) => rows.push({
+      company_state_id: companyStateId,
+      record_type: "document",
+      id: document.id,
+      lead_id: contact.id,
+      job_id: document.jobId || null,
+      owner_id: ownerId,
+      data: durableRecordData(document),
+      updated_by: updatedBy,
+      deleted_at: null,
+    }));
+  });
+  state.estimates.forEach((estimate) => rows.push({
+    company_state_id: companyStateId,
+    record_type: "estimate",
+    id: estimate.id,
+    lead_id: estimate.contactId,
+    job_id: estimate.jobId || null,
+    owner_id: estimateOwnerId(estimate) || updatedBy,
+    data: durableRecordData(estimate),
+    updated_by: updatedBy,
+    deleted_at: null,
+  }));
+  state.calendarTasks.forEach((task) => rows.push({
+    company_state_id: companyStateId,
+    record_type: "task",
+    id: task.id,
+    lead_id: task.contactId || null,
+    job_id: null,
+    owner_id: calendarTaskOwnerId(task) || updatedBy,
+    data: durableRecordData(task),
+    updated_by: updatedBy,
+    deleted_at: null,
+  }));
+  return rows;
+}
+
+function durableAuditRowsFromState() {
+  const actorUserId = authSession?.user?.id || null;
+  return state.contacts.flatMap((contact) => (contact.updates || []).map((update) => ({
+    id: update.id,
+    company_state_id: supabaseStateId(),
+    lead_id: contact.id,
+    job_id: update.jobId || null,
+    event_type: update.status ? "status_change" : "note",
+    actor_user_id: actorUserId,
+    actor_name: update.author || state.currentUser.name || "CRM User",
+    message: update.message || "",
+    status: update.status || "",
+    metadata: {},
+    created_at: update.createdAt || new Date().toISOString(),
+  })));
+}
+
+function durableFingerprint(row) {
+  return JSON.stringify({
+    lead_id: row.lead_id || null,
+    job_id: row.job_id || null,
+    owner_id: row.owner_id || null,
+    data: row.data,
+    deleted_at: row.deleted_at || null,
+  });
+}
+
+function rememberDurableRows(rows = [], auditRows = []) {
+  durableRecordFingerprints = new Map(rows.map((row) => [durableRecordKey(row), durableFingerprint(row)]));
+  durableAuditIds = new Set(auditRows.map((row) => row.id));
+}
+
+function applyDurableRows(rows = [], auditRows = []) {
+  const activeRows = rows.filter((row) => !row.deleted_at);
+  const byType = (type) => activeRows.filter((row) => row.record_type === type);
+  const jobsByLead = new Map();
+  const documentsByLead = new Map();
+  const updatesByLead = new Map();
+  byType("job").forEach((row) => {
+    if (!jobsByLead.has(row.lead_id)) jobsByLead.set(row.lead_id, []);
+    jobsByLead.get(row.lead_id).push({ ...row.data, id: row.id });
+  });
+  byType("document").forEach((row) => {
+    if (!documentsByLead.has(row.lead_id)) documentsByLead.set(row.lead_id, []);
+    documentsByLead.get(row.lead_id).push({ ...row.data, id: row.id, leadId: row.lead_id, jobId: row.job_id || row.data?.jobId || "" });
+  });
+  auditRows.forEach((row) => {
+    if (!updatesByLead.has(row.lead_id)) updatesByLead.set(row.lead_id, []);
+    updatesByLead.get(row.lead_id).push({
+      id: row.id,
+      author: row.actor_name,
+      message: row.message,
+      status: row.status,
+      createdAt: row.created_at,
+      jobId: row.job_id || "",
+    });
+  });
+  const contacts = byType("contact").map((row) => normalizeContact({
+    ...row.data,
+    id: row.id,
+    ownerUserId: row.owner_id || row.data?.ownerUserId || "",
+    jobs: jobsByLead.get(row.id) || [],
+    documents: documentsByLead.get(row.id) || [],
+    updates: (updatesByLead.get(row.id) || []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+  }, state.company.documentCategories));
+  const estimates = byType("estimate").map((row) => ({ ...row.data, id: row.id, contactId: row.lead_id, jobId: row.job_id || row.data?.jobId || "", ownerUserId: row.owner_id || "" }));
+  const calendarTasks = byType("task").map((row) => ({ ...row.data, id: row.id, contactId: row.lead_id || "", ownerUserId: row.owner_id || "" }));
+  applySharedState({ contacts, estimates, calendarTasks });
+}
+
+async function fetchDurableRows() {
+  const [recordsResult, auditResult] = await Promise.all([
+    cloudClient.from(SUPABASE_RECORDS_TABLE).select("*").eq("company_state_id", supabaseStateId()),
+    cloudClient.from(SUPABASE_AUDIT_TABLE).select("*").eq("company_state_id", supabaseStateId()).order("created_at", { ascending: false }),
+  ]);
+  if (recordsResult.error) throw recordsResult.error;
+  if (auditResult.error) throw auditResult.error;
+  return { rows: recordsResult.data || [], auditRows: auditResult.data || [] };
+}
+
+async function reloadDurableRecords({ showUpdateToast = false } = {}) {
+  try {
+    const { rows, auditRows } = await fetchDurableRows();
+    if (rows.some((row) => row.record_type === "contact")) {
+      applyingCloudState = true;
+      applyDurableRows(rows, auditRows);
+      applyingCloudState = false;
+      saveState({ localOnly: true });
+    }
+    rememberDurableRows(rows, auditRows);
+    if (showUpdateToast) showToast("CRM records updated from the cloud");
+    return rows;
+  } catch (error) {
+    applyingCloudState = false;
+    console.warn("Durable CRM records are not ready. Run the latest Supabase schema.", error);
+    return null;
+  }
+}
+
+function queueDurableRecordsSave() {
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return;
+  window.clearTimeout(durableSaveTimer);
+  durableSaveTimer = window.setTimeout(flushDurableRecordsSave, CLOUD_SAVE_DELAY);
+}
+
+async function flushDurableRecordsSave() {
+  if (!durableRecordsReady || durableSaveInFlight || !authSession?.user?.id) return;
+  const rows = durableRowsFromState();
+  const currentKeys = new Set(rows.map(durableRecordKey));
+  const changedRows = rows.filter((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row));
+  const removedByType = new Map();
+  durableRecordFingerprints.forEach((_value, key) => {
+    if (currentKeys.has(key)) return;
+    const separator = key.indexOf(":");
+    const type = key.slice(0, separator);
+    const id = key.slice(separator + 1);
+    if (!removedByType.has(type)) removedByType.set(type, []);
+    removedByType.get(type).push(id);
+  });
+  const auditRows = durableAuditRowsFromState();
+  const newAuditRows = auditRows.filter((row) => !durableAuditIds.has(row.id));
+  if (!changedRows.length && !removedByType.size && !newAuditRows.length) return;
+
+  durableSaveInFlight = true;
+  try {
+    if (changedRows.length) {
+      const { error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).upsert(changedRows, { onConflict: "company_state_id,record_type,id" });
+      if (error) throw error;
+    }
+    for (const [recordType, ids] of removedByType) {
+      const { error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).delete().eq("company_state_id", supabaseStateId()).eq("record_type", recordType).in("id", ids);
+      if (error) throw error;
+    }
+    if (newAuditRows.length) {
+      const { error } = await cloudClient.from(SUPABASE_AUDIT_TABLE).insert(newAuditRows);
+      if (error && error.code !== "23505") throw error;
+    }
+    rememberDurableRows(rows, auditRows);
+  } catch (error) {
+    console.warn("Durable CRM record sync failed", error);
+    showToast("Cloud record save failed. Your local copy is still available.");
+  } finally {
+    durableSaveInFlight = false;
+    const latest = durableRowsFromState();
+    if (latest.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row))) queueDurableRecordsSave();
+  }
+}
+
+async function initializeDurableRecords() {
+  if (!cloudReady || !cloudClient || !authSession?.user?.id) return;
+  const rows = await reloadDurableRecords();
+  if (rows === null) return;
+  durableRecordsReady = true;
+  if (!rows.some((row) => row.record_type === "contact") && state.contacts.length) {
+    rememberDurableRows([], []);
+    await flushDurableRecordsSave();
+  }
+  void createDailyRecoveryBackup();
+  if (!cloudClient.channel || durableRecordsSubscription) return;
+  durableRecordsSubscription = cloudClient
+    .channel(`crm-records-${supabaseStateId()}-${authSession.user.id}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
+      const row = payload.new || payload.old;
+      if (row?.updated_by === authSession.user.id || durableSaveInFlight) return;
+      await reloadDurableRecords({ showUpdateToast: true });
+      render();
+    })
+    .subscribe();
+}
+
+async function createDailyRecoveryBackup() {
+  if (!canManageTeamData() || !durableRecordsReady || !authSession?.user?.id) return;
+  try {
+    const { rows, auditRows } = await fetchDurableRows();
+    const payload = {
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      company: companyStatePayload(),
+      records: rows,
+      auditEvents: auditRows,
+    };
+    const { error } = await cloudClient.from("crm_backups").insert({
+      company_state_id: supabaseStateId(),
+      backup_date: todayISO(),
+      record_count: rows.filter((row) => !row.deleted_at).length,
+      payload,
+      created_by: authSession.user.id,
+    });
+    if (error && error.code !== "23505") throw error;
+  } catch (error) {
+    console.warn("Daily CRM recovery backup could not be created", error);
+  }
 }
 
 function currentRole() {
@@ -1846,455 +2217,6 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
   });
 }
 
-function assistantWelcomeMessage() {
-  return {
-    id: "assistant_welcome",
-    role: "assistant",
-    text:
-      "Ask me real questions, have me draft roofing or sales language, or use me to open CRM sections and find records.",
-    createdAt: new Date().toISOString(),
-  };
-}
-
-function assistantMessages() {
-  return state.assistantMessages.length ? state.assistantMessages : [assistantWelcomeMessage()];
-}
-
-function addAssistantMessage(role, text) {
-  state.assistantMessages = [
-    ...state.assistantMessages,
-    normalizeAssistantMessage({
-      role,
-      text,
-      createdAt: new Date().toISOString(),
-    }),
-  ].slice(-12);
-}
-
-function assistantCleanQuery(prompt) {
-  return String(prompt || "")
-    .replace(/\b(take me to|go to|open|show|find|search for|search|look up|locate)\b/gi, " ")
-    .replace(/\b(the|a|an|lead|leads|client|clients|customer|customers|job|jobs|document|documents|file|files|estimate|estimates|specific)\b/gi, " ")
-    .replace(/[^\w\s@.-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function textIncludesAll(text, terms) {
-  const normalized = String(text || "").toLowerCase();
-  return terms.every((term) => normalized.includes(term));
-}
-
-function contactSearchText(contact) {
-  return [
-    contact.name,
-    contact.email,
-    contact.phone,
-    contact.type,
-    contact.status,
-    contact.source,
-    contact.salesRep,
-    contact.address,
-    contact.notes,
-    ...contactJobs(contact).flatMap((job) => [job.name, job.address, job.status, job.salesRep, job.notes]),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-}
-
-function findContactsByPrompt(prompt) {
-  const query = assistantCleanQuery(prompt).toLowerCase();
-  if (!query) return [];
-  const terms = query.split(/\s+/).filter((term) => term.length > 1);
-  return state.contacts.filter((contact) => textIncludesAll(contactSearchText(contact), terms));
-}
-
-function findJobByPrompt(prompt) {
-  const query = assistantCleanQuery(prompt).toLowerCase();
-  if (!query) return null;
-  const terms = query.split(/\s+/).filter((term) => term.length > 1);
-  return allJobs().find((job) =>
-    textIncludesAll([job.name, job.address, job.status, job.salesRep, job.contactName, job.notes].join(" "), terms),
-  );
-}
-
-function findDocumentByPrompt(prompt) {
-  const query = assistantCleanQuery(prompt).toLowerCase();
-  if (!query) return null;
-  const terms = query.split(/\s+/).filter((term) => term.length > 1);
-  const companyDocument = state.companyDocuments.find((document) =>
-    textIncludesAll([document.name, document.category, document.source].join(" "), terms),
-  );
-  if (companyDocument) return { type: "company", document: companyDocument };
-
-  for (const contact of state.contacts) {
-    const document = (contact.documents || []).find((item) =>
-      textIncludesAll([item.name, item.category, item.source].join(" "), terms),
-    );
-    if (document) return { type: "lead", contact, document };
-  }
-  return null;
-}
-
-function findEstimateByPrompt(prompt) {
-  const query = assistantCleanQuery(prompt).toLowerCase();
-  if (!query) return null;
-  const terms = query.split(/\s+/).filter((term) => term.length > 1);
-  return state.estimates.find((estimate) => {
-    const contact = getEstimateContact(estimate);
-    return textIncludesAll([estimate.estimateNumber, estimate.projectTitle, estimate.status, contact?.name].join(" "), terms);
-  });
-}
-
-function roofingTearOffDraft() {
-  return `Tear Off Process for Shingle Roofs
-
-Our tear off process begins with protecting the property before any roofing material is removed. The crew stages tarps, protects landscaping, covers vulnerable areas, and establishes a controlled debris path so the work area stays organized and safe.
-
-Once protection is in place, the existing shingles are removed down to the roof decking. This includes stripping shingles, starter courses, hip and ridge caps, old underlayment, drip edge where required, pipe boot flashings, and other worn roof accessories that need replacement. Debris is moved directly into the designated disposal area to keep the job site clean throughout the day.
-
-After the roof is opened, the decking is inspected carefully for soft, rotted, delaminated, or damaged sheathing. Any compromised decking is documented and replaced as needed so the new roofing system has a solid, code-compliant surface to attach to.
-
-The crew then prepares the roof for installation by sweeping the deck, removing loose fasteners, checking roof penetrations, and making sure valleys, eaves, rakes, and wall transitions are ready for the new system. Ice and water shield, synthetic underlayment, drip edge, starter shingles, flashing components, ventilation, and architectural shingles can then be installed according to manufacturer specifications.
-
-At completion, the crew performs a full cleanup that includes removing debris, blowing off work areas, cleaning gutters when applicable, and using magnetic rollers to collect loose nails around the property. The goal is to leave the property protected, clean, and ready for final inspection.`;
-}
-
-function genericRoofingDraft(prompt) {
-  if (/tear\s*off|remove|removal/i.test(prompt) && /shingle|roof/i.test(prompt)) return roofingTearOffDraft();
-  return `Roofing Scope Explanation
-
-This work includes a professional review of the existing roof condition, preparation of the work area, protection of surrounding property, and completion of the roofing scope using materials and installation practices appropriate for the project. The crew will document visible concerns, communicate any concealed damage discovered during production, and maintain a clean job site throughout the work.
-
-The final scope should identify the roofing system being installed, the areas included, the materials required, any ventilation or flashing work, and any exclusions or conditions that may affect pricing. Once the work is complete, the crew should perform cleanup, remove project debris, and complete a final quality review before closing the job.`;
-}
-
-function assistantViewFromPrompt(prompt) {
-  const lower = prompt.toLowerCase();
-  const matches = [
-    ["dashboard", ["dashboard", "home"]],
-    ["leads", ["leads"]],
-    ["contacts", ["contacts", "clients", "customers"]],
-    ["jobs", ["jobs", "projects list"]],
-    ["projects", ["projects", "production"]],
-    ["estimates", ["estimates", "estimate center"]],
-    ["companyDocuments", ["company documents", "documents", "samples", "contracts"]],
-    ["calendar", ["calendar", "schedule"]],
-    ["tasks", ["tasks", "reminders"]],
-    ["reports", ["reports", "leaderboard"]],
-    ["company", ["settings", "company settings"]],
-  ];
-  return matches.find(([, aliases]) => aliases.some((alias) => lower.includes(alias)))?.[0] || "";
-}
-
-function assistantViewLabel(view) {
-  return (
-    {
-      dashboard: "Dashboard",
-      leads: "Leads",
-      contacts: "Contacts",
-      jobs: "Jobs",
-      projects: "Projects",
-      estimates: "Estimates",
-      companyDocuments: "Company Documents",
-      calendar: "Calendar",
-      tasks: "Tasks",
-      reports: "Reports",
-      company: "Settings",
-    }[view] || "that section"
-  );
-}
-
-function normalizeMathExpression(prompt) {
-  const normalized = String(prompt || "")
-    .toLowerCase()
-    .replaceAll(",", "")
-    .replace(/\$/g, "")
-    .replace(/\b(what is|what's|calculate|solve|how much is|answer|equals|equal to)\b/g, " ")
-    .replace(/\bmultiplied by\b/g, "*")
-    .replace(/\btimes\b/g, "*")
-    .replace(/\bdivided by\b/g, "/")
-    .replace(/\bover\b/g, "/")
-    .replace(/\bplus\b/g, "+")
-    .replace(/\bminus\b/g, "-")
-    .replace(/(\d)\s*\u00d7\s*(\d)/g, "$1*$2")
-    .replace(/(\d)\s*[x×]\s*(\d)/g, "$1*$2");
-  const candidates = normalized.match(/[0-9+\-*/().\s]+/g) || [];
-  return candidates
-    .map((candidate) => candidate.trim())
-    .filter((candidate) => /\d/.test(candidate) && /[+\-*/]/.test(candidate))
-    .sort((a, b) => b.length - a.length)[0] || "";
-}
-
-function evaluateMathExpression(expression) {
-  const text = String(expression || "").replace(/\s+/g, "");
-  if (!text || text.length > 100 || /[^0-9+\-*/().]/.test(text)) return null;
-  let index = 0;
-
-  const parseNumber = () => {
-    const match = text.slice(index).match(/^\d*\.?\d+/);
-    if (!match) return null;
-    index += match[0].length;
-    return Number(match[0]);
-  };
-
-  const parseFactor = () => {
-    if (text[index] === "+") {
-      index += 1;
-      return parseFactor();
-    }
-    if (text[index] === "-") {
-      index += 1;
-      const value = parseFactor();
-      return value === null ? null : -value;
-    }
-    if (text[index] === "(") {
-      index += 1;
-      const value = parseExpression();
-      if (text[index] !== ")") return null;
-      index += 1;
-      return value;
-    }
-    return parseNumber();
-  };
-
-  const parseTerm = () => {
-    let value = parseFactor();
-    if (value === null) return null;
-    while (text[index] === "*" || text[index] === "/") {
-      const operator = text[index];
-      index += 1;
-      const next = parseFactor();
-      if (next === null) return null;
-      value = operator === "*" ? value * next : value / next;
-    }
-    return value;
-  };
-
-  var parseExpression = () => {
-    let value = parseTerm();
-    if (value === null) return null;
-    while (text[index] === "+" || text[index] === "-") {
-      const operator = text[index];
-      index += 1;
-      const next = parseTerm();
-      if (next === null) return null;
-      value = operator === "+" ? value + next : value - next;
-    }
-    return value;
-  };
-
-  const result = parseExpression();
-  if (index !== text.length || !Number.isFinite(result)) return null;
-  return result;
-}
-
-function formatMathNumber(value) {
-  const rounded = Math.abs(value) < 1e-10 ? 0 : value;
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: Number.isInteger(rounded) ? 0 : 4,
-  }).format(rounded);
-}
-
-function assistantMathAnswer(prompt) {
-  const expression = normalizeMathExpression(prompt);
-  if (!expression) return "";
-  const result = evaluateMathExpression(expression);
-  if (result === null) return "";
-  return `${expression.replaceAll("*", " x ")} = ${formatMathNumber(result)}`;
-}
-
-function assistantRuntimeContext() {
-  return {
-    companyName: state.company?.name || "",
-    currentView: assistantViewLabel(state.view),
-    userRole: currentRole(),
-    counts: {
-      leads: state.contacts.filter((contact) => contact.type === "Lead").length,
-      customers: state.contacts.filter((contact) => contact.type === "Customer").length,
-      jobs: allJobs().length,
-      estimates: state.estimates.length,
-      companyDocuments: state.companyDocuments.length,
-    },
-  };
-}
-
-function assistantApiHistory() {
-  return state.assistantMessages
-    .slice(-8)
-    .map((message) => ({
-      role: message.role,
-      text: message.text,
-    }))
-    .filter((message) => message.text);
-}
-
-async function assistantAccessToken() {
-  if (authSession?.access_token) return authSession.access_token;
-  if (authSession?.session?.access_token) return authSession.session.access_token;
-  if (!window.RooflineAuth?.getTrustedUser) return "";
-
-  const trusted = await window.RooflineAuth.getTrustedUser();
-  if (trusted?.session?.access_token) {
-    authSession = { ...authSession, ...trusted };
-    return trusted.session.access_token;
-  }
-  return "";
-}
-
-async function assistantRealtimeAnswer(prompt) {
-  try {
-    const headers = { "Content-Type": "application/json" };
-    const accessToken = await assistantAccessToken();
-    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-
-    const response = await fetch("/api/assistant", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        prompt,
-        context: assistantRuntimeContext(),
-        history: assistantApiHistory(),
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    return (
-      data.reply ||
-      (response.ok
-        ? "I could not generate an answer for that. Try asking it a different way."
-        : "The live AI service could not answer right now. Try again in a moment.")
-    );
-  } catch {
-    return "I could not reach the live AI service. I can still open CRM sections, find leads, and answer simple math.";
-  }
-}
-
-function assistantLocalResponse(prompt) {
-  const lower = prompt.toLowerCase();
-  const query = assistantCleanQuery(prompt);
-  const mathAnswer = assistantMathAnswer(prompt);
-
-  if (mathAnswer) return mathAnswer;
-
-  if (lower.includes("document") || lower.includes("file") || lower.includes("contract") || lower.includes("sample")) {
-    const found = findDocumentByPrompt(prompt);
-    if (found?.type === "lead") {
-      state.selectedContactId = found.contact.id;
-      state.leadDetailTab = "documents";
-      state.view = "leadDetail";
-      state.search = "";
-      return `I found "${found.document.name}" under ${found.contact.name} and opened that lead's Documents tab.`;
-    }
-    if (found?.type === "company") {
-      state.view = "companyDocuments";
-      state.search = query;
-      return `I found "${found.document.name}" in Company Documents and filtered the document list for you.`;
-    }
-  }
-
-  if (lower.includes("estimate")) {
-    const estimate = findEstimateByPrompt(prompt);
-    if (estimate) {
-      state.view = "estimates";
-      state.selectedEstimateId = estimate.id;
-      state.selectedContactId = estimate.contactId;
-      state.search = "";
-      return `I opened ${estimate.estimateNumber || "that estimate"} for ${getEstimateContact(estimate)?.name || "the selected client"}.`;
-    }
-  }
-
-  if (lower.includes("job")) {
-    const job = findJobByPrompt(prompt);
-    if (job) {
-      state.selectedContactId = job.contactId;
-      state.selectedProfitJobId = job.id;
-      state.leadDetailTab = canManageJobFinancials() && lower.includes("profit") ? "profit" : "jobs";
-      state.view = "leadDetail";
-      state.search = "";
-      return `I found ${job.name} for ${job.contactName} and opened the job page.`;
-    }
-  }
-
-  if (/\b(find|search|open|show|locate)\b/i.test(prompt) && query) {
-    const matches = findContactsByPrompt(prompt);
-    if (matches.length === 1) {
-      state.selectedContactId = matches[0].id;
-      state.leadDetailTab = "overview";
-      state.view = "leadDetail";
-      state.search = "";
-      return `I found ${matches[0].name} and opened the lead page.`;
-    }
-    if (matches.length > 1) {
-      state.view = "contacts";
-      state.search = query;
-      return `I found ${matches.length} matching records and filtered Contacts for "${query}".`;
-    }
-  }
-
-  const view = assistantViewFromPrompt(prompt);
-  if (view && canView(view)) {
-    state.view = view;
-    state.search = "";
-    return `I opened ${assistantViewLabel(view)} for you.`;
-  }
-
-  if (/help|what can you do|examples/i.test(prompt)) {
-    return "I can answer general questions in real time, draft roofing and sales language, do simple math, open CRM sections, find leads or jobs by name/address, locate documents, and open estimates.";
-  }
-
-  return "";
-}
-
-async function assistantRespond(prompt) {
-  const localResponse = assistantLocalResponse(prompt);
-  if (localResponse) return localResponse;
-  return assistantRealtimeAnswer(prompt);
-}
-
-async function submitAssistantPrompt(prompt) {
-  const text = String(prompt || "").trim();
-  if (!text) return;
-  addAssistantMessage("user", text);
-  state.assistantOpen = true;
-  saveState();
-  render();
-  const response = await assistantRespond(text);
-  addAssistantMessage("assistant", response);
-  state.assistantOpen = true;
-  saveState();
-  render();
-}
-
-function renderAssistant() {
-  if (!els.aiAssistant) return;
-  els.aiAssistant.classList.toggle("open", state.assistantOpen);
-  els.aiToggle?.setAttribute("aria-expanded", String(Boolean(state.assistantOpen)));
-
-  if (els.aiSuggestions) {
-    els.aiSuggestions.innerHTML = assistantSuggestions
-      .map((suggestion) => `<button type="button" data-assistant-prompt="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</button>`)
-      .join("");
-  }
-
-  if (els.aiMessages) {
-    els.aiMessages.innerHTML = assistantMessages()
-      .map(
-        (message) => `
-          <article class="ai-message ${message.role}">
-            <span>${message.role === "user" ? "You" : "CRM AI"}</span>
-            <p>${nl2br(message.text)}</p>
-          </article>
-        `,
-      )
-      .join("");
-    window.requestAnimationFrame(() => {
-      els.aiMessages.scrollTop = els.aiMessages.scrollHeight;
-    });
-  }
-  hydrateIcons(els.aiAssistant);
-}
-
 function render() {
   if (!canView(state.view)) {
     state.view = firstAllowedView();
@@ -2354,7 +2276,6 @@ function render() {
   renderReportsView();
   renderCompanyForm();
   applyPermissionsToDom();
-  renderAssistant();
 }
 
 function renderBrandLogo() {
@@ -2409,7 +2330,7 @@ function applyPermissionsToDom() {
     const permission = actionPermissions[button.dataset.action];
     if (permission) {
       button.classList.toggle("hidden", !canAction(permission));
-      button.disabled = !canAction(permission);
+      button.disabled = !canAction(permission) || button.dataset.ruleDisabled === "true";
     }
   });
 
@@ -2422,6 +2343,7 @@ function applyPermissionsToDom() {
     [els.estimateLeadDetailButton, "manageEstimates"],
     [els.uploadLeadDocumentButton, "manageDocuments"],
     [els.uploadCompanyDocumentButton, "manageDocuments"],
+    [els.toggleEstimateCreateButton, "manageEstimates"],
     [els.newEstimateButton, "manageEstimates"],
     [els.addLineItemButton, "manageEstimates"],
     [els.deleteEstimateButton, "manageEstimates"],
@@ -3784,38 +3706,75 @@ async function copyLeadEmail() {
 }
 
 function renderLeadDocuments(contact) {
-  els.leadDocumentsList.innerHTML = contact.documents.length
-    ? contact.documents
-        .map(
-          (document) => `
-        <article class="document-card">
-          <div>
-            <strong>${escapeHtml(document.name)}</strong>
-            <span>${escapeHtml(formatBytes(document.size))} - ${escapeHtml(formatDateTime(document.uploadedAt))}</span>
-          </div>
-          <div class="row-actions">
-            <a class="secondary-button" href="${escapeHtml(document.dataUrl)}" download="${escapeHtml(
-              document.name,
-            )}">
-              <span aria-hidden="true" data-icon="download"></span>
-              Download
-            </a>
-            <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(
-              document.name,
-            )}" data-action="rename-document" data-document-id="${document.id}">
-              <span aria-hidden="true" data-icon="edit"></span>
-            </button>
-            <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(
-              document.name,
-            )}" data-action="remove-document" data-document-id="${document.id}">
-              <span aria-hidden="true" data-icon="trash"></span>
-            </button>
-          </div>
-        </article>
-      `,
-        )
+  const configuredCategories = state.company.documentCategories || [];
+  const visibleCategories = configuredCategories.filter(
+    (category) => category.active || contact.documents.some((document) => document.categoryId === category.id),
+  );
+  const activeCategories = configuredCategories.filter((category) => category.active);
+  const selectedCategoryId = activeCategories.some((category) => category.id === els.leadDocumentCategory?.value)
+    ? els.leadDocumentCategory.value
+    : activeCategories[0]?.id || "";
+
+  if (els.leadDocumentCategory) {
+    els.leadDocumentCategory.innerHTML = activeCategories
+      .map(
+        (category) =>
+          `<option value="${escapeHtml(category.id)}" ${category.id === selectedCategoryId ? "selected" : ""}>${escapeHtml(category.name)}</option>`,
+      )
+      .join("");
+    els.leadDocumentCategory.disabled = !activeCategories.length;
+  }
+  if (els.uploadLeadDocumentButton) els.uploadLeadDocumentButton.disabled = !activeCategories.length;
+
+  els.leadDocumentsList.innerHTML = visibleCategories.length
+    ? visibleCategories
+        .map((category) => {
+          const documents = contact.documents
+            .filter((document) => document.categoryId === category.id)
+            .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+          return `
+            <section class="document-folder ${category.active ? "" : "is-inactive"}" style="--category-color:${escapeHtml(category.color)}">
+              <div class="document-folder-header">
+                <div class="document-folder-title">
+                  <span class="document-folder-icon" aria-hidden="true" data-icon="${escapeHtml(category.icon)}"></span>
+                  <div>
+                    <h3>${escapeHtml(category.name)}</h3>
+                    <span>${documents.length} document${documents.length === 1 ? "" : "s"}${category.active ? "" : " · Inactive"}</span>
+                  </div>
+                </div>
+                ${
+                  category.active
+                    ? `<button class="mini-button" type="button" title="Upload to ${escapeHtml(category.name)}" data-action="upload-to-category" data-category-id="${escapeHtml(category.id)}"><span aria-hidden="true" data-icon="upload"></span></button>`
+                    : ""
+                }
+              </div>
+              <div class="document-folder-files">
+                ${
+                  documents.length
+                    ? documents
+                        .map(
+                          (document) => `
+                            <article class="document-card">
+                              <div>
+                                <strong>${escapeHtml(document.name)}</strong>
+                                <span>${escapeHtml(formatBytes(document.size))} · ${escapeHtml(document.type)} · Version ${escapeHtml(document.versionNumber)} · ${escapeHtml(formatDateTime(document.uploadedAt))}</span>
+                                <span>Uploaded by ${escapeHtml(document.uploadedBy)}</span>
+                              </div>
+                              <div class="row-actions">
+                                <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="download"></span>Download</button>
+                                <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(document.name)}" data-action="rename-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="edit"></span></button>
+                                <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(document.name)}" data-action="remove-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="trash"></span></button>
+                              </div>
+                            </article>`,
+                        )
+                        .join("")
+                    : '<div class="document-folder-empty">No documents in this category</div>'
+                }
+              </div>
+            </section>`;
+        })
         .join("")
-    : '<div class="empty-state">No documents saved for this lead yet</div>';
+    : '<div class="empty-state">No active document categories. An administrator can add one in CRM Settings.</div>';
   hydrateIcons(els.leadDocumentsList);
 }
 
@@ -3847,6 +3806,90 @@ function readFileAsDataUrl(file) {
   });
 }
 
+function safeStorageFileName(name = "document") {
+  return String(name || "document").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "document";
+}
+
+async function storeDocumentFile(file, { documentId, leadId = "company", categoryId = "other" } = {}) {
+  if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) {
+    return { dataUrl: await readFileAsDataUrl(file), storagePath: "" };
+  }
+  const storagePath = `${supabaseStateId()}/${leadId}/${categoryId}/${documentId}/${safeStorageFileName(file.name)}`;
+  const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
+    cacheControl: "3600",
+    contentType: file.type || "application/octet-stream",
+    upsert: false,
+  });
+  if (error) throw error;
+  return { dataUrl: "", storagePath };
+}
+
+async function deleteStoredDocument(record) {
+  if (!record?.storagePath || !cloudClient?.storage) return;
+  const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).remove([record.storagePath]);
+  if (error) console.warn("Stored document could not be removed", error);
+}
+
+async function downloadManagedDocument(documentId) {
+  const leadDocument = state.contacts.flatMap((contact) => contact.documents || []).find((item) => item.id === documentId);
+  const record = leadDocument || state.companyDocuments.find((item) => item.id === documentId);
+  if (!record) return showToast("Document not found");
+  let url = record.dataUrl || "";
+  if (record.storagePath && cloudClient?.storage) {
+    const { data, error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).createSignedUrl(record.storagePath, 300);
+    if (error) {
+      console.warn("Document download link failed", error);
+      return showToast("The document download could not be opened");
+    }
+    url = data?.signedUrl || "";
+  }
+  if (!url) return showToast("This document needs to be migrated to cloud storage");
+  const link = window.document.createElement("a");
+  link.href = url;
+  link.download = record.name || "document";
+  link.rel = "noopener";
+  window.document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function migrateInlineDocumentsToStorage() {
+  if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) return;
+  let migrated = 0;
+  const candidates = [];
+  state.contacts.forEach((contact) => (contact.documents || []).forEach((record) => {
+    if (!record.storagePath && String(record.dataUrl || "").startsWith("data:")) {
+      candidates.push({ record, leadId: contact.id, categoryId: record.categoryId || "other" });
+    }
+  }));
+  state.companyDocuments.forEach((record) => {
+    if (!record.storagePath && String(record.dataUrl || "").startsWith("data:")) {
+      candidates.push({ record, leadId: "company", categoryId: record.category || "other" });
+    }
+  });
+  for (const candidate of candidates) {
+    try {
+      const blob = await fetch(candidate.record.dataUrl).then((response) => response.blob());
+      const file = new File([blob], candidate.record.name || "document", { type: candidate.record.type || blob.type });
+      const stored = await storeDocumentFile(file, {
+        documentId: candidate.record.id,
+        leadId: candidate.leadId,
+        categoryId: candidate.categoryId,
+      });
+      candidate.record.storagePath = stored.storagePath;
+      candidate.record.dataUrl = "";
+      migrated += 1;
+    } catch (error) {
+      console.warn(`Document ${candidate.record.id} could not be migrated to Storage`, error);
+    }
+  }
+  if (migrated) {
+    saveState();
+    render();
+    showToast(`${migrated} existing document${migrated === 1 ? "" : "s"} moved to secure storage`);
+  }
+}
+
 function rasterizeLogoDataUrl(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -3871,19 +3914,32 @@ async function uploadLeadDocuments(files) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
   if (!contact || !files?.length) return;
+  const categoryId = els.leadDocumentCategory?.value || "";
+  const category = state.company.documentCategories.find((item) => item.id === categoryId && item.active);
+  if (!category) {
+    showToast("Choose an active document category");
+    return;
+  }
 
   const documents = await Promise.all(
-    [...files].map(async (file) =>
-      normalizeDocument({
-        id: uid("doc"),
+    [...files].map(async (file) => {
+      const id = uid("doc");
+      const stored = await storeDocumentFile(file, { documentId: id, leadId: contact.id, categoryId: category.id });
+      return normalizeDocument({
+        id,
         name: file.name,
         type: file.type || "application/octet-stream",
         size: file.size,
-        dataUrl: await readFileAsDataUrl(file),
+        ...stored,
         uploadedAt: new Date().toISOString(),
-        uploadedBy: "Local user",
-      }),
-    ),
+        leadId: contact.id,
+        contactId: contact.id,
+        categoryId: category.id,
+        category: category.name,
+        uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+        versionNumber: 1,
+      }, { leadId: contact.id, categoryId: category.id, categories: state.company.documentCategories });
+    }),
   );
 
   updateContact(contact.id, (current) => ({
@@ -3891,7 +3947,7 @@ async function uploadLeadDocuments(files) {
     documents: [...documents, ...(current.documents || [])],
   }));
   addContactUpdate(contact.id, {
-    message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`}.`,
+    message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${category.name}.`,
   });
   saveState();
   render();
@@ -3903,6 +3959,7 @@ function removeLeadDocument(documentId) {
   const contact = getSelectedContact();
   if (!contact) return;
   const document = contact.documents.find((item) => item.id === documentId);
+  void deleteStoredDocument(document);
   updateContact(contact.id, (current) => ({
     ...current,
     documents: current.documents.filter((item) => item.id !== documentId),
@@ -3986,12 +4043,10 @@ function renderCompanyDocuments() {
             <span>${escapeHtml(formatBytes(document.size))} - ${escapeHtml(formatDateTime(document.uploadedAt))}</span>
           </div>
           <div class="row-actions">
-            <a class="secondary-button" href="${escapeHtml(document.dataUrl)}" download="${escapeHtml(
-              document.name,
-            )}">
+            <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}">
               <span aria-hidden="true" data-icon="download"></span>
               Download
-            </a>
+            </button>
             <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(
               document.name,
             )}" data-action="rename-company-document" data-document-id="${document.id}">
@@ -4016,18 +4071,20 @@ async function uploadCompanyDocuments(files) {
   if (!files?.length) return;
   const category = els.companyDocumentCategory.value || "Other";
   const documents = await Promise.all(
-    [...files].map(async (file) =>
-      normalizeDocument({
-        id: uid("doc"),
+    [...files].map(async (file) => {
+      const id = uid("doc");
+      const stored = await storeDocumentFile(file, { documentId: id, leadId: "company", categoryId: category });
+      return normalizeDocument({
+        id,
         name: file.name,
         category,
         type: file.type || "application/octet-stream",
         size: file.size,
-        dataUrl: await readFileAsDataUrl(file),
+        ...stored,
         uploadedAt: new Date().toISOString(),
-        uploadedBy: "Local user",
-      }),
-    ),
+        uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+      });
+    }),
   );
   state.companyDocuments = [...documents, ...state.companyDocuments];
   saveState();
@@ -4037,6 +4094,8 @@ async function uploadCompanyDocuments(files) {
 
 function removeCompanyDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
+  const document = state.companyDocuments.find((item) => item.id === documentId);
+  void deleteStoredDocument(document);
   state.companyDocuments = state.companyDocuments.filter((document) => document.id !== documentId);
   saveState();
   renderCompanyDocuments();
@@ -4648,34 +4707,64 @@ function renderEstimates() {
   const estimates = filteredEstimates();
 
   renderNewEstimatePickers();
-
-  els.estimateList.innerHTML = estimates.length
-    ? estimates
-        .map((item) => {
-          const contact = getEstimateContact(item);
-          const job = getEstimateJob(item);
-          const total = totalsFor(item).total;
-          return `
-            <button type="button" class="${item.id === estimate?.id ? "active" : ""}" data-estimate-id="${
-              item.id
-            }">
-              <strong>${escapeHtml(item.projectTitle || item.estimateNumber)}</strong>
-              <span class="status-pill">${escapeHtml(item.status)}</span>
-              <small>${escapeHtml(item.estimateNumber)} - ${escapeHtml(contact?.name || "Unknown lead")}</small>
-              <small>${escapeHtml(job?.name || "Primary job")}</small>
-              <small>${money.format(total)}</small>
-            </button>
-          `;
-        })
-        .join("")
-    : '<div class="empty-state">No matching estimates</div>';
+  renderEstimateHistory(estimate, estimates);
 
   renderEstimateForm(estimate);
   renderEstimatePreview(estimate);
 }
 
+function estimateHistoryMarkup(estimate, estimates) {
+  return estimates.length
+    ? estimates
+        .map((item) => {
+          const contact = getEstimateContact(item);
+          const total = totalsFor(item).total;
+          return `
+            <button type="button" class="${item.id === estimate?.id ? "active" : ""}" data-estimate-id="${escapeHtml(item.id)}">
+              <span class="estimate-history-main">
+                <strong>${escapeHtml(item.projectTitle || item.estimateNumber)}</strong>
+                <small>${escapeHtml(item.estimateNumber)} · ${escapeHtml(contact?.name || "Unknown lead")}</small>
+              </span>
+              <span class="estimate-history-side">
+                <span class="status-pill">${escapeHtml(item.status)}</span>
+                <small>${money.format(total)}</small>
+              </span>
+            </button>`;
+        })
+        .join("")
+    : '<div class="empty-state">No matching estimates</div>';
+}
+
+function renderEstimateHistory(estimate = getSelectedEstimate(), estimates = filteredEstimates()) {
+  if (els.estimateHistoryCount) els.estimateHistoryCount.textContent = state.estimates.length;
+  if (els.estimateList) els.estimateList.innerHTML = estimateHistoryMarkup(estimate, estimates);
+}
+
+function renderEstimateActiveSummary(estimate) {
+  if (!els.estimateActiveSummary) return;
+  if (!estimate) {
+    els.estimateActiveSummary.innerHTML = `
+      <div><p class="eyebrow">No estimate selected</p><h3>Create an estimate to begin</h3></div>
+      <span>Use the New Estimate button above.</span>`;
+    return;
+  }
+  const contact = getEstimateContact(estimate);
+  const total = totalsFor(estimate).total;
+  els.estimateActiveSummary.innerHTML = `
+    <div>
+      <p class="eyebrow">Editing ${escapeHtml(estimate.estimateNumber)}</p>
+      <h3>${escapeHtml(estimate.projectTitle || "Untitled estimate")}</h3>
+      <span>${escapeHtml(contact?.name || "Unknown lead")} · Last changes save automatically</span>
+    </div>
+    <div class="estimate-active-meta">
+      <span class="status-pill">${escapeHtml(estimate.status)}</span>
+      <strong>${money.format(total)}</strong>
+    </div>`;
+}
+
 function renderEstimateForm(estimate) {
   const disabled = !estimate;
+  renderEstimateActiveSummary(estimate);
   els.estimateForm.classList.toggle("hidden", disabled);
   els.deleteEstimateButton.disabled = disabled;
   els.copyEstimateButton.disabled = disabled;
@@ -4917,6 +5006,211 @@ function renderCompanyForm() {
     const field = form.elements[key];
     if (field) field.value = value || "";
   });
+  renderDocumentCategoriesSettings();
+}
+
+function documentCategoryDocumentCount(categoryId) {
+  return state.contacts.reduce(
+    (total, contact) => total + (contact.documents || []).filter((document) => document.categoryId === categoryId).length,
+    0,
+  );
+}
+
+function renderDocumentCategoriesSettings() {
+  if (!els.documentCategoriesList) return;
+  const categories = state.company.documentCategories || [];
+  const writable = canAction("manageCompany");
+  els.documentCategoryCreateForm?.querySelectorAll("input, select, button").forEach((control) => {
+    control.disabled = !writable;
+  });
+  els.documentCategoriesList.innerHTML = categories
+    .map((category, index) => {
+      const documentCount = documentCategoryDocumentCount(category.id);
+      const mergeOptions = categories
+        .filter((target) => target.id !== category.id)
+        .map((target) => `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`)
+        .join("");
+      return `
+        <article class="document-category-admin-row ${category.active ? "" : "is-inactive"}" draggable="${writable}" data-category-id="${escapeHtml(category.id)}">
+          <div class="document-category-drag" title="Drag to reorder" aria-label="Drag ${escapeHtml(category.name)} to reorder">⋮⋮</div>
+          <span class="document-category-color" style="--category-color:${escapeHtml(category.color)}" aria-hidden="true" data-icon="${escapeHtml(category.icon)}"></span>
+          <div class="document-category-fields">
+            <label>Name<input data-category-field="name" value="${escapeHtml(category.name)}" maxlength="80" ${writable ? "" : "disabled"} /></label>
+            <label>Icon<select data-category-field="icon" ${writable ? "" : "disabled"}>${documentCategoryIcons
+              .map((icon) => `<option value="${icon}" ${icon === category.icon ? "selected" : ""}>${icon.replace(/^./, (letter) => letter.toUpperCase())}</option>`)
+              .join("")}</select></label>
+            <label>Color<input data-category-field="color" type="color" value="${escapeHtml(category.color)}" ${writable ? "" : "disabled"} /></label>
+          </div>
+          <div class="document-category-meta">
+            <strong>${category.active ? "Active" : "Inactive"}</strong>
+            <span>${documentCount} document${documentCount === 1 ? "" : "s"}</span>
+            <span>Created ${escapeHtml(formatDateTime(category.createdAt))}</span>
+            <span>Modified ${escapeHtml(formatDateTime(category.updatedAt))}</span>
+          </div>
+          <div class="document-category-actions">
+            <button class="secondary-button" type="button" data-action="edit-document-category" data-category-id="${escapeHtml(category.id)}" ${writable ? "" : "disabled"}>Save</button>
+            <button class="ghost-button" type="button" data-action="toggle-document-category" data-category-id="${escapeHtml(category.id)}" ${writable ? "" : "disabled"}>${category.active ? "Disable" : "Enable"}</button>
+            <div class="category-order-buttons" aria-label="Reorder ${escapeHtml(category.name)}">
+              <button class="mini-button" type="button" title="Move up" data-action="move-document-category-up" data-category-id="${escapeHtml(category.id)}" data-rule-disabled="${index === 0}" ${writable && index > 0 ? "" : "disabled"}>↑</button>
+              <button class="mini-button" type="button" title="Move down" data-action="move-document-category-down" data-category-id="${escapeHtml(category.id)}" data-rule-disabled="${index === categories.length - 1}" ${writable && index < categories.length - 1 ? "" : "disabled"}>↓</button>
+            </div>
+            <div class="document-category-merge">
+              <select aria-label="Merge ${escapeHtml(category.name)} into" data-merge-target ${writable && mergeOptions ? "" : "disabled"}>${mergeOptions}</select>
+              <button class="ghost-button" type="button" data-action="merge-document-category" data-category-id="${escapeHtml(category.id)}" data-rule-disabled="${!mergeOptions}" ${writable && mergeOptions ? "" : "disabled"}>Merge</button>
+            </div>
+            <button class="ghost-button danger" type="button" data-action="delete-document-category" data-category-id="${escapeHtml(category.id)}" data-rule-disabled="${documentCount > 0}" ${writable && documentCount === 0 ? "" : "disabled"} title="${documentCount ? "Merge or move documents before deleting" : "Delete empty category"}">Delete</button>
+          </div>
+        </article>`;
+    })
+    .join("");
+  hydrateIcons(els.documentCategoriesList);
+}
+
+function saveDocumentCategories(categories, message = "Document categories updated") {
+  const previousCategories = new Map(
+    (state.company.documentCategories || []).map((category) => [category.id, category]),
+  );
+  const now = new Date().toISOString();
+  state.company.documentCategories = normalizeDocumentCategories(
+    categories.map((category, displayOrder) => ({
+      ...category,
+      displayOrder,
+      updatedAt:
+        previousCategories.get(category.id)?.displayOrder !== displayOrder ? now : category.updatedAt,
+    })),
+  );
+  const categoryById = new Map(state.company.documentCategories.map((category) => [category.id, category]));
+  state.contacts = state.contacts.map((contact) => ({
+    ...contact,
+    documents: (contact.documents || []).map((document) => ({
+      ...document,
+      leadId: contact.id,
+      contactId: contact.id,
+      category: categoryById.get(document.categoryId)?.name || document.category,
+    })),
+  }));
+  saveState();
+  renderDocumentCategoriesSettings();
+  const selectedContact = getSelectedContact();
+  if (selectedContact) renderLeadDocuments(selectedContact);
+  showToast(message);
+}
+
+function createDocumentCategory(event) {
+  event.preventDefault();
+  if (!requireAction("manageCompany")) return;
+  const formData = new FormData(els.documentCategoryCreateForm);
+  const name = String(formData.get("name") || "").trim();
+  if (!name) return;
+  if (state.company.documentCategories.some((category) => category.name.toLowerCase() === name.toLowerCase())) {
+    showToast("Category names must be unique");
+    return;
+  }
+  const now = new Date().toISOString();
+  const category = normalizeDocumentCategory({
+    id: uid("doccat"),
+    name,
+    displayOrder: state.company.documentCategories.length,
+    icon: formData.get("icon"),
+    color: formData.get("color"),
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+  els.documentCategoryCreateForm.reset();
+  els.documentCategoryCreateForm.elements.color.value = "#2563eb";
+  saveDocumentCategories([...state.company.documentCategories, category], `${name} category created`);
+}
+
+function editDocumentCategory(categoryId, row) {
+  const category = state.company.documentCategories.find((item) => item.id === categoryId);
+  if (!category || !row) return;
+  const name = String(row.querySelector('[data-category-field="name"]')?.value || "").trim();
+  if (!name) {
+    showToast("Category name is required");
+    return;
+  }
+  if (state.company.documentCategories.some((item) => item.id !== categoryId && item.name.toLowerCase() === name.toLowerCase())) {
+    showToast("Category names must be unique");
+    return;
+  }
+  const updated = {
+    ...category,
+    name,
+    icon: row.querySelector('[data-category-field="icon"]')?.value,
+    color: row.querySelector('[data-category-field="color"]')?.value,
+    updatedAt: new Date().toISOString(),
+  };
+  saveDocumentCategories(
+    state.company.documentCategories.map((item) => (item.id === categoryId ? updated : item)),
+    `${name} category saved`,
+  );
+}
+
+function toggleDocumentCategory(categoryId) {
+  const now = new Date().toISOString();
+  saveDocumentCategories(
+    state.company.documentCategories.map((category) =>
+      category.id === categoryId ? { ...category, active: !category.active, updatedAt: now } : category,
+    ),
+  );
+}
+
+function deleteDocumentCategory(categoryId) {
+  const category = state.company.documentCategories.find((item) => item.id === categoryId);
+  if (!category) return;
+  if (documentCategoryDocumentCount(categoryId)) {
+    showToast("Only empty categories can be deleted");
+    return;
+  }
+  if (!window.confirm(`Delete the empty ${category.name} category?`)) return;
+  saveDocumentCategories(
+    state.company.documentCategories.filter((item) => item.id !== categoryId),
+    `${category.name} category deleted`,
+  );
+}
+
+function mergeDocumentCategory(sourceId, targetId) {
+  const source = state.company.documentCategories.find((category) => category.id === sourceId);
+  const target = state.company.documentCategories.find((category) => category.id === targetId);
+  if (!source || !target || source.id === target.id) return;
+  if (!window.confirm(`Merge ${source.name} into ${target.name}? All documents will move and ${source.name} will be removed.`)) return;
+  state.contacts = state.contacts.map((contact) => ({
+    ...contact,
+    documents: (contact.documents || []).map((document) =>
+      document.categoryId === sourceId
+        ? { ...document, leadId: contact.id, contactId: contact.id, categoryId: targetId, category: target.name }
+        : document,
+    ),
+  }));
+  saveDocumentCategories(
+    state.company.documentCategories
+      .filter((category) => category.id !== sourceId)
+      .map((category) =>
+        category.id === targetId ? { ...category, updatedAt: new Date().toISOString() } : category,
+      ),
+    `${source.name} merged into ${target.name}`,
+  );
+}
+
+function moveDocumentCategory(categoryId, offset) {
+  const categories = [...state.company.documentCategories];
+  const index = categories.findIndex((category) => category.id === categoryId);
+  const targetIndex = index + offset;
+  if (index < 0 || targetIndex < 0 || targetIndex >= categories.length) return;
+  [categories[index], categories[targetIndex]] = [categories[targetIndex], categories[index]];
+  saveDocumentCategories(categories, "Category order updated");
+}
+
+function reorderDocumentCategory(sourceId, targetId) {
+  if (!sourceId || !targetId || sourceId === targetId) return;
+  const categories = [...state.company.documentCategories];
+  const sourceIndex = categories.findIndex((category) => category.id === sourceId);
+  const targetIndex = categories.findIndex((category) => category.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  const [moved] = categories.splice(sourceIndex, 1);
+  categories.splice(targetIndex, 0, moved);
+  saveDocumentCategories(categories, "Category order updated");
 }
 
 function openContactDialog(contactId, defaults = {}) {
@@ -5128,22 +5422,8 @@ function renderEstimateListOnly() {
   const currentFormState = document.activeElement;
   const estimate = getSelectedEstimate();
   const estimates = filteredEstimates();
-  els.estimateList.innerHTML = estimates
-    .map((item) => {
-      const contact = getEstimateContact(item);
-      const job = getEstimateJob(item);
-      const total = totalsFor(item).total;
-      return `
-        <button type="button" class="${item.id === estimate?.id ? "active" : ""}" data-estimate-id="${item.id}">
-          <strong>${escapeHtml(item.projectTitle || item.estimateNumber)}</strong>
-          <span class="status-pill">${escapeHtml(item.status)}</span>
-          <small>${escapeHtml(item.estimateNumber)} - ${escapeHtml(contact?.name || "Unknown contact")}</small>
-          <small>${escapeHtml(job?.name || "Primary job")}</small>
-          <small>${money.format(total)}</small>
-        </button>
-      `;
-    })
-    .join("");
+  renderEstimateHistory(estimate, estimates);
+  renderEstimateActiveSummary(estimate);
   if (currentFormState?.id) {
     document.getElementById(currentFormState.id)?.focus();
   }
@@ -5710,6 +5990,7 @@ function saveCompany(event) {
     role: formData.get("userRole").trim() || defaultCurrentUser.role,
   };
   state.company = {
+    ...state.company,
     name: formData.get("name").trim(),
     license: formData.get("license").trim(),
     phone: formData.get("phone").trim(),
@@ -5766,8 +6047,6 @@ const icons = {
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.3L5.8 21 7 14.2 2 9.3l6.9-1Z"/></svg>',
   "bar-chart":
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5"/><rect x="12" y="7" width="3" height="9"/><rect x="17" y="9" width="3" height="7"/></svg>',
-  sparkles:
-    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7Z"/><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9Z"/><path d="m5 14 .9 2.1L8 17l-2.1.9L5 20l-.9-2.1L2 17l2.1-.9Z"/></svg>',
   bell:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
   menu:
@@ -5811,7 +6090,7 @@ const icons = {
 };
 
 function bindEvents() {
-  document.addEventListener("click", (event) => {
+  document.addEventListener("click", async (event) => {
     const navButton = event.target.closest("[data-view]");
     if (navButton) setView(navButton.dataset.view);
 
@@ -5835,6 +6114,7 @@ function bindEvents() {
     const { action, contactId, nextStatus, lineIndex } = actionButton.dataset;
     const permission = actionPermissions[action];
     if (permission && !requireAction(permission)) return;
+    if (action === "download-document") await downloadManagedDocument(actionButton.dataset.documentId);
     if (action === "add-customer") openContactDialog(null, { type: "Customer" });
     if (action === "open-contact") openLeadDetail(contactId);
     if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview");
@@ -5879,11 +6159,35 @@ function bindEvents() {
     if (action === "rename-document") {
       renameLeadDocument(actionButton.dataset.documentId);
     }
+    if (action === "upload-to-category") {
+      if (els.leadDocumentCategory) els.leadDocumentCategory.value = actionButton.dataset.categoryId;
+      els.leadDocumentInput.value = "";
+      els.leadDocumentInput.click();
+    }
     if (action === "remove-company-document") {
       removeCompanyDocument(actionButton.dataset.documentId);
     }
     if (action === "rename-company-document") {
       renameCompanyDocument(actionButton.dataset.documentId);
+    }
+    if (action === "edit-document-category") {
+      editDocumentCategory(actionButton.dataset.categoryId, actionButton.closest(".document-category-admin-row"));
+    }
+    if (action === "toggle-document-category") {
+      toggleDocumentCategory(actionButton.dataset.categoryId);
+    }
+    if (action === "delete-document-category") {
+      deleteDocumentCategory(actionButton.dataset.categoryId);
+    }
+    if (action === "merge-document-category") {
+      const row = actionButton.closest(".document-category-admin-row");
+      mergeDocumentCategory(actionButton.dataset.categoryId, row?.querySelector("[data-merge-target]")?.value);
+    }
+    if (action === "move-document-category-up") {
+      moveDocumentCategory(actionButton.dataset.categoryId, -1);
+    }
+    if (action === "move-document-category-down") {
+      moveDocumentCategory(actionButton.dataset.categoryId, 1);
     }
     if (action === "edit-job") {
       editLeadJob(actionButton.dataset.jobId);
@@ -6040,7 +6344,27 @@ function bindEvents() {
 
   els.estimateList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-estimate-id]");
-    if (button) setSelectedEstimate(button.dataset.estimateId);
+    if (button) {
+      setSelectedEstimate(button.dataset.estimateId);
+      els.estimateHistoryPanel?.classList.add("hidden");
+      els.toggleEstimateHistoryButton?.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  els.toggleEstimateHistoryButton?.addEventListener("click", () => {
+    const willOpen = els.estimateHistoryPanel.classList.contains("hidden");
+    els.estimateHistoryPanel.classList.toggle("hidden", !willOpen);
+    els.toggleEstimateHistoryButton.setAttribute("aria-expanded", String(willOpen));
+    els.estimateCreatePanel?.classList.add("hidden");
+    els.toggleEstimateCreateButton?.setAttribute("aria-expanded", "false");
+  });
+
+  els.toggleEstimateCreateButton?.addEventListener("click", () => {
+    const willOpen = els.estimateCreatePanel.classList.contains("hidden");
+    els.estimateCreatePanel.classList.toggle("hidden", !willOpen);
+    els.toggleEstimateCreateButton.setAttribute("aria-expanded", String(willOpen));
+    els.estimateHistoryPanel?.classList.add("hidden");
+    els.toggleEstimateHistoryButton?.setAttribute("aria-expanded", "false");
   });
 
   els.newEstimateContact?.addEventListener("change", (event) => {
@@ -6056,7 +6380,11 @@ function bindEvents() {
   });
   els.newEstimateButton.addEventListener("click", () => {
     if (!requireAction("manageEstimates")) return;
-    createEstimate(els.newEstimateContact?.value, true, els.newEstimateJob?.value);
+    const estimate = createEstimate(els.newEstimateContact?.value, true, els.newEstimateJob?.value);
+    if (estimate) {
+      els.estimateCreatePanel?.classList.add("hidden");
+      els.toggleEstimateCreateButton?.setAttribute("aria-expanded", "false");
+    }
   });
   els.addLineItemButton.addEventListener("click", () => {
     if (!requireAction("manageEstimates")) return;
@@ -6120,6 +6448,35 @@ function bindEvents() {
   els.printEstimateButton.addEventListener("click", printEstimate);
   els.sendEstimateButton.addEventListener("click", sendEstimate);
   els.companyForm.addEventListener("submit", saveCompany);
+  els.documentCategoryCreateForm?.addEventListener("submit", createDocumentCategory);
+  let draggedDocumentCategoryId = "";
+  els.documentCategoriesList?.addEventListener("dragstart", (event) => {
+    if (!canAction("manageCompany")) return;
+    const row = event.target.closest("[data-category-id]");
+    if (!row) return;
+    draggedDocumentCategoryId = row.dataset.categoryId;
+    row.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", draggedDocumentCategoryId);
+  });
+  els.documentCategoriesList?.addEventListener("dragover", (event) => {
+    if (!draggedDocumentCategoryId) return;
+    const row = event.target.closest("[data-category-id]");
+    if (!row || row.dataset.categoryId === draggedDocumentCategoryId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  });
+  els.documentCategoriesList?.addEventListener("drop", (event) => {
+    const row = event.target.closest("[data-category-id]");
+    if (!row || !draggedDocumentCategoryId) return;
+    event.preventDefault();
+    reorderDocumentCategory(draggedDocumentCategoryId, row.dataset.categoryId);
+    draggedDocumentCategoryId = "";
+  });
+  els.documentCategoriesList?.addEventListener("dragend", () => {
+    els.documentCategoriesList.querySelectorAll(".is-dragging").forEach((row) => row.classList.remove("is-dragging"));
+    draggedDocumentCategoryId = "";
+  });
 
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
@@ -6135,27 +6492,6 @@ function bindEvents() {
     els.installAppButton.classList.add("hidden");
   });
 
-  els.aiToggle?.addEventListener("click", () => {
-    state.assistantOpen = !state.assistantOpen;
-    saveState();
-    renderAssistant();
-  });
-  els.aiClear?.addEventListener("click", () => {
-    state.assistantMessages = [];
-    saveState();
-    renderAssistant();
-  });
-  els.aiSuggestions?.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-assistant-prompt]");
-    if (!button) return;
-    submitAssistantPrompt(button.dataset.assistantPrompt);
-  });
-  els.aiForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const value = els.aiInput?.value || "";
-    if (els.aiInput) els.aiInput.value = "";
-    submitAssistantPrompt(value);
-  });
 }
 
 async function registerServiceWorker() {
@@ -6181,6 +6517,8 @@ async function startApp() {
   state.currentUser = currentUserFromAuthSession(authSession);
   saveState({ localOnly: true });
   await initializeCloudSync();
+  await initializeDurableRecords();
+  void migrateInlineDocumentsToStorage();
   hydrateIcons();
   bindEvents();
   render();

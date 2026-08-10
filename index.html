@@ -7,7 +7,7 @@
     <title>Roofline CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=23" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=34" />
+    <link rel="stylesheet" href="styles.css?v=37" />
   </head>
   <body>
     <div class="app-shell">
@@ -544,10 +544,16 @@
                   <p class="eyebrow">Documents</p>
                   <h2>Files for this lead</h2>
                 </div>
-                <button class="secondary-button" type="button" id="uploadLeadDocumentButton">
-                  <span aria-hidden="true" data-icon="upload"></span>
-                  Upload Document
-                </button>
+                <div class="document-upload-controls">
+                  <label class="compact-select">
+                    Category
+                    <select id="leadDocumentCategory" aria-label="Document category"></select>
+                  </label>
+                  <button class="secondary-button" type="button" id="uploadLeadDocumentButton">
+                    <span aria-hidden="true" data-icon="upload"></span>
+                    Upload Document
+                  </button>
+                </div>
                 <input class="file-input-hidden" id="leadDocumentInput" type="file" multiple />
               </div>
               <div id="leadDocumentsList" class="document-list"></div>
@@ -592,126 +598,191 @@
         </section>
 
         <section class="view-panel hidden" id="estimatesView">
+          <div class="estimate-workspace-toolbar surface">
+            <div>
+              <p class="eyebrow">Estimate workspace</p>
+              <h2>Create, review, and send</h2>
+              <p>Focus on one estimate at a time. The customer-facing layout and PDF remain unchanged.</p>
+            </div>
+            <div class="estimate-workspace-actions">
+              <button class="secondary-button" type="button" id="toggleEstimateHistoryButton" aria-expanded="false">
+                <span aria-hidden="true" data-icon="clipboard"></span>
+                History <span class="estimate-history-count" id="estimateHistoryCount">0</span>
+              </button>
+              <button class="primary-button" type="button" id="toggleEstimateCreateButton" aria-expanded="false">
+                <span aria-hidden="true" data-icon="plus"></span>
+                New Estimate
+              </button>
+            </div>
+          </div>
+
+          <section class="surface estimate-create-panel hidden" id="estimateCreatePanel" aria-label="Create estimate">
+            <div>
+              <p class="eyebrow">New estimate</p>
+              <h3>Choose a lead and job</h3>
+            </div>
+            <div class="estimate-create-controls">
+              <label>
+                Lead
+                <select id="newEstimateContact">
+                  <option value="">Choose lead</option>
+                </select>
+              </label>
+              <label>
+                Job
+                <select id="newEstimateJob">
+                  <option value="">Choose job</option>
+                </select>
+              </label>
+              <button class="primary-button" type="button" id="newEstimateButton">
+                <span aria-hidden="true" data-icon="plus"></span>
+                Create Estimate
+              </button>
+            </div>
+          </section>
+
+          <section class="surface estimate-history-panel hidden" id="estimateHistoryPanel" aria-label="Estimate history">
+            <div class="estimate-panel-heading">
+              <div>
+                <p class="eyebrow">Estimate history</p>
+                <h3>Saved estimates</h3>
+              </div>
+              <span>Select an estimate to continue editing it.</span>
+            </div>
+            <div class="estimate-list" id="estimateList" aria-label="Saved estimates"></div>
+          </section>
+
           <div class="estimate-layout">
             <section class="surface estimate-builder" aria-label="Estimate builder">
-              <div class="builder-header">
-                <div>
-                  <p class="eyebrow">Estimate center</p>
-                  <h2>Build and send</h2>
-                </div>
-                <div class="estimate-create-controls">
-                  <label>
-                    Lead
-                    <select id="newEstimateContact">
-                      <option value="">Choose lead</option>
-                    </select>
-                  </label>
-                  <label>
-                    Job
-                    <select id="newEstimateJob">
-                      <option value="">Choose job</option>
-                    </select>
-                  </label>
-                  <button class="secondary-button" type="button" id="newEstimateButton">
-                    <span aria-hidden="true" data-icon="plus"></span>
-                    New Estimate
-                  </button>
-                </div>
-              </div>
-
-              <div class="estimate-list" id="estimateList" aria-label="Saved estimates"></div>
+              <div class="estimate-active-summary" id="estimateActiveSummary"></div>
 
               <form id="estimateForm" class="estimate-form">
-                <div class="form-grid two">
-                  <label>
-                    Lead
-                    <select id="estimateContact" name="contactId" required></select>
-                  </label>
-                  <label>
-                    Job
-                    <select id="estimateJob" name="jobId" required></select>
-                  </label>
-                  <label>
-                    Estimate Number
-                    <input id="estimateNumber" name="estimateNumber" autocomplete="off" />
-                  </label>
-                  <label>
-                    Estimate Title
-                    <input id="estimateTitle" name="projectTitle" autocomplete="off" />
-                  </label>
-                  <label>
-                    Status
-                    <select id="estimateStatus" name="status">
-                      <option>Draft</option>
-                      <option>Sent</option>
-                      <option>Approved</option>
-                      <option>Declined</option>
-                    </select>
-                  </label>
-                  <label>
-                    Project Manager
-                    <input id="projectManager" name="projectManager" autocomplete="off" />
-                  </label>
-                  <label>
-                    Sales Rep Email
-                    <input id="salesRepEmail" name="salesRepEmail" type="email" autocomplete="email" />
-                  </label>
-                  <label>
-                    Sales Rep Phone
-                    <input id="salesRepPhone" name="salesRepPhone" autocomplete="tel" />
-                  </label>
-                  <label>
-                    Issue Date
-                    <input id="issueDate" name="issueDate" type="date" />
-                  </label>
-                  <label>
-                    Good Through
-                    <input id="validUntil" name="validUntil" type="date" />
-                  </label>
-                </div>
-
-                <label>
-                  Scope Summary
-                  <textarea id="scopeSummary" name="scopeSummary" rows="3"></textarea>
-                </label>
-
-                <div class="line-items-head">
-                  <div>
-                    <p class="eyebrow">Line items</p>
-                    <h3>Work to be performed</h3>
+                <div class="estimate-form-section">
+                  <div class="estimate-section-heading">
+                    <span>1</span>
+                    <div><strong>Project details</strong><small>Customer, job, title, and status</small></div>
                   </div>
-                  <div style="display:flex;gap:8px">
-                    <button class="ghost-button" type="button" id="lineItemTemplatesButton">
-                      <span aria-hidden="true" data-icon="template"></span>
-                      Templates
-                    </button>
-                    <button class="ghost-button" type="button" id="addLineItemButton">
-                      <span aria-hidden="true" data-icon="plus"></span>
-                      Add Item
-                    </button>
+                  <div class="form-grid two">
+                    <label>
+                      Lead
+                      <select id="estimateContact" name="contactId" required></select>
+                    </label>
+                    <label>
+                      Job
+                      <select id="estimateJob" name="jobId" required></select>
+                    </label>
+                    <label>
+                      Estimate Number
+                      <input id="estimateNumber" name="estimateNumber" autocomplete="off" />
+                    </label>
+                    <label>
+                      Estimate Title
+                      <input id="estimateTitle" name="projectTitle" autocomplete="off" />
+                    </label>
+                    <label>
+                      Status
+                      <select id="estimateStatus" name="status">
+                        <option>Draft</option>
+                        <option>Sent</option>
+                        <option>Approved</option>
+                        <option>Declined</option>
+                      </select>
+                    </label>
                   </div>
                 </div>
-                <div class="template-picker hidden" id="templatePicker"></div>
 
-                <div class="line-items" id="lineItems"></div>
+                <details class="estimate-form-section estimate-details">
+                  <summary>
+                    <span class="estimate-section-heading">
+                      <span>2</span>
+                      <span><strong>Representative and dates</strong><small>Project contact and estimate validity</small></span>
+                    </span>
+                    <span class="estimate-details-hint">Show details</span>
+                  </summary>
+                  <div class="form-grid two estimate-details-content">
+                    <label>
+                      Project Manager
+                      <input id="projectManager" name="projectManager" autocomplete="off" />
+                    </label>
+                    <label>
+                      Sales Rep Email
+                      <input id="salesRepEmail" name="salesRepEmail" type="email" autocomplete="email" />
+                    </label>
+                    <label>
+                      Sales Rep Phone
+                      <input id="salesRepPhone" name="salesRepPhone" autocomplete="tel" />
+                    </label>
+                    <label>
+                      Issue Date
+                      <input id="issueDate" name="issueDate" type="date" />
+                    </label>
+                    <label>
+                      Good Through
+                      <input id="validUntil" name="validUntil" type="date" />
+                    </label>
+                  </div>
+                </details>
 
-                <div class="form-grid two">
+                <div class="estimate-form-section">
+                  <div class="estimate-section-heading">
+                    <span>3</span>
+                    <div><strong>Scope of work</strong><small>Summary shown near the top of the estimate</small></div>
+                  </div>
                   <label>
-                    Tax Rate %
-                    <input id="taxRate" name="taxRate" type="number" min="0" step="0.01" />
-                  </label>
-                  <label>
-                    Deposit Required
-                    <input id="deposit" name="deposit" type="number" min="0" step="0.01" />
+                    Scope Summary
+                    <textarea id="scopeSummary" name="scopeSummary" rows="3"></textarea>
                   </label>
                 </div>
 
-                <label>
-                  Notes and Terms
-                  <textarea id="estimateNotes" name="notes" rows="3"></textarea>
-                </label>
+                <div class="estimate-form-section">
+                  <div class="line-items-head">
+                    <div class="estimate-section-heading">
+                      <span>4</span>
+                      <div><strong>Work and pricing</strong><small>Products, labor, quantities, and rates</small></div>
+                    </div>
+                    <div class="line-item-actions">
+                      <button class="ghost-button" type="button" id="lineItemTemplatesButton">
+                        <span aria-hidden="true" data-icon="template"></span>
+                        Templates
+                      </button>
+                      <button class="ghost-button" type="button" id="addLineItemButton">
+                        <span aria-hidden="true" data-icon="plus"></span>
+                        Add Item
+                      </button>
+                    </div>
+                  </div>
+                  <div class="template-picker hidden" id="templatePicker"></div>
 
-                <div class="builder-actions">
+                  <div class="line-items" id="lineItems"></div>
+                </div>
+
+                <details class="estimate-form-section estimate-details">
+                  <summary>
+                    <span class="estimate-section-heading">
+                      <span>5</span>
+                      <span><strong>Payment and terms</strong><small>Tax, deposit, notes, and legal terms</small></span>
+                    </span>
+                    <span class="estimate-details-hint">Show details</span>
+                  </summary>
+                  <div class="estimate-details-content">
+                    <div class="form-grid two">
+                      <label>
+                        Tax Rate %
+                        <input id="taxRate" name="taxRate" type="number" min="0" step="0.01" />
+                      </label>
+                      <label>
+                        Deposit Required
+                        <input id="deposit" name="deposit" type="number" min="0" step="0.01" />
+                      </label>
+                    </div>
+                    <label>
+                      Notes and Terms
+                      <textarea id="estimateNotes" name="notes" rows="3"></textarea>
+                    </label>
+                  </div>
+                </details>
+
+                <div class="estimate-action-bar">
                   <button class="ghost-button danger" type="button" id="deleteEstimateButton">
                     <span aria-hidden="true" data-icon="trash"></span>
                     Delete
@@ -723,7 +794,7 @@
                     </button>
                     <button class="secondary-button" type="button" id="printEstimateButton">
                       <span aria-hidden="true" data-icon="download"></span>
-                      Download PDF
+                      PDF
                     </button>
                     <button class="primary-button" type="button" id="sendEstimateButton">
                       <span aria-hidden="true" data-icon="mail"></span>
@@ -735,6 +806,10 @@
             </section>
 
             <section class="estimate-stage" aria-label="Estimate preview">
+              <div class="estimate-preview-heading">
+                <div><span class="status-dot"></span><strong>Live preview</strong></div>
+                <span>Updates as you type</span>
+              </div>
               <div id="estimatePreview" class="estimate-paper"></div>
             </section>
           </div>
@@ -989,6 +1064,41 @@
               </button>
             </div>
           </form>
+          <section class="surface document-category-settings" aria-labelledby="documentCategoriesTitle">
+            <div class="view-toolbar">
+              <div>
+                <p class="eyebrow">CRM Settings</p>
+                <h2 id="documentCategoriesTitle">Document Categories</h2>
+                <p class="section-description">Configure the folders shown automatically on every lead. Drag rows to change their display order.</p>
+              </div>
+            </div>
+            <form id="documentCategoryCreateForm" class="document-category-create-form">
+              <label>
+                Category Name
+                <input name="name" required maxlength="80" autocomplete="off" placeholder="Example: Insurance" />
+              </label>
+              <label>
+                Icon
+                <select name="icon">
+                  <option value="folder">Folder</option>
+                  <option value="file">File</option>
+                  <option value="check">Approval</option>
+                  <option value="dollar">Financial</option>
+                  <option value="invoice">Invoice</option>
+                  <option value="upload">Upload</option>
+                </select>
+              </label>
+              <label>
+                Color
+                <input name="color" type="color" value="#2563eb" />
+              </label>
+              <button class="primary-button" type="submit">
+                <span aria-hidden="true" data-icon="plus"></span>
+                Add Category
+              </button>
+            </form>
+            <div id="documentCategoriesList" class="document-category-admin-list"></div>
+          </section>
         </section>
       </main>
     </div>
@@ -1088,36 +1198,10 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <section class="ai-assistant" id="aiAssistant" aria-label="CRM AI assistant">
-      <button class="ai-toggle" id="aiToggle" type="button" aria-expanded="false">
-        <span aria-hidden="true" data-icon="sparkles"></span>
-        <span>AI</span>
-      </button>
-      <div class="ai-panel" id="aiPanel">
-        <header>
-          <div>
-            <p class="eyebrow">CRM Assistant</p>
-            <strong>Ask for help or navigation</strong>
-          </div>
-          <button class="mini-button" id="aiClear" type="button" title="Clear chat" aria-label="Clear chat">
-            <span aria-hidden="true" data-icon="x"></span>
-          </button>
-        </header>
-        <div class="ai-suggestions" id="aiSuggestions"></div>
-        <div class="ai-messages" id="aiMessages" role="log" aria-live="polite"></div>
-        <form id="aiForm" class="ai-form">
-          <input id="aiInput" autocomplete="off" placeholder="Ask a question, draft roofing copy, or open CRM records..." />
-          <button class="primary-button" type="submit" aria-label="Send assistant message">
-            <span aria-hidden="true" data-icon="send"></span>
-          </button>
-        </form>
-      </div>
-    </section>
-
     <script src="auth-config.js?v=24" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
-    <script src="auth.js?v=24" defer></script>
-    <script src="app.js?v=40" defer></script>
+    <script src="auth.js?v=79" defer></script>
+    <script src="app.js?v=80" defer></script>
   </body>
 </html>

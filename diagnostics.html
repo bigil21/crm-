@@ -263,7 +263,7 @@
         const required = [
           ["#globalSearch", "Global search input"], ["#dashboardView", "Dashboard view"], ["#contactsView", "Contacts view"],
           ["#jobsView", "Jobs view"], ["#estimatesView", "Estimates view"], ["#companyDocumentsView", "Company documents view"],
-          ["#calendarView", "Calendar view"], ["#tasksView", "Tasks view"], ["#companyView", "Settings view"], ["#aiAssistant", "AI assistant shell"],
+          ["#calendarView", "Calendar view"], ["#tasksView", "Tasks view"], ["#companyView", "Settings view"],
         ];
         required.forEach(([selector, label]) => addResult(doc.querySelector(selector) ? "pass" : "fail", `Required UI: ${label}`, selector));
         const storage = readCrmStorage(win);

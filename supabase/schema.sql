@@ -26,6 +26,88 @@ create table if not exists public.crm_admins (
   created_at timestamptz not null default now()
 );
 
+-- Durable, append-only project conversation messages. Each message is stored
+-- independently so another user's CRM save cannot overwrite conversation history.
+create table if not exists public.crm_conversation_messages (
+  id text primary key,
+  company_state_id text not null,
+  lead_id text not null,
+  job_id text not null,
+  contact_name text not null default '',
+  job_name text not null default '',
+  job_status text not null default '',
+  author_user_id text,
+  author_email text not null default '',
+  author_name text not null default '',
+  author_role text not null default '',
+  message_text text not null check (char_length(message_text) between 1 and 4000),
+  mentions jsonb not null default '[]'::jsonb,
+  read_by jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists crm_conversation_messages_job_created_idx
+  on public.crm_conversation_messages (company_state_id, lead_id, job_id, created_at);
+
+-- Durable CRM records. One business object per row prevents an unrelated save
+-- from replacing an entire salesperson or company JSON snapshot.
+create table if not exists public.crm_records (
+  company_state_id text not null,
+  record_type text not null check (record_type in ('contact', 'job', 'estimate', 'task', 'document')),
+  id text not null,
+  lead_id text,
+  job_id text,
+  owner_id uuid references auth.users(id),
+  data jsonb not null default '{}'::jsonb,
+  version integer not null default 1 check (version > 0),
+  deleted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id),
+  primary key (company_state_id, record_type, id)
+);
+
+create index if not exists crm_records_company_type_idx
+  on public.crm_records (company_state_id, record_type, updated_at desc);
+create index if not exists crm_records_lead_idx
+  on public.crm_records (company_state_id, lead_id, record_type);
+
+-- Activity history is append-only. Editing a lead can no longer erase its audit trail.
+create table if not exists public.crm_audit_events (
+  id text primary key,
+  company_state_id text not null,
+  lead_id text not null,
+  job_id text,
+  event_type text not null default 'note',
+  actor_user_id uuid references auth.users(id),
+  actor_name text not null default '',
+  message text not null default '',
+  status text not null default '',
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists crm_audit_events_lead_created_idx
+  on public.crm_audit_events (company_state_id, lead_id, created_at desc);
+
+create table if not exists public.crm_backups (
+  id bigint generated always as identity primary key,
+  company_state_id text not null,
+  backup_date date not null default current_date,
+  record_count integer not null default 0,
+  payload jsonb not null,
+  created_by uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  unique (company_state_id, backup_date)
+);
+
+-- Private object storage for lead documents. The metadata row remains in
+-- crm_records; the file bytes live in Storage rather than inside JSON/localStorage.
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('crm-documents', 'crm-documents', false, 52428800)
+on conflict (id) do update set public = false, file_size_limit = 52428800;
+
 -- After your owner account exists, add the owner email here:
 -- insert into public.crm_admins (email)
 -- values ('owner@coastalcrestroofing.com')
@@ -109,8 +191,24 @@ before update on public.crm_state
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists set_crm_conversation_messages_updated_at on public.crm_conversation_messages;
+create trigger set_crm_conversation_messages_updated_at
+before update on public.crm_conversation_messages
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists set_crm_records_updated_at on public.crm_records;
+create trigger set_crm_records_updated_at
+before update on public.crm_records
+for each row
+execute function public.set_updated_at();
+
 alter table public.crm_state enable row level security;
 alter table public.crm_admins enable row level security;
+alter table public.crm_conversation_messages enable row level security;
+alter table public.crm_records enable row level security;
+alter table public.crm_audit_events enable row level security;
+alter table public.crm_backups enable row level security;
 
 drop policy if exists "Company users can read CRM state" on public.crm_state;
 drop policy if exists "Company users can create CRM state" on public.crm_state;
@@ -187,6 +285,149 @@ for select
 to authenticated
 using (public.is_crm_admin());
 
+drop policy if exists "Company users read conversation messages" on public.crm_conversation_messages;
+drop policy if exists "Company users create conversation messages" on public.crm_conversation_messages;
+drop policy if exists "Message authors update conversation messages" on public.crm_conversation_messages;
+
+create policy "Company users read conversation messages"
+on public.crm_conversation_messages
+for select
+to authenticated
+using (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+);
+
+create policy "Company users create conversation messages"
+on public.crm_conversation_messages
+for insert
+to authenticated
+with check (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (
+    author_user_id = auth.uid()::text
+    or public.can_manage_team_crm()
+  )
+);
+
+create policy "Message authors update conversation messages"
+on public.crm_conversation_messages
+for update
+to authenticated
+using (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (
+    author_user_id = auth.uid()::text
+    or public.can_manage_team_crm()
+  )
+)
+with check (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (
+    author_user_id = auth.uid()::text
+    or public.can_manage_team_crm()
+  )
+);
+
+drop policy if exists "Company users read durable CRM records" on public.crm_records;
+drop policy if exists "Company users create durable CRM records" on public.crm_records;
+drop policy if exists "Company users update durable CRM records" on public.crm_records;
+drop policy if exists "Company users delete durable CRM records" on public.crm_records;
+
+create policy "Company users read durable CRM records"
+on public.crm_records for select to authenticated
+using (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (public.can_manage_team_crm() or owner_id = auth.uid() or record_type = 'document')
+);
+
+create policy "Company users create durable CRM records"
+on public.crm_records for insert to authenticated
+with check (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and updated_by = auth.uid()
+  and (public.can_manage_team_crm() or owner_id = auth.uid())
+);
+
+create policy "Company users update durable CRM records"
+on public.crm_records for update to authenticated
+using (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (public.can_manage_team_crm() or owner_id = auth.uid())
+)
+with check (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and updated_by = auth.uid()
+  and (public.can_manage_team_crm() or owner_id = auth.uid())
+);
+
+create policy "Company users delete durable CRM records"
+on public.crm_records for delete to authenticated
+using (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (public.can_manage_team_crm() or owner_id = auth.uid())
+);
+
+drop policy if exists "Company users read CRM audit events" on public.crm_audit_events;
+drop policy if exists "Company users create CRM audit events" on public.crm_audit_events;
+
+create policy "Company users read CRM audit events"
+on public.crm_audit_events for select to authenticated
+using (public.is_coastal_crest_user() and company_state_id = public.crm_base_state_id());
+
+create policy "Company users create CRM audit events"
+on public.crm_audit_events for insert to authenticated
+with check (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (actor_user_id = auth.uid() or public.can_manage_team_crm())
+);
+
+drop policy if exists "CRM managers read backups" on public.crm_backups;
+drop policy if exists "CRM managers create backups" on public.crm_backups;
+
+create policy "CRM managers read backups"
+on public.crm_backups for select to authenticated
+using (public.can_manage_team_crm() and company_state_id = public.crm_base_state_id());
+
+create policy "CRM managers create backups"
+on public.crm_backups for insert to authenticated
+with check (
+  public.can_manage_team_crm()
+  and company_state_id = public.crm_base_state_id()
+  and created_by = auth.uid()
+);
+
+drop policy if exists "Company users read CRM document objects" on storage.objects;
+drop policy if exists "Company users upload CRM document objects" on storage.objects;
+drop policy if exists "Company users update CRM document objects" on storage.objects;
+drop policy if exists "Company users delete CRM document objects" on storage.objects;
+
+create policy "Company users read CRM document objects"
+on storage.objects for select to authenticated
+using (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+
+create policy "Company users upload CRM document objects"
+on storage.objects for insert to authenticated
+with check (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+
+create policy "Company users update CRM document objects"
+on storage.objects for update to authenticated
+using (bucket_id = 'crm-documents' and public.is_coastal_crest_user())
+with check (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+
+create policy "Company users delete CRM document objects"
+on storage.objects for delete to authenticated
+using (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
@@ -198,5 +439,26 @@ begin
         and tablename = 'crm_state'
     ) then
     alter publication supabase_realtime add table public.crm_state;
+  end if;
+
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+    and not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'crm_conversation_messages'
+    ) then
+    alter publication supabase_realtime add table public.crm_conversation_messages;
+  end if;
+
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+    and not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'crm_records'
+    ) then
+    alter publication supabase_realtime add table public.crm_records;
   end if;
 end $$;
