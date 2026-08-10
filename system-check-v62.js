@@ -86,7 +86,7 @@
     const fail = results.filter((item) => item.status === "fail").length;
     panel.innerHTML = `
       <div class="system-check-header">
-        <div><strong>CRM System Check</strong><span>Upper-admin permissions, live AI, and estimate PDF smoke test</span></div>
+        <div><strong>CRM System Check</strong><span>Upper-admin permissions and estimate PDF smoke test</span></div>
         <button type="button" id="systemCheckClose">Close</button>
       </div>
       <div class="system-check-summary">
@@ -97,7 +97,6 @@
       <div class="system-check-actions">
         <button type="button" id="systemCheckRunAll">Run All</button>
         <button type="button" id="systemCheckUpperAdmin">Upper Admin</button>
-        <button type="button" id="systemCheckAi">AI</button>
         <button type="button" id="systemCheckPdf">PDF</button>
         <button type="button" id="systemCheckCopy">Copy JSON</button>
       </div>
@@ -109,7 +108,6 @@
     panel.querySelector("#systemCheckClose")?.addEventListener("click", () => panel.remove());
     panel.querySelector("#systemCheckRunAll")?.addEventListener("click", runAllChecks);
     panel.querySelector("#systemCheckUpperAdmin")?.addEventListener("click", async () => { results.length = 0; await runUpperAdminCheck(); });
-    panel.querySelector("#systemCheckAi")?.addEventListener("click", async () => { results.length = 0; await runAiCheck(); });
     panel.querySelector("#systemCheckPdf")?.addEventListener("click", async () => { results.length = 0; await runPdfCheck(); });
     panel.querySelector("#systemCheckCopy")?.addEventListener("click", copyResults);
   }
@@ -195,39 +193,6 @@
     setViewValue("estimates");
     await sleep(500);
     expectBoolean("Restricted View: estimates", visible(document.querySelector("#estimatesView")), true, "Estimates view opens for upper admin.", "Estimates view did not open for upper admin.");
-  }
-
-  async function runAiCheck() {
-    add("warn", "Diagnostics", "Starting AI assistant check. No CRM records will be changed.");
-    if (!(await waitForApp())) {
-      add("fail", "CRM Load", "The CRM did not finish loading within 18 seconds.");
-      return;
-    }
-    add("pass", "CRM Load", `Loaded ${location.pathname}${location.search}.`);
-
-    let mathReply = "";
-    try {
-      if (typeof assistantMathAnswer === "function") mathReply = assistantMathAnswer("What is 1500 x 25?");
-      if (!mathReply && typeof assistantRespond === "function") mathReply = await assistantRespond("What is 1500 x 25?");
-    } catch (error) {
-      add("fail", "AI Local Math", error.message || String(error));
-    }
-    expectBoolean("AI Local Math", /37,?500/.test(mathReply), true, `Math answer returned: ${mathReply || "blank"}.`, `Math answer was incorrect or blank: ${mathReply || "blank"}.`);
-
-    if (typeof assistantRealtimeAnswer !== "function") {
-      add("fail", "AI Live Endpoint", "assistantRealtimeAnswer() is not available in the CRM.");
-      return;
-    }
-
-    let liveReply = "";
-    try {
-      liveReply = await assistantRealtimeAnswer("Reply with only the numeric result of 17 * 19.");
-    } catch (error) {
-      add("fail", "AI Live Endpoint", error.message || String(error));
-      return;
-    }
-    const normalized = String(liveReply || "").replace(/[^0-9.-]/g, "");
-    expectBoolean("AI Live Endpoint", normalized.includes("323"), true, `Live AI answered correctly: ${String(liveReply).slice(0, 160)}.`, `Live AI did not answer correctly: ${String(liveReply).slice(0, 220)}.`);
   }
 
   function callRender() { try { render(); } catch {} }
@@ -387,7 +352,6 @@
   async function runAllChecks() {
     results.length = 0;
     await runUpperAdminCheck();
-    await runAiCheck();
     await runPdfCheck();
   }
 

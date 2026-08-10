@@ -5,7 +5,8 @@
   "description": "Coastal Crest Roofing CRM for leads, jobs, estimates, and sales team workflow.",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js && node --check login.js && node --check logout.js"
+    "check": "node --check server.js && node --check app.js && node --check login.js && node --check logout.js && node --check project-conversations-v67.js && node --check workflow-checklists-v65.js && node --check sw.js",
+    "check:go-live": "npm run check && node go-live-check.js"
   },
   "engines": {
     "node": ">=20"

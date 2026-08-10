@@ -9,8 +9,8 @@
     "viewer",
   ];
   const fallbackConfig = {
-    supabaseUrl: "https://vtiespnuwtxwiegruzrx.supabase.co",
-    supabaseAnonKey: "sb_publishable_D6_QuivTwcPFoyE0ANiG0g_s2lYPE4_",
+    supabaseUrl: "",
+    supabaseAnonKey: "",
     allowedEmailDomain: "coastalcrestroofing.com",
     adminEmails: "gil@coastalcrestroofing.com,devon@coastalcrestroofing.com",
     defaultRole: "viewer",

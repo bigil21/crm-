@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v69";
+const CACHE_NAME = "roofline-crm-v80";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -28,18 +28,31 @@ const APP_SHELL = [
   "./auth-config.js?v=46",
   "./styles.css?v=32",
   "./styles.css?v=34",
+  "./styles.css?v=35",
+  "./styles.css?v=36",
+  "./styles.css?v=37",
   "./app.js?v=37",
   "./app.js?v=40",
+  "./app.js?v=41",
+  "./app.js?v=42",
+  "./app.js?v=43",
+  "./app.js?v=44",
+  "./app.js?v=45",
+  "./app.js?v=78",
+  "./app.js?v=80",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
+  "./auth.js?v=79",
   "./login.js",
   "./login.js?v=44",
   "./login.js?v=46",
   "./login.js?v=58",
+  "./login.js?v=79",
   "./logout.js",
   "./logout.js?v=44",
   "./logout.js?v=46",
+  "./logout.js?v=79",
   "./vendor/jspdf.umd.min.js",
   "./manifest.webmanifest",
   "./icon.svg",
@@ -78,9 +91,11 @@ function isHtmlShellPath(url) {
 function patchIndexHtml(html, url) {
   let patched = html
     .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
-    .replaceAll('auth.js?v=24', 'auth.js?v=43')
-    .replaceAll('login.js?v=44', 'login.js?v=58')
-    .replaceAll('login.js?v=46', 'login.js?v=58');
+    .replaceAll('auth.js?v=24', 'auth.js?v=79')
+    .replaceAll('auth.js?v=43', 'auth.js?v=79')
+    .replaceAll('login.js?v=44', 'login.js?v=79')
+    .replaceAll('login.js?v=46', 'login.js?v=79')
+    .replaceAll('login.js?v=58', 'login.js?v=79');
 
   if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
     patched = patched.replace(
@@ -92,14 +107,14 @@ function patchIndexHtml(html, url) {
   if (isCrmIndexPath(url) && !patched.includes("workflow-checklists-v65.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="workflow-checklists-v65.js?v=66" defer></script>\n  </body>',
+      '    <script src="workflow-checklists-v65.js?v=74" defer></script>\n  </body>',
     );
   }
 
   if (isCrmIndexPath(url) && !patched.includes("project-conversations-v67.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="project-conversations-v67.js?v=69" defer></script>\n  </body>',
+      '    <script src="project-conversations-v67.js?v=77" defer></script>\n  </body>',
     );
   }
 

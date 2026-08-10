@@ -4,6 +4,7 @@
   const passwordField = document.querySelector("#loginPassword");
   const createAccountButton = document.querySelector("#createAccountButton");
   const magicLinkButton = document.querySelector("#magicLinkButton");
+  const resetPasswordButton = document.querySelector("#resetPasswordButton");
   const clearSessionButton = document.querySelector("#clearSessionButton");
   const status = document.querySelector("#loginStatus");
   const domainHint = document.querySelector("#domainHint");
@@ -11,6 +12,7 @@
   const params = new URLSearchParams(location.search);
   const redirect = params.get("redirect") || "/";
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
+  const isPasswordRecovery = params.get("recovery") === "1";
 
   function setStatus(message, tone = "") {
     status.textContent = message;
@@ -37,6 +39,9 @@
     if (/otp|magic link/i.test(message) && action === "magic-link") {
       return "Magic link could not be sent. Confirm the user exists in Supabase and that email sending is enabled.";
     }
+    if (/failed to fetch|network|load failed/i.test(message)) {
+      return "The authentication service could not be reached. Check your connection and try again.";
+    }
     return message;
   }
 
@@ -46,6 +51,10 @@
 
   function confirmationRedirectUrl() {
     return `${location.origin}/login`;
+  }
+
+  function recoveryRedirectUrl() {
+    return `${location.origin}/login?recovery=1&redirect=${encodeURIComponent(sanitizeRedirect(redirect))}`;
   }
 
   function validateEmailDomain(email) {
@@ -111,7 +120,14 @@
   }
 
   const existing = await window.RooflineAuth.getTrustedUser();
-  if (existing.user && window.RooflineAuth.isAllowedEmail(existing.user.email)) {
+  if (isPasswordRecovery) {
+    setStatus("Enter and submit your new password. It must be at least 8 characters.");
+    emailField.closest("label")?.classList.add("hidden");
+    emailField.required = false;
+    passwordField.autocomplete = "new-password";
+    form.querySelector('button[type="submit"]').textContent = "Save New Password";
+    [createAccountButton, magicLinkButton, resetPasswordButton, clearSessionButton].forEach((button) => button?.classList.add("hidden"));
+  } else if (existing.user && window.RooflineAuth.isAllowedEmail(existing.user.email)) {
     setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts, or click Clear Saved Session first.`);
   } else if (forceAccountSwitch) {
     setStatus("Prior CRM session cleared. Sign in with the account you want to use.", "success");
@@ -129,6 +145,21 @@
     event.preventDefault();
     const email = emailField.value.trim().toLowerCase();
     const password = passwordField.value;
+    if (isPasswordRecovery) {
+      if (!password || password.length < 8) {
+        setStatus("Enter a new password with at least 8 characters.", "error");
+        return;
+      }
+      setStatus("Saving new password...");
+      const { error } = await client.auth.updateUser({ password });
+      if (error) {
+        setStatus(authErrorMessage(error, "password-recovery"), "error");
+        return;
+      }
+      setStatus("Password updated. Opening the CRM...", "success");
+      window.setTimeout(() => location.replace(sanitizeRedirect(redirect)), 500);
+      return;
+    }
     if (!validateEmailDomain(email)) return;
     if (!password) {
       setStatus("Enter your password, or use the magic link button.", "error");
@@ -136,7 +167,6 @@
     }
 
     setStatus("Signing in...");
-    await signOutCurrentSession();
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) {
       setStatus(authErrorMessage(error, "sign-in"), "error");
@@ -161,7 +191,6 @@
     }
 
     setStatus("Creating account...");
-    await signOutCurrentSession();
     const { data, error } = await client.auth.signUp({
       email,
       password,
@@ -189,7 +218,6 @@
     if (!validateEmailDomain(email)) return;
 
     setStatus("Sending magic link...");
-    await signOutCurrentSession();
     const { error } = await client.auth.signInWithOtp({
       email,
       options: {
@@ -202,5 +230,17 @@
       return;
     }
     setStatus("Magic link sent. Check your email.", "success");
+  });
+
+  resetPasswordButton?.addEventListener("click", async () => {
+    const email = emailField.value.trim().toLowerCase();
+    if (!validateEmailDomain(email)) return;
+    setStatus("Sending password reset email...");
+    const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: recoveryRedirectUrl() });
+    if (error) {
+      setStatus(authErrorMessage(error, "password-recovery"), "error");
+      return;
+    }
+    setStatus("Password reset email sent. Open its link to choose a new password.", "success");
   });
 })();

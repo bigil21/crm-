@@ -122,12 +122,12 @@
       items: [
         { view: "leads", label: "Lead Intake", icon: "user", step: "1" },
         { view: "contacts", label: "Contacts", icon: "users", step: "2" },
-        { view: "pipeline", label: "Sales Pipeline", icon: "bar-chart", step: "3" },
-        { view: "jobs", label: "Inspections & Jobs", icon: "briefcase", step: "4" },
-        { view: "estimates", label: "Estimates", icon: "file", step: "5" },
-        { view: "projects", label: "Sold Jobs & Production", icon: "hammer", step: "6" },
-        { view: "invoices", label: "Billing & Payments", icon: "invoice", step: "7" },
-        { view: "reviews", label: "Reviews & Referrals", icon: "star", step: "8" },
+        { view: "jobs", label: "Inspections & Jobs", icon: "briefcase", step: "3" },
+        { view: "estimates", label: "Estimates", icon: "file", step: "4" },
+        { view: "projects", label: "Sold Jobs & Production", icon: "hammer", step: "5" },
+        { view: "invoices", label: "Billing & Payments", icon: "invoice", step: "6" },
+        { view: "reviews", label: "Reviews & Referrals", icon: "star", step: "7" },
+        { view: "pipeline", label: "Sales Pipeline", icon: "bar-chart" },
       ],
     },
     {
