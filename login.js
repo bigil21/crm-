@@ -10,7 +10,8 @@
   const domainHint = document.querySelector("#domainHint");
   const config = window.RooflineAuth?.config || {};
   const params = new URLSearchParams(location.search);
-  const redirect = params.get("redirect") || "/";
+  const CRM_ENTRY_URL = "/?v=86";
+  const redirect = params.get("redirect") || CRM_ENTRY_URL;
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
   const isPasswordRecovery = params.get("recovery") === "1";
 
@@ -46,7 +47,8 @@
   }
 
   function sanitizeRedirect(value) {
-    return value.startsWith("/") && !value.startsWith("//") ? value : "/";
+    if (!value.startsWith("/") || value.startsWith("//")) return CRM_ENTRY_URL;
+    return value === "/" ? CRM_ENTRY_URL : value;
   }
 
   function confirmationRedirectUrl() {
