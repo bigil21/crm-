@@ -29,6 +29,104 @@ const uid = (prefix) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
 const statuses = ["New", "Contacted", "Inspection", "Estimate Sent", "Won", "Lost"];
+const pipelinePlaybook = [
+  {
+    status: "New",
+    phase: "Capture",
+    title: "Respond while the lead is warm",
+    icon: "user",
+    workspace: "leads",
+    workspaceLabel: "Open Lead Intake",
+    mission: "Make a fast, human first impression and establish who owns the opportunity.",
+    actions: [
+      "Confirm the homeowner's best phone, email, and property address",
+      "Assign the sales rep and record the lead source",
+      "Call or text immediately and log the first attempt",
+      "Create a dated follow-up task if they do not answer",
+    ],
+    gate: "Two-way contact is made or a specific callback is scheduled.",
+  },
+  {
+    status: "Contacted",
+    phase: "Qualify",
+    title: "Discover the need and book the visit",
+    icon: "calendar",
+    workspace: "calendar",
+    workspaceLabel: "Open Calendar",
+    mission: "Understand the problem, confirm fit, and earn the on-site appointment.",
+    actions: [
+      "Ask what happened, when it started, and what outcome they want",
+      "Confirm property ownership and all decision-makers",
+      "Identify insurance, financing, timing, and urgency",
+      "Book the inspection and send a clear appointment confirmation",
+    ],
+    gate: "Inspection date, time, address, and attendees are confirmed.",
+  },
+  {
+    status: "Inspection",
+    phase: "Diagnose",
+    title: "Inspect, document, and build trust",
+    icon: "clipboard",
+    workspace: "jobs",
+    workspaceLabel: "Open Jobs",
+    mission: "Turn field evidence into a complete scope the homeowner understands.",
+    actions: [
+      "Capture measurements, photos, damage, access, and safety conditions",
+      "Confirm materials, ventilation, code, and permit requirements",
+      "Review findings with the homeowner in plain language",
+      "Set the exact time for the estimate presentation before leaving",
+    ],
+    gate: "A complete scope and supporting photos are saved to the lead.",
+  },
+  {
+    status: "Estimate Sent",
+    phase: "Present",
+    title: "Make the decision easy",
+    icon: "file",
+    workspace: "estimates",
+    workspaceLabel: "Open Estimates",
+    mission: "Connect the recommended solution to the homeowner's priorities—not just a price.",
+    actions: [
+      "Build the itemized scope and verify pricing and margin",
+      "Present options, warranties, timeline, and payment expectations",
+      "Ask for questions and resolve the real objection",
+      "Send the estimate and schedule the next decision conversation",
+    ],
+    gate: "The customer has reviewed the proposal and a decision date is set.",
+  },
+  {
+    status: "Won",
+    phase: "Close",
+    title: "Turn the yes into a clean contract",
+    icon: "check",
+    workspace: "projects",
+    workspaceLabel: "Open Sold Jobs",
+    mission: "Protect the relationship and the margin by making every commitment explicit.",
+    actions: [
+      "Obtain the signed contract and required deposit",
+      "Confirm final scope, colors, upgrades, exclusions, and change-order rules",
+      "Collect all documents needed for permits, insurance, or financing",
+      "Explain exactly what happens next and who will contact them",
+    ],
+    gate: "Contract, payment requirements, selections, and expectations are complete.",
+  },
+  {
+    status: "Won",
+    phase: "Handoff",
+    title: "Deliver a five-star transition",
+    icon: "hammer",
+    workspace: "projects",
+    workspaceLabel: "Open Production",
+    mission: "Transfer a fully informed customer—not a pile of notes—to the production team.",
+    actions: [
+      "Complete the internal handoff with scope, photos, documents, and promises",
+      "Confirm scheduling contact and material or permit dependencies",
+      "Introduce the production point of contact to the homeowner",
+      "Set expectations for updates, final walkthrough, payment, and review request",
+    ],
+    gate: "Production accepts the job and the homeowner knows the next milestone.",
+  },
+];
 const leaderboardRanges = {
   week: "This Week",
   month: "This Month",
@@ -2893,33 +2991,96 @@ function renderWeatherPanel() {
 
 function renderPipeline() {
   if (!els.views.pipeline) return;
-  document.querySelectorAll("[data-pipeline-filter]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.pipelineFilter === state.pipelineFilter);
-  });
+  const opportunities = allJobs();
+  const activeLeads = opportunities.filter((job) => !["Won", "Lost"].includes(job.status));
+  const followUpsDue = state.contacts.filter((contact) => {
+    const status = primaryJob(contact).status || contact.status;
+    return !["Won", "Lost"].includes(status) && staleLeadDays(contact) >= 3;
+  }).length;
+  const metrics = dashboardMetrics();
+  const statusCount = (status) => opportunities.filter((job) => job.status === status).length;
 
-  const contacts = filteredContacts().filter((contact) => {
-    if (state.pipelineFilter === "All") return true;
-    return contact.type === state.pipelineFilter;
-  });
+  els.pipelineBoard.innerHTML = `
+    <section class="pipeline-command-center" aria-label="Pipeline pulse">
+      <div class="pipeline-command-copy">
+        <span class="pipeline-live-dot" aria-hidden="true"></span>
+        <span>Pipeline pulse</span>
+        <strong>${activeLeads.length} active opportunities moving toward a decision</strong>
+      </div>
+      <div class="pipeline-command-stats">
+        <span><strong>${followUpsDue}</strong> need attention</span>
+        <span><strong>${money.format(metrics.pipelineValue)}</strong> potential value</span>
+        <span><strong>${statusCount("Won")}</strong> won</span>
+      </div>
+    </section>
 
-  els.pipelineBoard.innerHTML = statuses
-    .map((status) => {
-      const cards = contacts.filter((contact) => contact.status === status);
-      return `
-        <section class="pipeline-column">
-          <div class="column-head">
-            <h3>${status}</h3>
-            <span class="count-pill">${cards.length}</span>
-          </div>
-          ${
-            cards.length
-              ? cards.map((contact) => renderLeadCard(contact)).join("")
-              : '<div class="empty-state">No records here</div>'
-          }
-        </section>
-      `;
-    })
-    .join("");
+    <div class="pipeline-journey" role="list" aria-label="Sales pipeline stages">
+      ${pipelinePlaybook
+        .map((stage, index) => {
+          const count = statusCount(stage.status);
+          return `
+            <article class="pipeline-playbook-stage pipeline-playbook-stage-${index + 1}" role="listitem">
+              <div class="pipeline-stage-marker" aria-hidden="true">
+                <span>${index + 1}</span>
+                <i data-icon="${stage.icon}"></i>
+              </div>
+              <div class="pipeline-stage-card">
+                <header class="pipeline-stage-heading">
+                  <div>
+                    <p>Stage ${index + 1} &middot; ${escapeHtml(stage.phase)}</p>
+                    <h3>${escapeHtml(stage.title)}</h3>
+                  </div>
+                  <span class="pipeline-stage-count">${count} ${count === 1 ? "lead" : "leads"}</span>
+                </header>
+                <p class="pipeline-stage-mission">${escapeHtml(stage.mission)}</p>
+                <div class="pipeline-stage-body">
+                  <div>
+                    <h4>Rep actions</h4>
+                    <ul class="pipeline-action-list">
+                      ${stage.actions
+                        .map(
+                          (action) => `
+                            <li>
+                              <span aria-hidden="true" data-icon="check"></span>
+                              ${escapeHtml(action)}
+                            </li>
+                          `,
+                        )
+                        .join("")}
+                    </ul>
+                  </div>
+                  <aside class="pipeline-stage-gate">
+                    <span>Ready to advance when</span>
+                    <strong>${escapeHtml(stage.gate)}</strong>
+                    <button class="pipeline-workspace-link" type="button" data-view="${stage.workspace}">
+                      ${escapeHtml(stage.workspaceLabel)}
+                      <span aria-hidden="true">&rarr;</span>
+                    </button>
+                  </aside>
+                </div>
+              </div>
+              ${index < pipelinePlaybook.length - 1 ? '<div class="pipeline-connector" aria-hidden="true"><span></span></div>' : ""}
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+
+    <section class="pipeline-recovery-lane">
+      <div class="pipeline-recovery-icon" aria-hidden="true" data-icon="refresh"></div>
+      <div>
+        <p class="eyebrow">Not ready is not the end</p>
+        <h3>Recover, nurture, or close the loop</h3>
+        <p>Record the real objection, agree on a follow-up date, and keep the lead in Contacted. Mark a lead Lost only after the rep records why the opportunity ended.</p>
+      </div>
+      <div class="pipeline-recovery-steps" aria-label="Lead recovery steps">
+        <span><b>1</b> Name the objection</span>
+        <span><b>2</b> Set the next date</span>
+        <span><b>3</b> Return to the path</span>
+        <span class="pipeline-lost-count"><b>${statusCount("Lost")}</b> closed as lost</span>
+      </div>
+    </section>
+  `;
   hydrateIcons(els.pipelineBoard);
 }
 
