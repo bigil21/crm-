@@ -485,6 +485,7 @@ const createInitialState = () => ({
   view: "dashboard",
   search: "",
   pipelineFilter: "Lead",
+  leadStageFilter: "",
   leaderboardRange: "month",
   leadDetailTab: "overview",
   selectedContactId: "contact_1002",
@@ -720,6 +721,7 @@ function normalizeState(nextState) {
   return {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
+    leadStageFilter: statuses.includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
     leadDetailTab: nextState.leadDetailTab || "overview",
     newEstimateContactId: nextState.newEstimateContactId || "",
     newEstimateJobId: nextState.newEstimateJobId || "",
@@ -1187,6 +1189,7 @@ function applySharedState(data = {}) {
     view: state.view,
     search: state.search,
     pipelineFilter: state.pipelineFilter,
+    leadStageFilter: state.leadStageFilter,
     leaderboardRange: state.leaderboardRange,
     leadDetailTab: state.leadDetailTab,
     selectedContactId: state.selectedContactId,
@@ -2837,9 +2840,10 @@ function renderPipelineOverview() {
   const totalValue = jobs.reduce((sum, job) => sum + number(job.value), 0);
   const stages = statuses.map((status) => {
     const stageJobs = jobs.filter((job) => job.status === status);
+    const stageLeadIds = new Set(stageJobs.map((job) => job.contactId));
     return {
       status,
-      count: stageJobs.length,
+      count: stageLeadIds.size,
       value: stageJobs.reduce((sum, job) => sum + number(job.value), 0),
     };
   });
@@ -2849,11 +2853,11 @@ function renderPipelineOverview() {
       ${stages
         .map(
           (stage, index) => `
-            <article class="pipeline-stage stage-${index}">
+            <button class="pipeline-stage stage-${index}" type="button" data-dashboard-stage="${escapeHtml(stage.status)}" aria-label="View ${stage.count} ${escapeHtml(stage.status)} lead${stage.count === 1 ? "" : "s"}">
               <span>${escapeHtml(stage.status)}</span>
               <strong>${stage.count}</strong>
-              <small>${money.format(stage.value)}</small>
-            </article>
+              <small>${stage.count === 1 ? "1 lead" : `${stage.count} leads`} · ${money.format(stage.value)}</small>
+            </button>
           `,
         )
         .join("")}
@@ -3299,10 +3303,25 @@ function renderContacts() {
 
 function renderLeadsView() {
   if (!els.leadsList) return;
-  const leads = filteredContacts().filter((contact) => contact.type === "Lead");
-  els.leadsList.innerHTML = leads.length
+  const stage = statuses.includes(state.leadStageFilter) ? state.leadStageFilter : "";
+  const leads = filteredContacts().filter((contact) =>
+    stage ? contactJobs(contact).some((job) => job.status === stage) : contact.type === "Lead",
+  );
+  const filterSummary = stage
+    ? `
+      <div class="lead-stage-filter-banner">
+        <div>
+          <span class="status-pill">${escapeHtml(stage)}</span>
+          <strong>${leads.length} ${leads.length === 1 ? "lead" : "leads"} in this pipeline stage</strong>
+          <small>Showing every lead with a job currently in ${escapeHtml(stage)}.</small>
+        </div>
+        <button class="secondary-button" type="button" data-action="clear-lead-stage-filter">Show all leads</button>
+      </div>
+    `
+    : "";
+  els.leadsList.innerHTML = filterSummary + (leads.length
     ? leads.map((contact) => renderRecordCard(contact)).join("")
-    : '<div class="empty-state">No matching leads</div>';
+    : `<div class="empty-state">No leads are currently in ${escapeHtml(stage || "this view")}</div>`);
   hydrateIcons(els.leadsList);
 }
 
@@ -6662,8 +6681,21 @@ const icons = {
 
 function bindEvents() {
   document.addEventListener("click", async (event) => {
+    const dashboardStage = event.target.closest("[data-dashboard-stage]");
+    if (dashboardStage) {
+      state.leadStageFilter = dashboardStage.dataset.dashboardStage || "";
+      state.search = "";
+      state.view = "leads";
+      saveState();
+      render();
+      return;
+    }
+
     const navButton = event.target.closest("[data-view]");
-    if (navButton) setView(navButton.dataset.view);
+    if (navButton) {
+      if (navButton.dataset.view === "leads") state.leadStageFilter = "";
+      setView(navButton.dataset.view);
+    }
 
     const filterButton = event.target.closest("[data-pipeline-filter]");
     if (filterButton) {
@@ -6694,6 +6726,11 @@ function bindEvents() {
     if (action === "estimate-contact") createEstimate(contactId);
     if (action === "estimate-job") createEstimate(contactId, true, actionButton.dataset.jobId);
     if (action === "go-to-settings") { state.view = "company"; render(); }
+    if (action === "clear-lead-stage-filter") {
+      state.leadStageFilter = "";
+      saveState();
+      renderLeadsView();
+    }
     if (action === "log-review-request") {
       if (contactId) {
         addContactUpdate(contactId, {
