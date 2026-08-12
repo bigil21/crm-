@@ -528,6 +528,7 @@ let durableSaveInFlight = false;
 let durableRecordFingerprints = new Map();
 let durableAuditIds = new Set();
 let durableRecordsSubscription = null;
+let criticalSaveInFlight = false;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -600,6 +601,8 @@ const els = {
   profitJobSelect: document.querySelector("#profitJobSelect"),
   profitSummary: document.querySelector("#profitSummary"),
   profitCostForm: document.querySelector("#profitCostForm"),
+  profitSaveButton: document.querySelector("#profitSaveButton"),
+  profitSaveStatus: document.querySelector("#profitSaveStatus"),
   clearProfitCostForm: document.querySelector("#clearProfitCostForm"),
   profitCostList: document.querySelector("#profitCostList"),
   leadEmailPanel: document.querySelector("#leadEmailPanel"),
@@ -612,6 +615,8 @@ const els = {
   leadDocumentInput: document.querySelector("#leadDocumentInput"),
   leadConversationPanel: document.querySelector("#leadConversationPanel"),
   leadConversationForm: document.querySelector("#leadConversationForm"),
+  conversationSaveButton: document.querySelector("#conversationSaveButton"),
+  conversationSaveStatus: document.querySelector("#conversationSaveStatus"),
   leadConversationList: document.querySelector("#leadConversationList"),
   contactDialog: document.querySelector("#contactDialog"),
   contactForm: document.querySelector("#contactForm"),
@@ -1240,12 +1245,22 @@ function mergeCloudRows(rows = []) {
         .forEach((task) => taskMap.set(task.id, task));
     });
 
+  const durableBusinessState = durableRecordsReady
+    ? {
+        contacts: state.contacts,
+        estimates: state.estimates,
+        calendarTasks: state.calendarTasks,
+      }
+    : {
+        contacts: [...contactMap.values()],
+        estimates: [...estimateMap.values()],
+        calendarTasks: [...taskMap.values()],
+      };
+
   applySharedState({
     company: companyData.company || state.company,
     companyDocuments: companyData.companyDocuments || state.companyDocuments,
-    contacts: [...contactMap.values()],
-    estimates: [...estimateMap.values()],
-    calendarTasks: [...taskMap.values()],
+    ...durableBusinessState,
   });
   ensureStateOwnership();
 }
@@ -1287,10 +1302,10 @@ function queueCloudSave() {
 }
 
 async function flushCloudSave() {
-  if (!cloudReady || !cloudClient || !authSession?.user?.id || cloudSaveInFlight) return;
+  if (!cloudReady || !cloudClient || !authSession?.user?.id || cloudSaveInFlight) return false;
   const rows = cloudRowsForSave();
   const snapshot = sharedStateSnapshot();
-  if (snapshot === lastCloudSnapshot) return;
+  if (snapshot === lastCloudSnapshot) return true;
 
   cloudSaveInFlight = true;
   const { error } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(rows, { onConflict: "id" });
@@ -1299,11 +1314,12 @@ async function flushCloudSave() {
   if (error) {
     console.warn("Supabase CRM sync failed", error);
     showToast("Supabase sync failed. Local changes are still saved.");
-    return;
+    return false;
   }
 
   lastCloudSnapshot = snapshot;
   if (sharedStateSnapshot() !== lastCloudSnapshot) queueCloudSave();
+  return true;
 }
 
 async function promoteSignedInSession() {
@@ -1540,7 +1556,7 @@ function queueDurableRecordsSave() {
 }
 
 async function flushDurableRecordsSave() {
-  if (!durableRecordsReady || durableSaveInFlight || !authSession?.user?.id) return;
+  if (!durableRecordsReady || durableSaveInFlight || !authSession?.user?.id) return false;
   const rows = durableRowsFromState();
   const currentKeys = new Set(rows.map(durableRecordKey));
   const changedRows = rows.filter((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row));
@@ -1555,7 +1571,7 @@ async function flushDurableRecordsSave() {
   });
   const auditRows = durableAuditRowsFromState();
   const newAuditRows = auditRows.filter((row) => !durableAuditIds.has(row.id));
-  if (!changedRows.length && !removedByType.size && !newAuditRows.length) return;
+  if (!changedRows.length && !removedByType.size && !newAuditRows.length) return true;
 
   durableSaveInFlight = true;
   try {
@@ -1568,17 +1584,74 @@ async function flushDurableRecordsSave() {
       if (error) throw error;
     }
     if (newAuditRows.length) {
-      const { error } = await cloudClient.from(SUPABASE_AUDIT_TABLE).insert(newAuditRows);
-      if (error && error.code !== "23505") throw error;
+      const { error } = await cloudClient
+        .from(SUPABASE_AUDIT_TABLE)
+        .upsert(newAuditRows, { onConflict: "id", ignoreDuplicates: true });
+      if (error) throw error;
     }
     rememberDurableRows(rows, auditRows);
+    return true;
   } catch (error) {
     console.warn("Durable CRM record sync failed", error);
-    showToast("Cloud record save failed. Your local copy is still available.");
+    return false;
   } finally {
     durableSaveInFlight = false;
     const latest = durableRowsFromState();
-    if (latest.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row))) queueDurableRecordsSave();
+    const hasUnsavedRecords = latest.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row));
+    const hasUnsavedAudit = durableAuditRowsFromState().some((row) => !durableAuditIds.has(row.id));
+    if (hasUnsavedRecords || hasUnsavedAudit) queueDurableRecordsSave();
+  }
+}
+
+function setSaveState(element, message, tone = "") {
+  if (!element) return;
+  element.textContent = message;
+  element.dataset.tone = tone;
+}
+
+async function waitForDurableSaveSlot() {
+  const startedAt = Date.now();
+  while (durableSaveInFlight && Date.now() - startedAt < 10000) {
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+  return !durableSaveInFlight;
+}
+
+async function persistCriticalLeadChange({ statusElement, button, successMessage }) {
+  if (criticalSaveInFlight) {
+    setSaveState(statusElement, "Another save is finishing. Please try again in a moment.", "error");
+    return false;
+  }
+
+  criticalSaveInFlight = true;
+  if (button) button.disabled = true;
+  setSaveState(statusElement, "Saving securely to the shared CRM...", "saving");
+  saveState({ localOnly: true });
+  window.clearTimeout(durableSaveTimer);
+
+  try {
+    if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) {
+      if (!canUseCloudSync()) {
+        setSaveState(statusElement, `${successMessage} on this device.`, "success");
+        return true;
+      }
+      throw new Error("Shared cloud storage is not connected");
+    }
+    if (!(await waitForDurableSaveSlot())) throw new Error("The prior cloud save did not finish");
+    const saved = await flushDurableRecordsSave();
+    if (!saved) throw new Error("The cloud rejected the record update");
+
+    queueCloudSave();
+    setSaveState(statusElement, `${successMessage} to the shared CRM.`, "success");
+    return true;
+  } catch (error) {
+    console.warn("Critical lead change could not be confirmed", error);
+    setSaveState(statusElement, "Not saved to the shared CRM. Keep this page open and try again.", "error");
+    showToast("Save failed—your entry is still on this page, but it is not in the shared CRM yet.");
+    return false;
+  } finally {
+    criticalSaveInFlight = false;
+    if (button) button.disabled = false;
   }
 }
 
@@ -1598,6 +1671,12 @@ async function initializeDurableRecords() {
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
       if (row?.updated_by === authSession.user.id || durableSaveInFlight) return;
+      await reloadDurableRecords({ showUpdateToast: true });
+      render();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
+      const row = payload.new || payload.old;
+      if (row?.actor_user_id === authSession.user.id || durableSaveInFlight) return;
       await reloadDurableRecords({ showUpdateToast: true });
       render();
     })
@@ -3787,7 +3866,7 @@ function updateSelectedProfitJob(updater) {
   return updatedJob;
 }
 
-function saveProfitCost(event) {
+async function saveProfitCost(event) {
   event.preventDefault();
   if (!requireAction("manageJobFinancials")) return;
   const contact = getSelectedContact();
@@ -3796,6 +3875,7 @@ function saveProfitCost(event) {
   state.selectedProfitJobId = job.id;
   const formData = new FormData(els.profitCostForm);
   const costId = formData.get("costId") || uid("cost");
+  els.profitCostForm.elements.costId.value = costId;
   const existing = (job.costItems || []).find((item) => item.id === costId);
   const nextItem = normalizeCostItem({
     ...(existing || { id: costId }),
@@ -3822,11 +3902,17 @@ function saveProfitCost(event) {
     message: `${existing ? "Updated" : "Added"} cost on ${job.name}: ${money.format(nextItem.amount)} ${nextItem.category}.`,
   });
 
-  fillProfitCostForm();
   state.leadDetailTab = "profit";
-  saveState();
+  saveState({ localOnly: true });
   render();
-  showToast("Cost saved");
+  const saved = await persistCriticalLeadChange({
+    statusElement: els.profitSaveStatus,
+    button: els.profitSaveButton,
+    successMessage: "Cost saved",
+  });
+  if (!saved) return;
+  fillProfitCostForm();
+  showToast("Cost saved to the shared CRM");
 }
 
 function editCostItem(costId) {
@@ -4398,7 +4484,7 @@ function renameLeadDocument(documentId) {
   showToast("Document renamed");
 }
 
-function submitLeadConversation(event) {
+async function submitLeadConversation(event) {
   event.preventDefault();
   if (!requireAction("manageJobs")) return;
   const contact = getSelectedContact();
@@ -4414,11 +4500,17 @@ function submitLeadConversation(event) {
     addContactUpdate(contact.id, { author, message, status });
   }
 
-  els.leadConversationForm.reset();
   state.leadDetailTab = "conversation";
-  saveState();
+  saveState({ localOnly: true });
   render();
-  showToast("Update posted");
+  const saved = await persistCriticalLeadChange({
+    statusElement: els.conversationSaveStatus,
+    button: els.conversationSaveButton,
+    successMessage: "Update posted",
+  });
+  if (!saved) return;
+  els.leadConversationForm.reset();
+  showToast("Update posted to the shared CRM");
 }
 
 function renderCompanyDocuments() {

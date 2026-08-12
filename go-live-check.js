@@ -9,6 +9,7 @@ const server = read("server.js");
 const auth = read("auth.js");
 const login = read("login.js");
 const index = read("index.html");
+const projectConversations = read("project-conversations-v67.js");
 
 const checks = [
   ["durable per-record table", schema.includes("create table if not exists public.crm_records")],
@@ -31,11 +32,15 @@ const checks = [
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
   ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
-  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=88"') && server.includes('Location: "/?v=88"')],
+  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=89"') && server.includes('Location: "/?v=89"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
   ["Lead Intake stage filter", index.includes('id="leadStageFilter"') && index.includes("Filter leads by pipeline stage") && app.includes("els.leadStageFilter?.addEventListener")],
   ["one-time sign-in unlock", login.includes("queueSignInUnlock") && index.includes('id="vaultUnlock"') && app.includes("playSignInUnlockTransition")],
+  ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
+  ["audit events update in real time", app.includes(`table: SUPABASE_AUDIT_TABLE`) && schema.includes("alter publication supabase_realtime add table public.crm_audit_events")],
+  ["executive database permissions", schema.includes("devon@coastalcrestroofing.com") && schema.includes("public.is_crm_admin()")],
+  ["project conversations survive navigation", projectConversations.includes("durableConversationRows.set(row.id, row)") && projectConversations.includes("saveState({ localOnly: true })")],
 ];
 
 let failed = 0;

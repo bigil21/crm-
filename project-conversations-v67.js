@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "77";
+  const VERSION = "78";
   const CONVERSATION_TABLE = "crm_conversation_messages";
   const soldStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
   let selectedConversationJobId = "";
@@ -233,7 +233,9 @@
         [entry.key]: entry,
       },
     };
-    saveState();
+    // The conversation table is the shared source of truth. Keeping this cache
+    // local prevents an older whole-company snapshot from replacing messages.
+    saveState({ localOnly: true });
   }
 
   function cloudConversationConfigured() {
@@ -421,10 +423,17 @@
     if (!cloudConversationConfigured()) return { syncState: "local" };
     if (!conversationCloudReady) await initializeConversationPersistence();
     if (!conversationCloudReady) return { syncState: "failed" };
+    const row = conversationMessageRow(contact, job, message);
     const { error } = await cloudClient
       .from(CONVERSATION_TABLE)
-      .upsert(conversationMessageRow(contact, job, message), { onConflict: "id" });
-    return { syncState: error ? "failed" : "saved", error };
+      .upsert(row, { onConflict: "id" });
+    if (error) return { syncState: "failed", error };
+
+    // Do not wait for Realtime to echo our own insert. Cache the confirmed row
+    // immediately so navigation or a legacy state refresh cannot erase it.
+    durableConversationRows.set(row.id, row);
+    mergeCloudConversationRows([row]);
+    return { syncState: "saved", error: null };
   }
 
   function currentConversationJob(contact) {
@@ -742,6 +751,10 @@
     mentionSuggestionQuery = "";
     state.leadDetailTab = "conversation";
     render();
+    if (posted.syncState === "saved") {
+      const textarea = document.querySelector("#jobConversationMessage");
+      if (textarea) textarea.value = "";
+    }
     const mentionCount = posted.mentions.length;
     if (posted.syncState === "failed") {
       showToast("Update kept locally, but cloud save failed. Use Retry in the conversation.");

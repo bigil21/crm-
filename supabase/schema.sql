@@ -159,6 +159,10 @@ set search_path = public
 as $$
   select
     public.crm_app_role() = 'admin'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) in (
+      'gil@coastalcrestroofing.com',
+      'devon@coastalcrestroofing.com'
+    )
     or exists (
       select 1
       from public.crm_admins
@@ -460,5 +464,15 @@ begin
         and tablename = 'crm_records'
     ) then
     alter publication supabase_realtime add table public.crm_records;
+  end if;
+
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+    and not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'crm_audit_events'
+    ) then
+    alter publication supabase_realtime add table public.crm_audit_events;
   end if;
 end $$;
