@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v94";
+const CACHE_NAME = "jobcrest-crm-v95";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -42,6 +42,7 @@ const APP_SHELL = [
   "./styles.css?v=46",
   "./styles.css?v=47",
   "./styles.css?v=48",
+  "./styles.css?v=49",
   "./app.js?v=37",
   "./app.js?v=40",
   "./app.js?v=41",
@@ -62,6 +63,7 @@ const APP_SHELL = [
   "./app.js?v=90",
   "./app.js?v=91",
   "./app.js?v=92",
+  "./app.js?v=93",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -78,6 +80,7 @@ const APP_SHELL = [
   "./login.js?v=84",
   "./login.js?v=85",
   "./login.js?v=86",
+  "./login.js?v=87",
   "./logout.js",
   "./logout.js?v=44",
   "./logout.js?v=46",
@@ -200,6 +203,13 @@ async function freshHtmlResponse(request) {
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
+  // Supabase and other API responses are live business data, never app-shell
+  // assets. Caching them can resurrect old jobs, costs, and conversations even
+  // after the database has accepted a newer record.
+  if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
   if (
     url.pathname === "/auth-config.js" ||
     url.pathname === "/logout" ||
