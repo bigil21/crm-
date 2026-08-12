@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v95";
+const CACHE_NAME = "jobcrest-crm-v96";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -43,6 +43,7 @@ const APP_SHELL = [
   "./styles.css?v=47",
   "./styles.css?v=48",
   "./styles.css?v=49",
+  "./styles.css?v=50",
   "./app.js?v=37",
   "./app.js?v=40",
   "./app.js?v=41",
@@ -64,10 +65,12 @@ const APP_SHELL = [
   "./app.js?v=91",
   "./app.js?v=92",
   "./app.js?v=93",
+  "./app.js?v=94",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
   "./auth.js?v=79",
+  "./auth.js?v=80",
   "./login.js",
   "./login.js?v=44",
   "./login.js?v=46",
@@ -81,6 +84,7 @@ const APP_SHELL = [
   "./login.js?v=85",
   "./login.js?v=86",
   "./login.js?v=87",
+  "./login.js?v=88",
   "./logout.js",
   "./logout.js?v=44",
   "./logout.js?v=46",
@@ -123,13 +127,21 @@ function isHtmlShellPath(url) {
 function patchIndexHtml(html, url) {
   let patched = html
     .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
-    .replaceAll('auth.js?v=24', 'auth.js?v=79')
-    .replaceAll('auth.js?v=43', 'auth.js?v=79')
+    .replaceAll('auth.js?v=24', 'auth.js?v=80')
+    .replaceAll('auth.js?v=43', 'auth.js?v=80')
+    .replaceAll('auth.js?v=79', 'auth.js?v=80')
     .replaceAll('login.js?v=44', 'login.js?v=81')
     .replaceAll('login.js?v=46', 'login.js?v=81')
     .replaceAll('login.js?v=58', 'login.js?v=81')
     .replaceAll('login.js?v=79', 'login.js?v=81')
-    .replaceAll('login.js?v=80', 'login.js?v=81');
+    .replaceAll('login.js?v=80', 'login.js?v=88')
+    .replaceAll('login.js?v=81', 'login.js?v=88')
+    .replaceAll('login.js?v=82', 'login.js?v=88')
+    .replaceAll('login.js?v=83', 'login.js?v=88')
+    .replaceAll('login.js?v=84', 'login.js?v=88')
+    .replaceAll('login.js?v=85', 'login.js?v=88')
+    .replaceAll('login.js?v=86', 'login.js?v=88')
+    .replaceAll('login.js?v=87', 'login.js?v=88');
 
   if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
     patched = patched.replace(
@@ -206,7 +218,7 @@ self.addEventListener("fetch", (event) => {
   // Supabase and other API responses are live business data, never app-shell
   // assets. Caching them can resurrect old jobs, costs, and conversations even
   // after the database has accepted a newer record.
-  if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) {
+  if (event.request.cache === "no-store" || url.origin !== self.location.origin || url.pathname.startsWith("/api/")) {
     event.respondWith(fetch(event.request));
     return;
   }
