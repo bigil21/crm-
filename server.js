@@ -516,7 +516,7 @@ const server = http.createServer((req, res) => {
   // If hitting root without a version param, redirect to force fresh load
   if (url.pathname === "/" && !url.searchParams.has("v")) {
     res.writeHead(302, {
-      Location: "/?v=87",
+      Location: "/?v=88",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       "Pragma": "no-cache",
     });
