@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v90";
+const CACHE_NAME = "jobcrest-crm-v91";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -38,6 +38,7 @@ const APP_SHELL = [
   "./styles.css?v=42",
   "./styles.css?v=43",
   "./styles.css?v=44",
+  "./styles.css?v=45",
   "./app.js?v=37",
   "./app.js?v=40",
   "./app.js?v=41",
@@ -54,6 +55,7 @@ const APP_SHELL = [
   "./app.js?v=86",
   "./app.js?v=87",
   "./app.js?v=88",
+  "./app.js?v=89",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -66,6 +68,7 @@ const APP_SHELL = [
   "./login.js?v=80",
   "./login.js?v=81",
   "./login.js?v=82",
+  "./login.js?v=83",
   "./logout.js",
   "./logout.js?v=44",
   "./logout.js?v=46",
@@ -133,7 +136,7 @@ function patchIndexHtml(html, url) {
   if (isCrmIndexPath(url) && !patched.includes("project-conversations-v67.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="project-conversations-v67.js?v=77" defer></script>\n  </body>',
+      '    <script src="project-conversations-v67.js?v=78" defer></script>\n  </body>',
     );
   }
 
