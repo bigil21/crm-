@@ -628,6 +628,42 @@ button:disabled {
   color: var(--muted);
 }
 
+.lead-intake-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.stage-filter-control {
+  display: grid;
+  gap: 5px;
+  min-width: 220px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stage-filter-control select {
+  min-height: 40px;
+  padding: 8px 36px 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.stage-filter-control select:focus {
+  border-color: var(--accent);
+  outline: 3px solid var(--accent-soft);
+}
+
 .chart-legend {
   display: flex;
   gap: 18px;
@@ -4007,6 +4043,17 @@ textarea:focus {
   .pipeline-stage:first-child {
     clip-path: none;
     border-radius: var(--radius);
+  }
+
+  .lead-intake-actions,
+  .lead-stage-filter-banner {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .stage-filter-control {
+    min-width: 0;
   }
 
   .donut-widget,
