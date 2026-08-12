@@ -547,6 +547,7 @@ const els = {
   zohoCsvInput: document.querySelector("#zohoCsvInput"),
   addContactButton: document.querySelector("#addContactButton"),
   addLeadFromLeadsButton: document.querySelector("#addLeadFromLeadsButton"),
+  leadStageFilter: document.querySelector("#leadStageFilter"),
   dashboardDateRange: document.querySelector("#dashboardDateRange"),
   userChip: document.querySelector("#userChip"),
   navItems: [...document.querySelectorAll(".nav-item")],
@@ -3304,6 +3305,19 @@ function renderContacts() {
 function renderLeadsView() {
   if (!els.leadsList) return;
   const stage = statuses.includes(state.leadStageFilter) ? state.leadStageFilter : "";
+  if (els.leadStageFilter) {
+    const openLeadCount = state.contacts.filter((contact) => contact.type === "Lead").length;
+    els.leadStageFilter.innerHTML = [
+      `<option value="">All open leads (${openLeadCount})</option>`,
+      ...statuses.map((pipelineStage) => {
+        const count = state.contacts.filter((contact) =>
+          contactJobs(contact).some((job) => job.status === pipelineStage),
+        ).length;
+        return `<option value="${escapeHtml(pipelineStage)}">${escapeHtml(pipelineStage)} (${count})</option>`;
+      }),
+    ].join("");
+    els.leadStageFilter.value = stage;
+  }
   const leads = filteredContacts().filter((contact) =>
     stage ? contactJobs(contact).some((job) => job.status === stage) : contact.type === "Lead",
   );
@@ -6957,6 +6971,12 @@ function bindEvents() {
       els.estimateHistoryPanel?.classList.add("hidden");
       els.toggleEstimateHistoryButton?.setAttribute("aria-expanded", "false");
     }
+  });
+
+  els.leadStageFilter?.addEventListener("change", (event) => {
+    state.leadStageFilter = statuses.includes(event.target.value) ? event.target.value : "";
+    saveState();
+    renderLeadsView();
   });
 
   els.toggleEstimateHistoryButton?.addEventListener("click", () => {
