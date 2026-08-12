@@ -33,6 +33,7 @@ const checks = [
   ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
   ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=87"') && server.includes('Location: "/?v=87"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
+  ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
 ];
 
 let failed = 0;
