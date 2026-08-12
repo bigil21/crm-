@@ -854,10 +854,15 @@ function normalizeJob(job, contact = {}) {
     job.closedDate || (status === "Won" ? contact.closedDate || contact.lastContact || todayISO() : "");
   return {
     id: job.id || uid("job"),
+    projectNumber: job.projectNumber || "",
     name: job.name || job.title || `${contact.name || "Client"} Job`,
     address: job.address || contact.address || "",
     status,
     value: number(job.value ?? contact.value),
+    contractValue: number(job.contractValue ?? job.value ?? contact.value),
+    paidAmount: number(job.paidAmount),
+    paymentPercent: number(job.paymentPercent),
+    lastPaymentAt: job.lastPaymentAt || "",
     ownerUserId: job.ownerUserId || contact.ownerUserId || "",
     ownerEmail: job.ownerEmail || contact.ownerEmail || "",
     ownerName: job.ownerName || contact.ownerName || "",
@@ -946,8 +951,9 @@ function normalizeEstimate(estimate, contacts = []) {
   const contact = contacts.find((item) => item.id === estimate.contactId);
   const jobs = contact ? contactJobs(contact) : [];
   const job = jobs.find((item) => item.id === estimate.jobId) || jobs[0];
-  return {
+  const normalized = {
     ...estimate,
+    status: estimate.status === "Approved" ? "Won" : estimate.status || "Draft",
     jobId: estimate.jobId || job?.id || "",
     projectTitle:
       estimate.projectTitle ||
@@ -960,11 +966,26 @@ function normalizeEstimate(estimate, contacts = []) {
     salesRepEmail: estimate.salesRepEmail || estimate.repEmail || "",
     salesRepPhone: estimate.salesRepPhone || estimate.repPhone || "",
     items: (estimate.items || []).map(normalizeLineItem),
+    leadNumber: estimate.leadNumber || contact?.leadNumber || "",
+    projectNumber: estimate.projectNumber || job?.projectNumber || "",
     squareInvoiceId: estimate.squareInvoiceId || "",
+    squareOrderId: estimate.squareOrderId || "",
     squareInvoiceUrl: estimate.squareInvoiceUrl || "",
     squareStatus: estimate.squareStatus || "",
     paidAt: estimate.paidAt || "",
+    contractValue: number(estimate.contractValue),
+    paidAmount: number(estimate.paidAmount),
+    paymentPercent: number(estimate.paymentPercent),
+    paymentRequests: Array.isArray(estimate.paymentRequests) ? estimate.paymentRequests : [],
+    paymentUpdatedAt: estimate.paymentUpdatedAt || "",
   };
+  if (normalized.paidAt && !normalized.paidAmount) {
+    const legacyPaidTotal = totalsFor(normalized).total;
+    normalized.contractValue = normalized.contractValue || legacyPaidTotal;
+    normalized.paidAmount = normalized.contractValue;
+    normalized.paymentPercent = normalized.contractValue ? 100 : 0;
+  }
+  return normalized;
 }
 
 function normalizeLineItem(item) {
@@ -1762,12 +1783,90 @@ function getEstimateJob(estimate) {
   return jobs.find((job) => job.id === estimate?.jobId) || jobs[0];
 }
 
+function numericHash(value = "") {
+  let hash = 2166136261;
+  for (const char of String(value)) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 1000000;
+}
+
+function leadNumberFor(contact = {}) {
+  const date = String(contact.createdAt || todayISO()).slice(0, 10).replace(/\D/g, "") || "00000000";
+  return `LD-${date}-${String(numericHash(contact.id || contact.name)).padStart(6, "0")}`;
+}
+
+function uniqueLeadNumberFor(contact = {}) {
+  const base = leadNumberFor(contact);
+  const prefix = base.slice(0, -6);
+  const start = Number(base.slice(-6));
+  const used = new Set(
+    state.contacts
+      .filter((item) => item.id !== contact.id && item.leadNumber)
+      .map((item) => item.leadNumber),
+  );
+  for (let offset = 0; offset < 1000000; offset += 1) {
+    const suffix = String((start + offset) % 1000000).padStart(6, "0");
+    const candidate = `${prefix}${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new Error("Unable to assign a unique lead number.");
+}
+
+function nextProjectNumber(contact = {}) {
+  const leadNumber = contact.leadNumber || leadNumberFor(contact);
+  const used = contactJobs(contact)
+    .map((job) => Number(String(job.projectNumber || "").match(/-P(\d+)$/)?.[1] || 0))
+    .filter(Boolean);
+  return `${leadNumber}-P${String((used.length ? Math.max(...used) : 0) + 1).padStart(2, "0")}`;
+}
+
+function ensureLeadProjectNumbers(contactId, preferredJobId = "") {
+  let numberedContact = null;
+  state.contacts = state.contacts.map((contact) => {
+    if (contact.id !== contactId) return contact;
+    const leadNumber = contact.leadNumber || uniqueLeadNumberFor(contact);
+    let nextSequence = 1;
+    const existingSequences = contactJobs(contact)
+      .map((job) => Number(String(job.projectNumber || "").match(/-P(\d+)$/)?.[1] || 0))
+      .filter(Boolean);
+    if (existingSequences.length) nextSequence = Math.max(...existingSequences) + 1;
+    const jobs = contactJobs(contact).map((job) => {
+      if (job.projectNumber) return job;
+      const projectNumber = `${leadNumber}-P${String(nextSequence).padStart(2, "0")}`;
+      nextSequence += 1;
+      return { ...job, projectNumber };
+    });
+    numberedContact = { ...contact, leadNumber, jobs };
+    return numberedContact;
+  });
+  if (!numberedContact) return null;
+  const job = contactJobs(numberedContact).find((item) => item.id === preferredJobId) || primaryJob(numberedContact);
+  return { contact: numberedContact, job };
+}
+
+function ensureExistingSalesNumbers() {
+  let changed = false;
+  state.estimates.forEach((estimate) => {
+    const numbered = ensureLeadProjectNumbers(estimate.contactId, estimate.jobId);
+    if (!numbered) return;
+    if (estimate.leadNumber !== numbered.contact.leadNumber || estimate.projectNumber !== numbered.job?.projectNumber) {
+      estimate.leadNumber = numbered.contact.leadNumber;
+      estimate.projectNumber = numbered.job?.projectNumber || "";
+      changed = true;
+    }
+  });
+  return changed;
+}
+
 function filteredContacts() {
   const query = state.search.trim().toLowerCase();
   if (!query) return state.contacts;
   return state.contacts.filter((contact) =>
     [
       contact.name,
+      contact.leadNumber,
       contact.type,
       contact.status,
       contact.source,
@@ -1778,6 +1877,7 @@ function filteredContacts() {
       contact.notes,
       ...contactJobs(contact).flatMap((job) => [
         job.name,
+        job.projectNumber,
         job.address,
         job.status,
         job.salesRep,
@@ -1999,7 +2099,7 @@ function dashboardMetrics() {
   const openContracts = jobs.filter((job) => !["Won", "Lost"].includes(job.status));
   const closedJobs = jobs.filter((job) => job.status === "Won");
   const estimatesSent = state.estimates.filter((estimate) =>
-    ["Sent", "Approved"].includes(estimate.status),
+    ["Sent", "Won"].includes(estimate.status),
   ).length;
   const pipelineValue = jobs
     .filter((job) => job.status !== "Lost")
@@ -2282,8 +2382,11 @@ function addContactUpdate(contactId, { author = "Local user", message, status = 
 }
 
 function applyStatusUpdate(contactId, nextStatus, author = "Local user", message = "") {
-  const contact = getContact(contactId);
+  let contact = getContact(contactId);
   if (!contact || !nextStatus || contact.status === nextStatus) return contact;
+  if (["Estimate Sent", "Won"].includes(nextStatus)) {
+    contact = ensureLeadProjectNumbers(contactId)?.contact || contact;
+  }
   return updateContact(contactId, (current) => {
     const wasStatus = current.status;
     const nextJobs = contactJobs(current).map((job, index) =>
@@ -2367,8 +2470,6 @@ function render() {
   renderTasksView();
   if (state.view === "invoices") {
     renderInvoicesView();
-  } else {
-    stopSquarePoll();
   }
   renderReviewsView();
   renderReportsView();
@@ -3210,7 +3311,7 @@ function renderJobsView() {
   const query = state.search.trim().toLowerCase();
   const jobs = allJobs().filter((job) =>
     query
-      ? [job.name, job.address, job.status, job.salesRep, job.contactName]
+      ? [job.projectNumber, job.name, job.address, job.status, job.salesRep, job.contactName]
           .filter(Boolean)
           .join(" ")
           .toLowerCase()
@@ -3224,6 +3325,7 @@ function renderJobsView() {
           <tr>
             <td class="person-cell">
               <strong>${escapeHtml(job.name)}</strong>
+              ${job.projectNumber ? `<span>${escapeHtml(job.projectNumber)}</span>` : ""}
               <span>${escapeHtml(job.contactType)}</span>
             </td>
             <td>
@@ -3258,9 +3360,11 @@ function renderProjectsView() {
           (job) => `
           <article class="record-card">
             <span class="status-pill">${escapeHtml(job.status)}</span>
+            ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
             <strong>${escapeHtml(job.name)}</strong>
-            <span>${escapeHtml(job.contactName)} - ${money.format(number(job.value))}</span>
+            <span>${escapeHtml(job.contactName)} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
             <p>${escapeHtml((job.address || "No address").split("\n")[0])}</p>
+            ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
             <div class="row-actions">
               <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${job.contactId}" data-tab="jobs">
                 <span aria-hidden="true" data-icon="open"></span>
@@ -3312,6 +3416,45 @@ function renderRecordCard(contact) {
   `;
 }
 
+function jobPaymentMetrics(job = {}) {
+  const contractValue = number(job.contractValue) || number(job.value);
+  const paidAmount = Math.min(number(job.paidAmount), contractValue || number(job.paidAmount));
+  return {
+    contractValue,
+    paidAmount,
+    balance: Math.max(contractValue - paidAmount, 0),
+    percentage: contractValue ? Math.min(100, (paidAmount / contractValue) * 100) : 0,
+  };
+}
+
+function contactPaymentMetrics(contact) {
+  return contactJobs(contact).reduce(
+    (summary, job) => {
+      const metrics = jobPaymentMetrics(job);
+      summary.contractValue += metrics.contractValue;
+      summary.paidAmount += metrics.paidAmount;
+      return summary;
+    },
+    { contractValue: 0, paidAmount: 0 },
+  );
+}
+
+function paymentProgressMarkup(metrics, { compact = false } = {}) {
+  const percentage = metrics.contractValue ? Math.min(100, (metrics.paidAmount / metrics.contractValue) * 100) : 0;
+  const rounded = Math.round(percentage);
+  return `
+    <div class="payment-progress ${compact ? "payment-progress-compact" : ""}">
+      <div class="payment-progress-ring" style="--payment-progress:${rounded * 3.6}deg">
+        <span>${rounded}%</span>
+      </div>
+      <div class="payment-progress-copy">
+        <strong>${money.format(metrics.paidAmount)} paid</strong>
+        <span>${money.format(Math.max(metrics.contractValue - metrics.paidAmount, 0))} remaining</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderLeadDetail() {
   if (!els.views.leadDetail) return;
   const contact = getSelectedContact();
@@ -3322,7 +3465,7 @@ function renderLeadDetail() {
   }
 
   els.leadDetailTitle.textContent = contact.name;
-  els.leadDetailMeta.textContent = `${contact.type} - ${contact.status} - ${contact.salesRep || "Unassigned"}`;
+  els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${contact.status} - ${contact.salesRep || "Unassigned"}`;
 
   if (state.leadDetailTab === "profit" && !canManageJobFinancials()) {
     state.leadDetailTab = "overview";
@@ -3351,11 +3494,14 @@ function renderLeadDetail() {
   const jobs = contactJobs(contact);
   const jobValue = jobs.reduce((sum, job) => sum + number(job.value), 0);
   const openJobs = jobs.filter((job) => !["Won", "Lost"].includes(job.status)).length;
+  const payments = contactPaymentMetrics(contact);
+  const paidPercentage = payments.contractValue ? (payments.paidAmount / payments.contractValue) * 100 : 0;
   els.leadDetailStats.innerHTML = [
     ["Status", contact.status, "Current job stage"],
     ["Sales Rep", contact.salesRep || "Unassigned", "Owner"],
     ["Jobs", jobs.length, `${openJobs} open`],
-    ["Job Value", money.format(jobValue), "Total value"],
+    ["Contract Value", money.format(payments.contractValue || jobValue), contact.leadNumber || "Assigned at estimate"],
+    ["Payments", money.format(payments.paidAmount), `${paidPercentage.toFixed(0)}% paid`],
   ]
     .map(
       ([label, value, caption]) => `
@@ -3401,7 +3547,10 @@ function renderLeadDetail() {
       <div class="overview-info-box">
         <p class="overview-info-label">Job address${jobs.length > 1 ? "es" : ""}</p>
         ${jobs.map((job) => `
-          <p style="margin:0 0 8px"><strong style="font-size:13px">${escapeHtml(job.name)}</strong><br /><span style="color:var(--muted);font-size:12px">${nl2br(job.address || "No address saved")}</span></p>
+          <div class="overview-project-payment">
+            <p style="margin:0"><strong style="font-size:13px">${escapeHtml(job.name)}</strong>${job.projectNumber ? `<br /><span class="project-number-inline">${escapeHtml(job.projectNumber)}</span>` : ""}<br /><span style="color:var(--muted);font-size:12px">${nl2br(job.address || "No address saved")}</span></p>
+            ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
+          </div>
         `).join("")}
       </div>
     </div>
@@ -3427,10 +3576,12 @@ function renderLeadJobs(contact) {
       <article class="job-card">
         <div>
           <span class="status-pill">${escapeHtml(job.status)}</span>
+          ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
           <strong>${escapeHtml(job.name)}</strong>
-          <span>${escapeHtml(job.salesRep || "Unassigned")} - ${money.format(number(job.value))}</span>
+          <span>${escapeHtml(job.salesRep || "Unassigned")} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
           <p>${nl2br(job.address || "No address saved")}</p>
           ${job.notes ? `<p>${nl2br(job.notes)}</p>` : ""}
+          ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
         </div>
         <div class="row-actions">
           <button class="secondary-button" type="button" data-action="estimate-job" data-contact-id="${contact.id}" data-job-id="${
@@ -3708,6 +3859,7 @@ function saveLeadJob(event) {
     {
       ...(existing || { id: jobId, createdAt: todayISO() }),
       id: jobId,
+      projectNumber: existing?.projectNumber || (contact.leadNumber ? nextProjectNumber(contact) : ""),
       name: formData.get("name").trim(),
       status: formData.get("status"),
       value: number(formData.get("value")),
@@ -3964,6 +4116,54 @@ function readFileAsDataUrl(file) {
     reader.onload = () => resolve(reader.result);
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+function syncEstimatePipelineStage(estimate, estimateStatus = estimate?.status) {
+  if (!estimate) return;
+  const nextStage = estimateStatus === "Won" || estimateStatus === "Approved"
+    ? "Won"
+    : estimateStatus === "Sent"
+      ? "Estimate Sent"
+      : "";
+  if (!nextStage) return;
+  const numbered = ensureLeadProjectNumbers(estimate.contactId, estimate.jobId);
+  if (!numbered) return;
+  estimate.leadNumber = numbered.contact.leadNumber;
+  estimate.projectNumber = numbered.job?.projectNumber || estimate.projectNumber || "";
+  const linkedJobId = estimate.jobId || numbered.job?.id || "";
+  updateContact(estimate.contactId, (current) => {
+    const linkedJob = contactJobs(current).find((job) => job.id === linkedJobId);
+    const previousStage = linkedJob?.status || current.status;
+    const jobs = contactJobs(current).map((job) =>
+      job.id === linkedJobId
+        ? {
+            ...job,
+            status: nextStage,
+            closedDate: nextStage === "Won" ? job.closedDate || todayISO() : job.closedDate,
+          }
+        : job,
+    );
+    return {
+      ...current,
+      leadNumber: numbered.contact.leadNumber,
+      jobs,
+      status: nextStage === "Won" || current.status !== "Won" ? nextStage : current.status,
+      type: nextStage === "Won" ? "Customer" : current.type,
+      closedDate: nextStage === "Won" ? current.closedDate || todayISO() : current.closedDate,
+      updates: previousStage === nextStage
+        ? current.updates || []
+        : [
+            {
+              id: uid("update"),
+              author: state.currentUser.name || "CRM",
+              status: nextStage,
+              message: `${estimate.estimateNumber} moved ${estimate.projectNumber || "the project"} to ${nextStage}.`,
+              createdAt: new Date().toISOString(),
+            },
+            ...(current.updates || []),
+          ],
+    };
   });
 }
 
@@ -4534,16 +4734,72 @@ function renderTasksView() {
 }
 
 function squareStatusPill(estimate) {
+  const percent = Math.round(number(estimate.paymentPercent));
+  if (percent >= 100 || estimate.squareStatus === "PAID") return `<span class="status-pill pill-won">Paid 100%</span>`;
+  if (number(estimate.paidAmount) > 0) return `<span class="status-pill pill-inspection">${percent}% paid</span>`;
   if (estimate.squareStatus === "PAID" || estimate.paidAt) return `<span class="status-pill pill-won">Paid ✓</span>`;
   if (estimate.squareStatus === "SENT" || estimate.squareInvoiceId) return `<span class="status-pill pill-sent">Sent to Square</span>`;
-  if (estimate.status === "Approved") return `<span class="status-pill pill-inspection">Ready to Invoice</span>`;
+  if (estimate.status === "Won") return `<span class="status-pill pill-inspection">Ready to Invoice</span>`;
   return `<span class="status-pill pill-default">${escapeHtml(estimate.status)}</span>`;
 }
 
+function squareApiHeaders() {
+  const token = authSession?.session?.access_token || "";
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+function updateJobPaymentSnapshot(contactId, jobId) {
+  const contact = getContact(contactId);
+  const job = contactJobs(contact).find((item) => item.id === jobId);
+  if (!contact || !job) return;
+  const invoices = state.estimates.filter(
+    (estimate) => estimate.contactId === contactId && estimate.jobId === jobId && estimate.squareInvoiceId,
+  );
+  const paidAmount = invoices.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
+  const invoiceContract = invoices.reduce(
+    (maximum, estimate) => Math.max(maximum, number(estimate.contractValue) || totalsFor(estimate).total),
+    0,
+  );
+  const contractValue = invoiceContract || number(job.contractValue) || number(job.value);
+  const paymentPercent = contractValue ? Math.min(100, (paidAmount / contractValue) * 100) : 0;
+  const lastPaymentAt = invoices
+    .map((estimate) => estimate.paymentUpdatedAt || estimate.paidAt || "")
+    .filter(Boolean)
+    .sort()
+    .at(-1) || job.lastPaymentAt || "";
+  updateContact(contactId, (current) => ({
+    ...current,
+    jobs: contactJobs(current).map((item) =>
+      item.id === jobId
+        ? { ...item, value: contractValue, contractValue, paidAmount, paymentPercent, lastPaymentAt }
+        : item,
+    ),
+  }));
+}
+
 async function sendToSquare(estimateId) {
+  if (currentRole() !== "admin") {
+    showToast("Only an administrator can send Square invoices");
+    return;
+  }
   const estimate = state.estimates.find((e) => e.id === estimateId);
-  const contact = getEstimateContact(estimate);
+  const numbered = ensureLeadProjectNumbers(estimate?.contactId, estimate?.jobId);
+  const contact = numbered?.contact || getEstimateContact(estimate);
+  const job = numbered?.job || getEstimateJob(estimate);
   if (!estimate || !contact) { showToast("Missing estimate or contact"); return; }
+  if (estimate.status !== "Won") {
+    showToast("Mark the estimate Won before sending its Square invoice");
+    return;
+  }
+  if (!contact.email) {
+    showToast("Add the customer's email before sending the Square invoice");
+    return;
+  }
+  estimate.leadNumber = contact.leadNumber;
+  estimate.projectNumber = job?.projectNumber || "";
 
   const btn = document.querySelector(`[data-square-send="${estimateId}"]`);
   if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
@@ -4552,11 +4808,16 @@ async function sendToSquare(estimateId) {
     const totals = totalsFor(estimate);
     const res = await fetch("/api/square/create-invoice", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: squareApiHeaders(),
       body: JSON.stringify({
         estimateId: estimate.id,
+        leadId: contact.id,
+        leadNumber: estimate.leadNumber,
+        jobId: estimate.jobId,
+        projectNumber: estimate.projectNumber,
         estimateNumber: estimate.estimateNumber,
         projectTitle: estimate.projectTitle,
+        jobAddress: job?.address || contact.address || "",
         contactName: contact.name,
         contactEmail: contact.email,
         lineItems: estimate.items,
@@ -4573,8 +4834,20 @@ async function sendToSquare(estimateId) {
       return;
     }
     estimate.squareInvoiceId = data.squareInvoiceId;
+    estimate.squareOrderId = data.squareOrderId || "";
     estimate.squareInvoiceUrl = data.squareInvoiceUrl;
     estimate.squareStatus = data.status === "PUBLISHED" ? "SENT" : data.status;
+    estimate.contractValue = totals.total;
+    estimate.paidAmount = 0;
+    estimate.paymentPercent = 0;
+    updateContact(contact.id, (current) => ({
+      ...current,
+      jobs: contactJobs(current).map((item) =>
+        item.id === estimate.jobId
+          ? { ...item, value: totals.total, contractValue: totals.total, paidAmount: 0, paymentPercent: 0 }
+          : item,
+      ),
+    }));
     saveState();
     renderInvoicesView();
     showToast("Invoice sent to Square ✓");
@@ -4586,36 +4859,52 @@ async function sendToSquare(estimateId) {
 
 async function pollSquarePayments() {
   try {
-    const res = await fetch("/api/square/poll-payments");
+    const invoiceIds = state.estimates.map((estimate) => estimate.squareInvoiceId).filter(Boolean);
+    if (!invoiceIds.length) return;
+    const res = await fetch("/api/square/payment-status", {
+      method: "POST",
+      headers: squareApiHeaders(),
+      body: JSON.stringify({ invoiceIds }),
+    });
     if (!res.ok) return;
-    const paid = await res.json();
+    const { payments = {} } = await res.json();
     let changed = false;
+    const touchedJobs = new Set();
     state.estimates.forEach((estimate) => {
       if (!estimate.squareInvoiceId) return;
-      const record = paid[estimate.squareInvoiceId];
-      if (record && estimate.squareStatus !== "PAID") {
-        estimate.squareStatus = "PAID";
-        estimate.paidAt = record.paidAt;
-        changed = true;
-      }
+      const record = payments[estimate.squareInvoiceId];
+      if (!record || record.error) return;
+      const nextPaid = number(record.paidAmount);
+      const nextContract = number(record.contractAmount) || totalsFor(estimate).total;
+      const nextPercent = nextContract ? Math.min(100, (nextPaid / nextContract) * 100) : 0;
+      if (nextPaid !== number(estimate.paidAmount) || nextContract !== number(estimate.contractValue) || record.status !== estimate.squareStatus) changed = true;
+      estimate.squareStatus = record.status || estimate.squareStatus;
+      estimate.contractValue = nextContract;
+      estimate.paidAmount = nextPaid;
+      estimate.paymentPercent = nextPercent;
+      estimate.paymentRequests = record.paymentRequests || [];
+      estimate.paymentUpdatedAt = record.updatedAt || new Date().toISOString();
+      estimate.paidAt = nextPercent >= 100 ? estimate.paidAt || estimate.paymentUpdatedAt : "";
+      touchedJobs.add(`${estimate.contactId}|${estimate.jobId}`);
     });
     if (changed) {
+      touchedJobs.forEach((key) => {
+        const [contactId, jobId] = key.split("|");
+        updateJobPaymentSnapshot(contactId, jobId);
+      });
       saveState();
-      renderInvoicesView();
-      showToast("Payment received! Invoice marked as Paid ✓");
+      render();
+      showToast("Square payments updated");
     }
   } catch {}
 }
 
-// Poll Square every 30 seconds when the invoices view is open
+// Keep Square payment progress current throughout the signed-in CRM session.
 let squarePollInterval = null;
 function startSquarePoll() {
   if (squarePollInterval) return;
   pollSquarePayments();
   squarePollInterval = setInterval(pollSquarePayments, 30000);
-}
-function stopSquarePoll() {
-  if (squarePollInterval) { clearInterval(squarePollInterval); squarePollInterval = null; }
 }
 
 function renderInvoicesView() {
@@ -4623,8 +4912,10 @@ function renderInvoicesView() {
   startSquarePoll();
 
   const estimates = [...state.estimates].sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
-  const totalPaid = estimates.filter((e) => e.squareStatus === "PAID" || e.paidAt).reduce((s, e) => s + totalsFor(e).total, 0);
-  const totalPending = estimates.filter((e) => e.squareInvoiceId && e.squareStatus !== "PAID" && !e.paidAt).reduce((s, e) => s + totalsFor(e).total, 0);
+  const totalPaid = estimates.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
+  const totalPending = estimates
+    .filter((estimate) => estimate.squareInvoiceId)
+    .reduce((sum, estimate) => sum + Math.max((number(estimate.contractValue) || totalsFor(estimate).total) - number(estimate.paidAmount), 0), 0);
 
   const summaryBar = `
     <div class="invoice-summary-bar">
@@ -4648,9 +4939,12 @@ function renderInvoicesView() {
     ? estimates.map((estimate) => {
         const contact = getEstimateContact(estimate);
         const totals = totalsFor(estimate);
-        const isPaid = estimate.squareStatus === "PAID" || !!estimate.paidAt;
+        const contractValue = number(estimate.contractValue) || totals.total;
+        const paidAmount = number(estimate.paidAmount);
+        const paymentPercent = contractValue ? Math.min(100, (paidAmount / contractValue) * 100) : 0;
+        const isPaid = paymentPercent >= 100 || estimate.squareStatus === "PAID";
         const isSent = !!estimate.squareInvoiceId && !isPaid;
-        const canSend = !estimate.squareInvoiceId && (estimate.status === "Approved" || estimate.status === "Sent");
+        const canSend = currentRole() === "admin" && !estimate.squareInvoiceId && estimate.status === "Won" && Boolean(contact?.email);
         const initials = contactInitials(contact?.name || "?");
         const avatarClass = initialsColor(contact?.name || "");
 
@@ -4660,13 +4954,16 @@ function renderInvoicesView() {
               <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
               <div style="flex:1;min-width:0">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                  <strong>${escapeHtml(estimate.estimateNumber)}</strong>
+                  <strong>${escapeHtml(estimate.projectNumber || estimate.leadNumber || estimate.estimateNumber)}</strong>
                   ${squareStatusPill(estimate)}
                 </div>
+                <span style="font-size:12px;color:var(--muted)">${escapeHtml(estimate.estimateNumber)}</span>
+                ${estimate.status === "Won" ? `<span style="display:block;font-size:12px;color:var(--muted);margin-top:3px">Square recipient: ${escapeHtml(contact?.email || "No customer email on file")}</span>` : ""}
                 <span style="font-size:12px;color:var(--muted)">${escapeHtml(contact?.name || "Unknown")} · ${escapeHtml(estimate.projectTitle || "")}</span>
               </div>
-              <strong style="font-size:15px;white-space:nowrap">${money.format(totals.total)}</strong>
+              <strong style="font-size:15px;white-space:nowrap">${money.format(contractValue)}</strong>
             </div>
+            ${estimate.squareInvoiceId ? paymentProgressMarkup({ contractValue, paidAmount }, { compact: true }) : ""}
             ${isPaid ? `<p style="font-size:12px;color:var(--green);margin:4px 0 0">Paid ${estimate.paidAt ? formatDate(estimate.paidAt) : ""} via Square</p>` : ""}
             ${isSent && estimate.squareInvoiceUrl ? `<p style="font-size:12px;color:var(--muted);margin:4px 0 0">Awaiting payment · <a href="${escapeHtml(estimate.squareInvoiceUrl)}" target="_blank" class="tel-link">View in Square ↗</a></p>` : ""}
             <div class="row-actions" style="margin-top:8px">
@@ -4674,12 +4971,6 @@ function renderInvoicesView() {
                 <button class="primary-button" type="button" data-square-send="${estimate.id}">
                   <span aria-hidden="true" data-icon="send"></span>
                   Send to Square
-                </button>
-              ` : ""}
-              ${isSent ? `
-                <button class="secondary-button" type="button" data-square-mark-paid="${estimate.id}">
-                  <span aria-hidden="true" data-icon="check"></span>
-                  Mark Paid Manually
                 </button>
               ` : ""}
               <button class="secondary-button" type="button" data-action="select-estimate" data-estimate-id="${estimate.id}">
@@ -4690,7 +4981,7 @@ function renderInvoicesView() {
           </article>
         `;
       }).join("")
-    : '<div class="empty-state">Approved estimates will appear here ready to send as Square invoices</div>');
+    : '<div class="empty-state">Won estimates will appear here for an administrator to send through Square</div>');
 
   hydrateIcons(els.invoicesList);
 
@@ -4702,8 +4993,14 @@ function renderInvoicesView() {
     btn.addEventListener("click", () => {
       const estimate = state.estimates.find((e) => e.id === btn.dataset.squareMarkPaid);
       if (!estimate) return;
+      const contractValue = number(estimate.contractValue) || totalsFor(estimate).total;
       estimate.squareStatus = "PAID";
       estimate.paidAt = new Date().toISOString();
+      estimate.paymentUpdatedAt = estimate.paidAt;
+      estimate.contractValue = contractValue;
+      estimate.paidAmount = contractValue;
+      estimate.paymentPercent = 100;
+      updateJobPaymentSnapshot(estimate.contactId, estimate.jobId);
       saveState();
       renderInvoicesView();
       showToast("Invoice marked as paid");
@@ -5025,7 +5322,7 @@ function renderEstimatePreview(estimate) {
   const statusColors = {
     Draft: "est-status-draft",
     Sent: "est-status-sent",
-    Approved: "est-status-approved",
+    Won: "est-status-approved",
     Rejected: "est-status-rejected",
     Invoiced: "est-status-invoiced",
   };
@@ -5046,6 +5343,7 @@ function renderEstimatePreview(estimate) {
         <div class="est-header-meta">
           <p class="est-doc-label">ESTIMATE</p>
           <p class="est-doc-num">${escapeHtml(estimate.estimateNumber)}</p>
+          <p class="est-doc-date">${escapeHtml([estimate.leadNumber, estimate.projectNumber].filter(Boolean).join(" · "))}</p>
           <p class="est-doc-date">Issued: ${formatDate(estimate.issueDate)}</p>
           <p class="est-doc-date">Valid through: ${formatDate(estimate.validUntil)}</p>
           <span class="est-status-chip ${statusClass}">${escapeHtml(estimate.status)}</span>
@@ -5499,17 +5797,22 @@ function createEstimate(contactId, shouldRender = true, jobId = "") {
     showToast("Choose a lead before creating an estimate");
     return null;
   }
-  const contact = getContact(contactId);
+  let contact = getContact(contactId);
   if (!contact) {
     showToast("Choose a valid lead before creating an estimate");
     return null;
   }
-  const job = contactJobs(contact).find((item) => item.id === jobId) || primaryJob(contact);
+  const initialJob = contactJobs(contact).find((item) => item.id === jobId) || primaryJob(contact);
+  const numbered = ensureLeadProjectNumbers(contactId, initialJob?.id || jobId);
+  contact = numbered?.contact || contact;
+  const job = numbered?.job || initialJob;
 
   const estimate = {
     id: uid("estimate"),
     contactId,
     jobId: job?.id || "",
+    leadNumber: contact.leadNumber,
+    projectNumber: job?.projectNumber || "",
     estimateNumber: nextEstimateNumber(),
     projectTitle: job?.name || "Exterior Restoration Estimate",
     status: "Draft",
@@ -5522,6 +5825,10 @@ function createEstimate(contactId, shouldRender = true, jobId = "") {
       "Provide labor, materials, project supervision, debris removal, and final cleanup for the approved exterior restoration scope.",
     taxRate: 0,
     deposit: 0,
+    contractValue: 0,
+    paidAmount: 0,
+    paymentPercent: 0,
+    paymentRequests: [],
     notes: state.company.defaultTerms,
     sentAt: "",
     items: [
@@ -5566,12 +5873,25 @@ function updateSelectedEstimateFromField(fieldName, value) {
     estimate[fieldName] = value;
   }
 
+  if (fieldName === "status") {
+    syncEstimatePipelineStage(estimate, value);
+  }
+
   if (fieldName === "contactId") {
-    const contact = getContact(value);
-    estimate.jobId = primaryJob(contact)?.id || "";
+    const numbered = ensureLeadProjectNumbers(value);
+    const contact = numbered?.contact || getContact(value);
+    estimate.jobId = numbered?.job?.id || primaryJob(contact)?.id || "";
+    estimate.leadNumber = contact?.leadNumber || "";
+    estimate.projectNumber = numbered?.job?.projectNumber || "";
     estimate.projectManager = contact?.salesRep || estimate.projectManager;
     state.selectedContactId = value;
     renderEstimateForm(estimate);
+  }
+  if (fieldName === "jobId") {
+    const numbered = ensureLeadProjectNumbers(estimate.contactId, value);
+    estimate.leadNumber = numbered?.contact?.leadNumber || estimate.leadNumber || "";
+    estimate.projectNumber = numbered?.job?.projectNumber || "";
+    estimate.projectTitle = numbered?.job?.name || estimate.projectTitle;
   }
   saveState();
   renderEstimatePreview(estimate);
@@ -5869,13 +6189,13 @@ async function downloadEstimatePdf(options = {}) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(148, 163, 184);
-  doc.text(estimate.estimateNumber || "", right, 48, { align: "right" });
+  doc.text([estimate.estimateNumber, estimate.projectNumber].filter(Boolean).join("  |  "), right, 48, { align: "right" });
   doc.text(`Issued: ${formatDate(estimate.issueDate)}`, right, 59, { align: "right" });
   doc.text(`Valid through: ${formatDate(estimate.validUntil)}`, right, 70, { align: "right" });
 
   // Status pill
   const statusPillColors = {
-    Draft: [51, 65, 85], Sent: [29, 158, 117], Approved: [31, 157, 85],
+    Draft: [51, 65, 85], Sent: [29, 158, 117], Won: [31, 157, 85],
     Rejected: [184, 67, 61], Invoiced: [15, 95, 232],
   };
   const pillRgb = statusPillColors[estimate.status] || statusPillColors.Draft;
@@ -6120,8 +6440,7 @@ async function sendEstimate() {
 
   estimate.status = "Sent";
   estimate.sentAt = todayISO();
-  const contactRecord = getContact(contact.id);
-  if (contactRecord && contactRecord.status !== "Won") contactRecord.status = "Estimate Sent";
+  syncEstimatePipelineStage(estimate, "Sent");
   saveState();
   render();
   await downloadEstimatePdf({ silent: true });
@@ -6679,10 +6998,12 @@ async function startApp() {
   saveState({ localOnly: true });
   await initializeCloudSync();
   await initializeDurableRecords();
+  if (ensureExistingSalesNumbers()) saveState();
   void migrateInlineDocumentsToStorage();
   hydrateIcons();
   bindEvents();
   render();
+  startSquarePoll();
   registerServiceWorker();
 }
 

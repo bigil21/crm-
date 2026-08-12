@@ -1082,7 +1082,7 @@ button:disabled {
 
 .detail-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -1407,6 +1407,99 @@ button:disabled {
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 900;
+}
+
+.project-number-pill,
+.project-number-inline {
+  display: inline-flex;
+  width: fit-content;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.035em;
+}
+
+.project-number-pill {
+  min-height: 24px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+
+.payment-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  margin-top: 12px;
+}
+
+.payment-progress-ring {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  flex: 0 0 62px;
+  border-radius: 50%;
+  background: conic-gradient(var(--green) var(--payment-progress), #dce8f5 0);
+  box-shadow: inset 0 0 0 1px rgba(15, 95, 232, 0.08);
+}
+
+.payment-progress-ring::before {
+  content: "";
+  grid-area: 1 / 1;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.payment-progress-ring span {
+  z-index: 1;
+  grid-area: 1 / 1;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.payment-progress-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.payment-progress-copy strong {
+  font-size: 13px;
+}
+
+.payment-progress-copy span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.payment-progress-compact .payment-progress-ring {
+  width: 50px;
+  height: 50px;
+  flex-basis: 50px;
+}
+
+.payment-progress-compact .payment-progress-ring::before {
+  width: 38px;
+  height: 38px;
+}
+
+.overview-project-payment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.overview-project-payment:last-child {
+  border-bottom: 0;
 }
 
 .document-upload-controls {
