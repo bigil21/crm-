@@ -530,6 +530,7 @@ let durableAuditIds = new Set();
 let durableRecordsSubscription = null;
 let criticalSaveInFlight = false;
 let durableBusinessStateAuthoritative = false;
+let durableWritesEnabled = false;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -1551,7 +1552,7 @@ async function reloadDurableRecords({ showUpdateToast = false } = {}) {
 }
 
 function queueDurableRecordsSave() {
-  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return;
+  if (!durableWritesEnabled || !durableRecordsReady || !cloudClient || !authSession?.user?.id) return;
   window.clearTimeout(durableSaveTimer);
   durableSaveTimer = window.setTimeout(flushDurableRecordsSave, CLOUD_SAVE_DELAY);
 }
@@ -1654,6 +1655,38 @@ async function persistCriticalLeadChange({ statusElement, button, successMessage
     criticalSaveInFlight = false;
     if (button) button.disabled = false;
   }
+}
+
+async function persistProfitCostRecord(jobId, costId, updateId) {
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
+  if (!(await waitForDurableSaveSlot())) return false;
+  const jobRow = durableRowsFromState().find((row) => row.record_type === "job" && row.id === jobId);
+  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (!jobRow) return false;
+
+  const { error: writeError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .upsert(jobRow, { onConflict: "company_state_id,record_type,id" });
+  if (writeError) throw writeError;
+  if (auditRow) {
+    const { error: auditError } = await cloudClient
+      .from(SUPABASE_AUDIT_TABLE)
+      .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
+    if (auditError) throw auditError;
+    durableAuditIds.add(auditRow.id);
+  }
+
+  const { data: confirmed, error: confirmError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .select("data")
+    .eq("company_state_id", supabaseStateId())
+    .eq("record_type", "job")
+    .eq("id", jobId)
+    .single();
+  if (confirmError) throw confirmError;
+  if (!(confirmed?.data?.costItems || []).some((item) => item.id === costId)) return false;
+  durableRecordFingerprints.set(durableRecordKey(jobRow), durableFingerprint(jobRow));
+  return true;
 }
 
 async function initializeDurableRecords() {
@@ -3908,7 +3941,7 @@ async function saveProfitCost(event) {
       : [nextItem, ...(currentJob.costItems || [])],
   }));
 
-  addContactUpdate(contact.id, {
+  const costUpdateContact = addContactUpdate(contact.id, {
     author: state.currentUser.name || "Upper admin",
     message: `${existing ? "Updated" : "Added"} cost on ${job.name}: ${money.format(nextItem.amount)} ${nextItem.category}.`,
   });
@@ -3916,11 +3949,21 @@ async function saveProfitCost(event) {
   state.leadDetailTab = "profit";
   saveState({ localOnly: true });
   render();
-  const saved = await persistCriticalLeadChange({
-    statusElement: els.profitSaveStatus,
-    button: els.profitSaveButton,
-    successMessage: "Cost saved",
-  });
+  setSaveState(els.profitSaveStatus, "Saving securely to the shared CRM...", "saving");
+  els.profitSaveButton.disabled = true;
+  let saved = false;
+  try {
+    saved = await persistProfitCostRecord(job.id, costId, costUpdateContact?.updates?.[0]?.id || "");
+  } catch (error) {
+    console.warn("Profit and Cost write could not be confirmed", error);
+  } finally {
+    els.profitSaveButton.disabled = false;
+  }
+  setSaveState(
+    els.profitSaveStatus,
+    saved ? "Cost saved to the shared CRM." : "Not saved to the shared CRM. Keep this page open and try again.",
+    saved ? "success" : "error",
+  );
   if (!saved) return;
   fillProfitCostForm();
   showToast("Cost saved to the shared CRM");
@@ -7301,6 +7344,8 @@ async function startApp() {
   hydrateIcons();
   bindEvents();
   render();
+  durableWritesEnabled = durableRecordsReady;
+  if (durableWritesEnabled) queueDurableRecordsSave();
   await playSignInUnlockTransition();
   startSquarePoll();
   registerServiceWorker();

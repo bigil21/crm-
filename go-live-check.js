@@ -32,7 +32,7 @@ const checks = [
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
   ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
-  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=91"') && server.includes('Location: "/?v=91"')],
+  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=92"') && server.includes('Location: "/?v=92"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
   ["Lead Intake stage filter", index.includes('id="leadStageFilter"') && index.includes("Filter leads by pipeline stage") && app.includes("els.leadStageFilter?.addEventListener")],
@@ -43,6 +43,7 @@ const checks = [
   ["project conversations survive navigation", projectConversations.includes("durableConversationRows.set(row.id, row)") && projectConversations.includes("saveState({ localOnly: true })")],
   ["durable records cannot be rolled back by legacy snapshots", app.includes("durableBusinessStateAuthoritative") && app.includes("Durable per-record rows are authoritative")],
   ["authenticated startup rejects stale business cache", app.includes("state.contacts = []") && app.includes("hydrate these collections")],
+  ["profit cost verifies its exact durable row", app.includes("persistProfitCostRecord") && app.includes("confirmed?.data?.costItems") && app.includes("durableWritesEnabled")],
 ];
 
 let failed = 0;
