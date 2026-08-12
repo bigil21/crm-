@@ -1,6 +1,6 @@
 {
-  "name": "Roofline CRM",
-  "short_name": "Roofline CRM",
+  "name": "JobCrest CRM",
+  "short_name": "JobCrest",
   "description": "A local CRM for leads, customers, and contractor estimates.",
   "start_url": "./",
   "scope": "./",

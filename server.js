@@ -463,7 +463,7 @@ const server = http.createServer((req, res) => {
     const config = supabaseConfig();
     sendJson(res, 200, {
       ok: true,
-      service: "roofline-crm",
+      service: "jobcrest-crm",
       timestamp: new Date().toISOString(),
       authRequired: process.env.AUTH_REQUIRED === "true",
       cloudSyncConfigured: Boolean(config.url && config.anonKey && process.env.SUPABASE_SYNC_ENABLED === "true"),
@@ -516,7 +516,7 @@ const server = http.createServer((req, res) => {
   // If hitting root without a version param, redirect to force fresh load
   if (url.pathname === "/" && !url.searchParams.has("v")) {
     res.writeHead(302, {
-      Location: "/?v=86",
+      Location: "/?v=87",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       "Pragma": "no-cache",
     });
@@ -567,7 +567,7 @@ const server = http.createServer((req, res) => {
 
 if (require.main === module) {
   server.listen(port, () => {
-    console.log(`Roofline CRM running at http://localhost:${port}`);
+    console.log(`JobCrest CRM running at http://localhost:${port}`);
   });
 }
 

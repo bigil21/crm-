@@ -10,7 +10,7 @@
   const domainHint = document.querySelector("#domainHint");
   const config = window.RooflineAuth?.config || {};
   const params = new URLSearchParams(location.search);
-  const CRM_ENTRY_URL = "/?v=86";
+  const CRM_ENTRY_URL = "/?v=87";
   const redirect = params.get("redirect") || CRM_ENTRY_URL;
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
   const isPasswordRecovery = params.get("recovery") === "1";
