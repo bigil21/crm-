@@ -7280,6 +7280,15 @@ async function startApp() {
 
   state = loadState(activeStorageKey());
   state.currentUser = currentUserFromAuthSession(authSession);
+  if (canUseCloudSync() && authSession?.user?.id) {
+    // Local storage is only an offline cache. Starting an authenticated cloud
+    // session with cached business records can resurrect an older job/cost
+    // version before Supabase finishes loading, so hydrate these collections
+    // exclusively from the durable per-record tables below.
+    state.contacts = [];
+    state.estimates = [];
+    state.calendarTasks = [];
+  }
   saveState({ localOnly: true });
   // Durable per-record rows are authoritative for leads, jobs, costs, notes,
   // estimates, and tasks. Never let the older JSON snapshot roll them back
