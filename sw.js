@@ -1,4 +1,4 @@
-const CACHE_NAME = "roofline-crm-v86";
+const CACHE_NAME = "jobcrest-crm-v87";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -58,6 +58,7 @@ const APP_SHELL = [
   "./login.js?v=58",
   "./login.js?v=79",
   "./login.js?v=80",
+  "./login.js?v=81",
   "./logout.js",
   "./logout.js?v=44",
   "./logout.js?v=46",
@@ -102,10 +103,11 @@ function patchIndexHtml(html, url) {
     .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
     .replaceAll('auth.js?v=24', 'auth.js?v=79')
     .replaceAll('auth.js?v=43', 'auth.js?v=79')
-    .replaceAll('login.js?v=44', 'login.js?v=80')
-    .replaceAll('login.js?v=46', 'login.js?v=80')
-    .replaceAll('login.js?v=58', 'login.js?v=80')
-    .replaceAll('login.js?v=79', 'login.js?v=80');
+    .replaceAll('login.js?v=44', 'login.js?v=81')
+    .replaceAll('login.js?v=46', 'login.js?v=81')
+    .replaceAll('login.js?v=58', 'login.js?v=81')
+    .replaceAll('login.js?v=79', 'login.js?v=81')
+    .replaceAll('login.js?v=80', 'login.js?v=81');
 
   if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
     patched = patched.replace(

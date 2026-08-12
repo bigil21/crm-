@@ -1,4 +1,4 @@
--- Roofline CRM Supabase setup
+-- JobCrest CRM Supabase setup
 -- Run this in Supabase Dashboard > SQL Editor before turning on CRM sync.
 
 create table if not exists public.crm_state (
