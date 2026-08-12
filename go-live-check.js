@@ -28,6 +28,9 @@ const checks = [
   ["password recovery flow", login.includes("resetPasswordForEmail") && login.includes("updateUser({ password })")],
   ["failed sign-in preserves existing session", !/Signing in\.\.\."\);\s*await signOutCurrentSession\(\)/.test(login)],
   ["AI feature removed", !index.includes("ai-assistant") && !app.includes("/api/assistant") && !server.includes("/api/assistant")],
+  ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
+  ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
+  ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
 ];
 
 let failed = 0;

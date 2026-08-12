@@ -4738,7 +4738,7 @@ function squareStatusPill(estimate) {
   if (percent >= 100 || estimate.squareStatus === "PAID") return `<span class="status-pill pill-won">Paid 100%</span>`;
   if (number(estimate.paidAmount) > 0) return `<span class="status-pill pill-inspection">${percent}% paid</span>`;
   if (estimate.squareStatus === "PAID" || estimate.paidAt) return `<span class="status-pill pill-won">Paid ✓</span>`;
-  if (estimate.squareStatus === "SENT" || estimate.squareInvoiceId) return `<span class="status-pill pill-sent">Sent to Square</span>`;
+  if (estimate.squareStatus === "SENT" || estimate.squareInvoiceId) return `<span class="status-pill pill-sent">Published in Square</span>`;
   if (estimate.status === "Won") return `<span class="status-pill pill-inspection">Ready to Invoice</span>`;
   return `<span class="status-pill pill-default">${escapeHtml(estimate.status)}</span>`;
 }
@@ -4749,6 +4749,69 @@ function squareApiHeaders() {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
+}
+
+function squareInvoiceEmailDraft(estimate, contact) {
+  const totals = totalsFor(estimate);
+  const contractValue = number(estimate.contractValue) || totals.total;
+  const amountDueNow = number(estimate.deposit) || contractValue;
+  const firstName = String(contact?.name || "there").trim().split(/\s+/)[0] || "there";
+  const invoiceLabel = estimate.squareInvoiceNumber
+    ? `#${estimate.squareInvoiceNumber}`
+    : estimate.estimateNumber || estimate.projectNumber || "";
+  const companyName = state.company.name || "Coastal Crest Construction";
+
+  return {
+    subject: `${companyName} invoice ${invoiceLabel}`.trim(),
+    message: [
+      `Hi ${firstName},`,
+      "",
+      `Your invoice for ${estimate.projectTitle || "your project"} is ready.`,
+      `Contract total: ${money.format(contractValue)}`,
+      `Amount due now: ${money.format(amountDueNow)}`,
+      ...(estimate.projectNumber ? [`Project: ${estimate.projectNumber}`] : []),
+      "",
+      "View and pay securely through Square:",
+      estimate.squareInvoiceUrl || "",
+      "",
+      "Thank you,",
+      companyName,
+    ].join("\n"),
+  };
+}
+
+function gmailComposeUrl(toEmail, subject, message) {
+  const url = new URL("https://mail.google.com/mail/");
+  url.searchParams.set("view", "cm");
+  url.searchParams.set("fs", "1");
+  url.searchParams.set("to", toEmail || "");
+  url.searchParams.set("su", subject || "");
+  url.searchParams.set("body", message || "");
+  return url.toString();
+}
+
+async function copySquareInvoiceLink(estimateId) {
+  const estimate = state.estimates.find((item) => item.id === estimateId);
+  const link = estimate?.squareInvoiceUrl || "";
+  if (!link) {
+    showToast("Square payment link is not available");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast("Square payment link copied");
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = link;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+    showToast("Square payment link copied");
+  }
 }
 
 function updateJobPaymentSnapshot(contactId, jobId) {
@@ -4835,7 +4898,11 @@ async function sendToSquare(estimateId) {
     }
     estimate.squareInvoiceId = data.squareInvoiceId;
     estimate.squareOrderId = data.squareOrderId || "";
+    estimate.squareInvoiceNumber = data.squareInvoiceNumber || "";
     estimate.squareInvoiceUrl = data.squareInvoiceUrl;
+    estimate.squareDeliveryMethod = data.squareDeliveryMethod || "EMAIL";
+    estimate.squarePublishedAt = data.squarePublishedAt || new Date().toISOString();
+    estimate.squareRecipientEmail = contact.email;
     estimate.squareStatus = data.status === "PUBLISHED" ? "SENT" : data.status;
     estimate.contractValue = totals.total;
     estimate.paidAmount = 0;
@@ -4850,7 +4917,7 @@ async function sendToSquare(estimateId) {
     }));
     saveState();
     renderInvoicesView();
-    showToast("Invoice sent to Square ✓");
+    showToast("Invoice published in Square. Email delivery is not yet confirmed.");
   } catch (err) {
     showToast(`Failed: ${err.message}`);
     if (btn) { btn.disabled = false; btn.textContent = "Send to Square"; }
@@ -4945,6 +5012,12 @@ function renderInvoicesView() {
         const isPaid = paymentPercent >= 100 || estimate.squareStatus === "PAID";
         const isSent = !!estimate.squareInvoiceId && !isPaid;
         const canSend = currentRole() === "admin" && !estimate.squareInvoiceId && estimate.status === "Won" && Boolean(contact?.email);
+        const emailDraft = estimate.squareInvoiceUrl
+          ? squareInvoiceEmailDraft(estimate, contact)
+          : null;
+        const emailPaymentUrl = emailDraft
+          ? gmailComposeUrl(contact?.email || estimate.squareRecipientEmail || "", emailDraft.subject, emailDraft.message)
+          : "";
         const initials = contactInitials(contact?.name || "?");
         const avatarClass = initialsColor(contact?.name || "");
 
@@ -4965,12 +5038,27 @@ function renderInvoicesView() {
             </div>
             ${estimate.squareInvoiceId ? paymentProgressMarkup({ contractValue, paidAmount }, { compact: true }) : ""}
             ${isPaid ? `<p style="font-size:12px;color:var(--green);margin:4px 0 0">Paid ${estimate.paidAt ? formatDate(estimate.paidAt) : ""} via Square</p>` : ""}
-            ${isSent && estimate.squareInvoiceUrl ? `<p style="font-size:12px;color:var(--muted);margin:4px 0 0">Awaiting payment · <a href="${escapeHtml(estimate.squareInvoiceUrl)}" target="_blank" class="tel-link">View in Square ↗</a></p>` : ""}
+            ${isSent && estimate.squareInvoiceUrl ? `
+              <div class="invoice-delivery-note">
+                <strong>Published in Square</strong>
+                <span>Square email delivery is not confirmed. If the customer does not receive it, email the secure payment link below.</span>
+              </div>
+              <p style="font-size:12px;color:var(--muted);margin:4px 0 0">Awaiting payment · <a href="${escapeHtml(estimate.squareInvoiceUrl)}" target="_blank" rel="noopener" class="tel-link">View payment page ↗</a></p>
+            ` : ""}
             <div class="row-actions" style="margin-top:8px">
               ${canSend ? `
                 <button class="primary-button" type="button" data-square-send="${estimate.id}">
                   <span aria-hidden="true" data-icon="send"></span>
                   Send to Square
+                </button>
+              ` : ""}
+              ${emailPaymentUrl ? `
+                <a class="primary-button" href="${escapeHtml(emailPaymentUrl)}" target="_blank" rel="noopener">
+                  <span aria-hidden="true" data-icon="send"></span>
+                  Email payment link
+                </a>
+                <button class="secondary-button" type="button" data-square-copy="${estimate.id}">
+                  Copy payment link
                 </button>
               ` : ""}
               <button class="secondary-button" type="button" data-action="select-estimate" data-estimate-id="${estimate.id}">
@@ -4988,6 +5076,9 @@ function renderInvoicesView() {
   // Wire up send/mark-paid buttons
   els.invoicesList.querySelectorAll("[data-square-send]").forEach((btn) => {
     btn.addEventListener("click", () => sendToSquare(btn.dataset.squareSend));
+  });
+  els.invoicesList.querySelectorAll("[data-square-copy]").forEach((btn) => {
+    btn.addEventListener("click", () => copySquareInvoiceLink(btn.dataset.squareCopy));
   });
   els.invoicesList.querySelectorAll("[data-square-mark-paid]").forEach((btn) => {
     btn.addEventListener("click", () => {

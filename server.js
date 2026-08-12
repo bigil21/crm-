@@ -337,11 +337,24 @@ async function handleSquareCreateInvoice(req, res) {
         version: invRes.body.invoice.version,
       });
 
+      const publishedInvoice = pubRes.body?.invoice;
+      if (pubRes.status !== 200 || !publishedInvoice?.id) {
+        send(res, 502, JSON.stringify({
+          error: "Square created the invoice but could not publish it",
+          squareInvoiceId,
+          detail: pubRes.body,
+        }), "application/json");
+        return;
+      }
+
       send(res, 200, JSON.stringify({
         squareInvoiceId,
         squareOrderId: orderId,
-        squareInvoiceUrl: pubRes.body?.invoice?.public_url || "",
-        status: pubRes.body?.invoice?.status || "DRAFT",
+        squareInvoiceNumber: publishedInvoice.invoice_number || "",
+        squareInvoiceUrl: publishedInvoice.public_url || "",
+        squareDeliveryMethod: publishedInvoice.delivery_method || "EMAIL",
+        squarePublishedAt: publishedInvoice.updated_at || new Date().toISOString(),
+        status: publishedInvoice.status || "DRAFT",
       }), "application/json");
 
     } catch (err) {
