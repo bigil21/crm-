@@ -7131,6 +7131,40 @@ async function registerServiceWorker() {
   }
 }
 
+const SIGN_IN_UNLOCK_KEY = "jobcrest.crm.sign-in-unlock";
+
+async function playSignInUnlockTransition() {
+  const root = document.documentElement;
+  if (!root.classList.contains("vault-entry-pending")) return;
+
+  try {
+    sessionStorage.removeItem(SIGN_IN_UNLOCK_KEY);
+  } catch {
+    // Removing the marker is optional when browser storage is unavailable.
+  }
+
+  const overlay = document.querySelector("#vaultUnlock");
+  if (!overlay) {
+    root.classList.remove("vault-entry-pending");
+    return;
+  }
+
+  overlay.setAttribute("aria-hidden", "false");
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  overlay.classList.add("is-active");
+
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  await new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 500 : 2850));
+
+  root.classList.add("vault-entry-revealing");
+  overlay.classList.add("is-complete");
+  await new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 120 : 450));
+
+  root.classList.remove("vault-entry-pending", "vault-entry-revealing");
+  overlay.classList.remove("is-active", "is-complete");
+  overlay.setAttribute("aria-hidden", "true");
+}
+
 async function startApp() {
   if (!window.RooflineAuth) {
     location.replace("/login?reason=auth-loader");
@@ -7151,6 +7185,7 @@ async function startApp() {
   hydrateIcons();
   bindEvents();
   render();
+  await playSignInUnlockTransition();
   startSquarePoll();
   registerServiceWorker();
 }

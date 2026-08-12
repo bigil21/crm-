@@ -7,9 +7,52 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=43" />
+    <link rel="stylesheet" href="styles.css?v=44" />
+    <script>
+      try {
+        if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
+          document.documentElement.classList.add("vault-entry-pending");
+        }
+      } catch {
+        // The CRM remains usable when browser storage is unavailable.
+      }
+    </script>
   </head>
   <body>
+    <div class="vault-unlock" id="vaultUnlock" aria-hidden="true">
+      <div class="vault-glow" aria-hidden="true"></div>
+      <div class="vault-scene" aria-hidden="true">
+        <div class="vault-frame">
+          <div class="vault-interior">
+            <img src="icon.svg" alt="" />
+            <span>Access granted</span>
+          </div>
+          <div class="vault-door">
+            <div class="vault-door-face">
+              <span class="vault-bolt vault-bolt-top"></span>
+              <span class="vault-bolt vault-bolt-right"></span>
+              <span class="vault-bolt vault-bolt-bottom"></span>
+              <span class="vault-bolt vault-bolt-left"></span>
+              <div class="vault-dial">
+                <span class="vault-spoke vault-spoke-one"></span>
+                <span class="vault-spoke vault-spoke-two"></span>
+                <span class="vault-spoke vault-spoke-three"></span>
+                <span class="vault-dial-hub"></span>
+              </div>
+              <div class="vault-security-mark">
+                <span></span>
+                Secure
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="vault-unlock-copy" role="status" aria-live="polite">
+        <p>Identity verified</p>
+        <h1>Unlocking JobCrest</h1>
+        <div class="vault-progress"><span></span></div>
+      </div>
+    </div>
     <div class="app-shell">
       <aside class="side-nav" aria-label="Application navigation">
         <div class="brand">
@@ -1208,6 +1251,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=79" defer></script>
-    <script src="app.js?v=87" defer></script>
+    <script src="app.js?v=88" defer></script>
   </body>
 </html>

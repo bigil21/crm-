@@ -10,7 +10,8 @@
   const domainHint = document.querySelector("#domainHint");
   const config = window.RooflineAuth?.config || {};
   const params = new URLSearchParams(location.search);
-  const CRM_ENTRY_URL = "/?v=87";
+  const CRM_ENTRY_URL = "/?v=88";
+  const SIGN_IN_UNLOCK_KEY = "jobcrest.crm.sign-in-unlock";
   const redirect = params.get("redirect") || CRM_ENTRY_URL;
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
   const isPasswordRecovery = params.get("recovery") === "1";
@@ -51,6 +52,14 @@
     return value === "/" ? CRM_ENTRY_URL : value;
   }
 
+  function queueSignInUnlock() {
+    try {
+      sessionStorage.setItem(SIGN_IN_UNLOCK_KEY, "pending");
+    } catch {
+      // Authentication still succeeds when browser storage is unavailable.
+    }
+  }
+
   function confirmationRedirectUrl() {
     return `${location.origin}/login`;
   }
@@ -74,6 +83,11 @@
       }
       keys.forEach((key) => store.removeItem(key));
     });
+    try {
+      sessionStorage.removeItem(SIGN_IN_UNLOCK_KEY);
+    } catch {
+      // The auth storage cleanup above is still sufficient.
+    }
   }
 
   async function signOutCurrentSession() {
@@ -159,6 +173,7 @@
         return;
       }
       setStatus("Password updated. Opening the CRM...", "success");
+      queueSignInUnlock();
       window.setTimeout(() => location.replace(sanitizeRedirect(redirect)), 500);
       return;
     }
@@ -180,6 +195,7 @@
       return;
     }
     if (!(await verifySignedInEmail(email))) return;
+    queueSignInUnlock();
     location.replace(sanitizeRedirect(redirect));
   });
 
@@ -209,6 +225,7 @@
     }
     if (data.session) {
       if (!(await verifySignedInEmail(email))) return;
+      queueSignInUnlock();
       location.replace(sanitizeRedirect(redirect));
       return;
     }
