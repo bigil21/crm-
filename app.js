@@ -529,6 +529,7 @@ let durableRecordFingerprints = new Map();
 let durableAuditIds = new Set();
 let durableRecordsSubscription = null;
 let criticalSaveInFlight = false;
+let durableBusinessStateAuthoritative = false;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -1245,7 +1246,7 @@ function mergeCloudRows(rows = []) {
         .forEach((task) => taskMap.set(task.id, task));
     });
 
-  const durableBusinessState = durableRecordsReady
+  const durableBusinessState = durableBusinessStateAuthoritative
     ? {
         contacts: state.contacts,
         estimates: state.estimates,
@@ -1658,9 +1659,19 @@ async function persistCriticalLeadChange({ statusElement, button, successMessage
 async function initializeDurableRecords() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return;
   const rows = await reloadDurableRecords();
-  if (rows === null) return;
+  if (rows === null) {
+    durableBusinessStateAuthoritative = false;
+    await reloadCloudState();
+    return;
+  }
+  const hasDurableContacts = rows.some((row) => row.record_type === "contact");
+  if (!hasDurableContacts) {
+    durableBusinessStateAuthoritative = false;
+    await reloadCloudState();
+  }
   durableRecordsReady = true;
-  if (!rows.some((row) => row.record_type === "contact") && state.contacts.length) {
+  durableBusinessStateAuthoritative = true;
+  if (!hasDurableContacts && state.contacts.length) {
     rememberDurableRows([], []);
     await flushDurableRecordsSave();
   }
@@ -7270,6 +7281,10 @@ async function startApp() {
   state = loadState(activeStorageKey());
   state.currentUser = currentUserFromAuthSession(authSession);
   saveState({ localOnly: true });
+  // Durable per-record rows are authoritative for leads, jobs, costs, notes,
+  // estimates, and tasks. Never let the older JSON snapshot roll them back
+  // while the durable rows are loading during startup.
+  durableBusinessStateAuthoritative = true;
   await initializeCloudSync();
   await initializeDurableRecords();
   if (ensureExistingSalesNumbers()) saveState();
