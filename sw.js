@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v96";
+const CACHE_NAME = "jobcrest-crm-v99";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -44,6 +44,8 @@ const APP_SHELL = [
   "./styles.css?v=48",
   "./styles.css?v=49",
   "./styles.css?v=50",
+  "./styles.css?v=51",
+  "./styles.css?v=52",
   "./app.js?v=37",
   "./app.js?v=40",
   "./app.js?v=41",
@@ -66,6 +68,9 @@ const APP_SHELL = [
   "./app.js?v=92",
   "./app.js?v=93",
   "./app.js?v=94",
+  "./app.js?v=95",
+  "./app.js?v=96",
+  "./app.js?v=97",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -146,7 +151,7 @@ function patchIndexHtml(html, url) {
   if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="production-flow-v64.js?v=64" defer></script>\n  </body>',
+      '    <script src="production-flow-v64.js?v=66" defer></script>\n  </body>',
     );
   }
 

@@ -10,6 +10,7 @@ const auth = read("auth.js");
 const login = read("login.js");
 const index = read("index.html");
 const projectConversations = read("project-conversations-v67.js");
+const productionFlow = read("production-flow-v64.js");
 
 const checks = [
   ["durable per-record table", schema.includes("create table if not exists public.crm_records")],
@@ -32,7 +33,7 @@ const checks = [
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
   ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
-  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=94"') && server.includes('Location: "/?v=94"')],
+  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=97"') && server.includes('Location: "/?v=97"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
   ["Lead Intake stage filter", index.includes('id="leadStageFilter"') && index.includes("Filter leads by pipeline stage") && app.includes("els.leadStageFilter?.addEventListener")],
@@ -46,6 +47,12 @@ const checks = [
   ["profit cost verifies its exact durable row", app.includes("persistProfitCostRecord") && app.includes("confirmed?.data?.costItems") && app.includes("durableWritesEnabled")],
   ["service worker never caches live APIs", read("sw.js").includes("url.origin !== self.location.origin") && read("sw.js").includes('url.pathname.startsWith("/api/")')],
   ["legacy API caches are purged before hydration", app.includes("purgeLegacyJobCrestCaches") && auth.includes('cache: "no-store"')],
+  ["each client job is independently selectable", app.includes('data-action="open-job"') && app.includes("selectedLeadJobId") && app.includes("openLeadJob")],
+  ["jobs have independent production status", app.includes("soldJobStatuses") && index.includes('name="status"') && index.includes("Materials Ordered") && index.includes("In Progress") && index.includes("Completed")],
+  ["job edits verify the durable database row", app.includes("persistLeadJobRecord") && app.includes("Job saved to the shared CRM") && app.includes("confirmed?.data?.status !== jobRow.data.status")],
+  ["production flow preserves verified job saving", productionFlow.includes("Job submissions stay with app.js") && !productionFlow.includes('stopImmediatePropagation();\n        saveLeadJobProduction();')],
+  ["same-account devices receive realtime updates", !app.includes("row?.updated_by === authSession.user.id") && !app.includes("row?.actor_user_id === authSession.user.id")],
+  ["document uploads verify durable records", app.includes("persistLeadDocumentRecords") && app.includes("saved to the shared CRM")],
 ];
 
 let failed = 0;
