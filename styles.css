@@ -1391,6 +1391,57 @@ button:disabled {
   margin: 8px 0 0;
 }
 
+.job-card.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 62%, #ffffff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.job-select-button,
+.overview-job-link {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.job-select-button:hover strong,
+.overview-job-link:hover strong,
+.job-name-link:hover {
+  color: var(--accent-strong);
+}
+
+.job-status-row,
+.overview-job-link-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.job-select-address,
+.overview-job-address,
+.overview-job-open {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.overview-job-open {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.job-name-link {
+  font-weight: 800;
+}
+
 .compact-select {
   display: grid;
   gap: 6px;
@@ -1576,6 +1627,11 @@ button:disabled {
   gap: 14px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
+}
+
+.overview-project-payment > .overview-job-link {
+  min-width: 0;
+  flex: 1;
 }
 
 .overview-project-payment:last-child {

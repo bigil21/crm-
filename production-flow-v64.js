@@ -496,15 +496,8 @@
       true,
     );
 
-    els.leadJobForm?.addEventListener(
-      "submit",
-      (event) => {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        saveLeadJobProduction();
-      },
-      true,
-    );
+    // Job submissions stay with app.js so each individual job is verified in
+    // durable storage before the UI reports a successful save.
   }
 
   function formText(formData, key) {

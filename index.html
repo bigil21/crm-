@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=50" />
+    <link rel="stylesheet" href="styles.css?v=52" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -360,7 +360,7 @@
                   <tr>
                     <th>Job</th>
                     <th>Client</th>
-                    <th>Status</th>
+                    <th>Job Status</th>
                     <th>Sales Rep</th>
                     <th>Value</th>
                     <th>Address</th>
@@ -434,13 +434,18 @@
                       <input name="name" required autocomplete="off" />
                     </label>
                     <label>
-                      Status
+                      Job Status
                       <select name="status">
                         <option>New</option>
                         <option>Contacted</option>
                         <option>Inspection</option>
                         <option>Estimate Sent</option>
                         <option>Won</option>
+                        <option>Scheduled</option>
+                        <option>Materials Ordered</option>
+                        <option>In Progress</option>
+                        <option>Completed</option>
+                        <option>Paid</option>
                         <option>Lost</option>
                       </select>
                     </label>
@@ -474,11 +479,12 @@
                       <span aria-hidden="true" data-icon="x"></span>
                       Clear
                     </button>
-                    <button class="primary-button" type="submit">
+                    <button class="primary-button" type="submit" id="jobSaveButton">
                       <span aria-hidden="true" data-icon="check"></span>
                       Save Job
                     </button>
                   </div>
+                  <p class="save-state-message" id="jobSaveStatus" role="status" aria-live="polite"></p>
                 </form>
                 <div id="leadJobsList" class="job-list"></div>
               </div>
@@ -1253,6 +1259,9 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=94" defer></script>
+    <script src="app.js?v=97" defer></script>
+    <script src="production-flow-v64.js?v=66" defer></script>
+    <script src="workflow-checklists-v65.js?v=74" defer></script>
+    <script src="project-conversations-v67.js?v=78" defer></script>
   </body>
 </html>

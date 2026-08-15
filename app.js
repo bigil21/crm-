@@ -28,7 +28,20 @@ const number = (value) => {
 const uid = (prefix) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-const statuses = ["New", "Contacted", "Inspection", "Estimate Sent", "Won", "Lost"];
+const statuses = [
+  "New",
+  "Contacted",
+  "Inspection",
+  "Estimate Sent",
+  "Won",
+  "Scheduled",
+  "Materials Ordered",
+  "In Progress",
+  "Completed",
+  "Paid",
+  "Lost",
+];
+const soldJobStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
 const pipelinePlaybook = [
   {
     status: "New",
@@ -492,6 +505,7 @@ const createInitialState = () => ({
   selectedEstimateId: "estimate_2001",
   newEstimateContactId: "",
   newEstimateJobId: "",
+  selectedLeadJobId: "",
   selectedProfitJobId: "",
   company: defaultCompany,
   currentUser: defaultCurrentUser,
@@ -597,6 +611,8 @@ const els = {
   leadOverviewPanel: document.querySelector("#leadOverviewPanel"),
   leadJobsPanel: document.querySelector("#leadJobsPanel"),
   leadJobForm: document.querySelector("#leadJobForm"),
+  jobSaveButton: document.querySelector("#jobSaveButton"),
+  jobSaveStatus: document.querySelector("#jobSaveStatus"),
   clearJobFormButton: document.querySelector("#clearJobFormButton"),
   leadJobsList: document.querySelector("#leadJobsList"),
   leadProfitPanel: document.querySelector("#leadProfitPanel"),
@@ -733,6 +749,7 @@ function normalizeState(nextState) {
     leadDetailTab: nextState.leadDetailTab || "overview",
     newEstimateContactId: nextState.newEstimateContactId || "",
     newEstimateJobId: nextState.newEstimateJobId || "",
+    selectedLeadJobId: nextState.selectedLeadJobId || "",
     selectedProfitJobId: nextState.selectedProfitJobId || "",
     company,
     currentUser: { ...defaultCurrentUser, ...(nextState.currentUser || {}) },
@@ -861,7 +878,7 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
 function normalizeJob(job, contact = {}) {
   const status = job.status || contact.status || "New";
   const closedDate =
-    job.closedDate || (status === "Won" ? contact.closedDate || contact.lastContact || todayISO() : "");
+    job.closedDate || (soldJobStatuses.includes(status) ? contact.closedDate || contact.lastContact || todayISO() : "");
   return {
     id: job.id || uid("job"),
     projectNumber: job.projectNumber || "",
@@ -953,6 +970,7 @@ function normalizeUpdate(update) {
     author: update.author || "Local user",
     message: update.message || "",
     status: update.status || "",
+    jobId: update.jobId || "",
     createdAt: update.createdAt || new Date().toISOString(),
   };
 }
@@ -1367,7 +1385,7 @@ function subscribeToCloudState() {
       },
       async (payload) => {
         const row = payload.new || payload.old;
-        if (!isRelevantCloudRow(row) || row?.updated_by === authSession?.user?.id) return;
+        if (!isRelevantCloudRow(row) || cloudSaveInFlight) return;
         applyingCloudState = true;
         await reloadCloudState({ showUpdateToast: true });
         applyingCloudState = false;
@@ -1689,6 +1707,81 @@ async function persistProfitCostRecord(jobId, costId, updateId) {
   return true;
 }
 
+async function persistLeadJobRecord(jobId, updateId) {
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
+  if (!(await waitForDurableSaveSlot())) return false;
+  const durableRows = durableRowsFromState();
+  const jobRow = durableRows.find((row) => row.record_type === "job" && row.id === jobId);
+  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (!jobRow) return false;
+  const contactRow = durableRows.find(
+    (row) => row.record_type === "contact" && row.id === jobRow.lead_id,
+  );
+  const rowsToWrite = contactRow ? [contactRow, jobRow] : [jobRow];
+
+  const { error: writeError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .upsert(rowsToWrite, { onConflict: "company_state_id,record_type,id" });
+  if (writeError) throw writeError;
+  if (auditRow) {
+    const { error: auditError } = await cloudClient
+      .from(SUPABASE_AUDIT_TABLE)
+      .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
+    if (auditError) throw auditError;
+    durableAuditIds.add(auditRow.id);
+  }
+
+  const { data: confirmed, error: confirmError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .select("data")
+    .eq("company_state_id", supabaseStateId())
+    .eq("record_type", "job")
+    .eq("id", jobId)
+    .single();
+  if (confirmError) throw confirmError;
+  if (confirmed?.data?.status !== jobRow.data.status) return false;
+  rowsToWrite.forEach((row) => {
+    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+  });
+  return true;
+}
+
+async function persistLeadDocumentRecords(documentIds, updateId) {
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
+  if (!(await waitForDurableSaveSlot())) return false;
+  const wantedIds = new Set(documentIds);
+  const documentRows = durableRowsFromState().filter(
+    (row) => row.record_type === "document" && wantedIds.has(row.id),
+  );
+  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (documentRows.length !== wantedIds.size) return false;
+
+  const { error: writeError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .upsert(documentRows, { onConflict: "company_state_id,record_type,id" });
+  if (writeError) throw writeError;
+  if (auditRow) {
+    const { error: auditError } = await cloudClient
+      .from(SUPABASE_AUDIT_TABLE)
+      .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
+    if (auditError) throw auditError;
+    durableAuditIds.add(auditRow.id);
+  }
+
+  const { data: confirmed, error: confirmError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .select("id")
+    .eq("company_state_id", supabaseStateId())
+    .eq("record_type", "document")
+    .in("id", documentIds);
+  if (confirmError) throw confirmError;
+  if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
+  documentRows.forEach((row) => {
+    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+  });
+  return true;
+}
+
 async function initializeDurableRecords() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return;
   const rows = await reloadDurableRecords();
@@ -1714,13 +1807,12 @@ async function initializeDurableRecords() {
     .channel(`crm-records-${supabaseStateId()}-${authSession.user.id}`)
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
-      if (row?.updated_by === authSession.user.id || durableSaveInFlight) return;
+      if (durableSaveInFlight) return;
       await reloadDurableRecords({ showUpdateToast: true });
       render();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
-      const row = payload.new || payload.old;
-      if (row?.actor_user_id === authSession.user.id || durableSaveInFlight) return;
+      if (durableSaveInFlight) return;
       await reloadDurableRecords({ showUpdateToast: true });
       render();
     })
@@ -1839,16 +1931,31 @@ function setView(view) {
   render();
 }
 
-function openLeadDetail(contactId, tab = "overview") {
+function openLeadDetail(contactId, tab = "overview", jobId = "") {
   if (!canView("leadDetail")) {
     showToast(`Your ${roleLabel()} role cannot open client records`);
     return;
   }
+  const changingContact = state.selectedContactId !== contactId;
   state.selectedContactId = contactId;
+  const contact = getContact(contactId);
+  const jobs = contactJobs(contact);
+  if (jobId && jobs.some((job) => job.id === jobId)) {
+    state.selectedLeadJobId = jobId;
+  } else if (changingContact || !jobs.some((job) => job.id === state.selectedLeadJobId)) {
+    state.selectedLeadJobId = jobs[0]?.id || "";
+  }
   state.leadDetailTab = tab;
   state.view = "leadDetail";
   saveState();
   render();
+}
+
+function openLeadJob(contactId, jobId) {
+  openLeadDetail(contactId, "jobs", jobId);
+  const contact = getContact(contactId);
+  const job = contactJobs(contact).find((item) => item.id === jobId);
+  if (job) fillJobForm({ ...job, jobId: job.id });
 }
 
 function setSelectedEstimate(id) {
@@ -3059,15 +3166,14 @@ function renderDashboardDonuts() {
   const leadContacts = state.contacts.filter((contact) => contact.type === "Lead");
   const sources = aggregateCounts(leadContacts, (contact) => contact.source || "Other");
   const jobsByType = aggregateCounts(allJobs(), jobType);
-  const projectStatus = aggregateCounts(allJobs(), (job) =>
-    ["Won", "Lost"].includes(job.status) ? job.status : "In Progress",
-  );
+  const productionJobs = allJobs().filter((job) => soldJobStatuses.includes(job.status));
+  const projectStatus = aggregateCounts(productionJobs, (job) => job.status);
   renderDonutWidget(els.leadSourcesChart, sources, leadContacts.length, "Total Leads");
   renderDonutWidget(els.jobsByTypeChart, jobsByType, dashboardMetrics().totalJobs, "Total Jobs");
   renderDonutWidget(
     els.projectStatusChart,
     projectStatus,
-    allJobs().filter((job) => job.status !== "Lost").length,
+    productionJobs.length,
     "Active Projects",
   );
 }
@@ -3480,7 +3586,9 @@ function renderJobsView() {
           (job) => `
           <tr>
             <td class="person-cell">
-              <strong>${escapeHtml(job.name)}</strong>
+              <button class="link-button job-name-link" type="button" data-action="open-job" data-contact-id="${job.contactId}" data-job-id="${job.id}">
+                ${escapeHtml(job.name)}
+              </button>
               ${job.projectNumber ? `<span>${escapeHtml(job.projectNumber)}</span>` : ""}
               <span>${escapeHtml(job.contactType)}</span>
             </td>
@@ -3494,9 +3602,9 @@ function renderJobsView() {
             <td>${money.format(number(job.value))}</td>
             <td>${escapeHtml((job.address || "No address").split("\n")[0])}</td>
             <td>
-              <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${job.contactId}" data-tab="jobs">
+              <button class="secondary-button" type="button" data-action="open-job" data-contact-id="${job.contactId}" data-job-id="${job.id}">
                 <span aria-hidden="true" data-icon="open"></span>
-                Open
+                Open Job
               </button>
             </td>
           </tr>
@@ -3522,7 +3630,7 @@ function renderProjectsView() {
             <p>${escapeHtml((job.address || "No address").split("\n")[0])}</p>
             ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
             <div class="row-actions">
-              <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${job.contactId}" data-tab="jobs">
+              <button class="secondary-button" type="button" data-action="open-job" data-contact-id="${job.contactId}" data-job-id="${job.id}">
                 <span aria-hidden="true" data-icon="open"></span>
                 Open Job
               </button>
@@ -3704,7 +3812,15 @@ function renderLeadDetail() {
         <p class="overview-info-label">Job address${jobs.length > 1 ? "es" : ""}</p>
         ${jobs.map((job) => `
           <div class="overview-project-payment">
-            <p style="margin:0"><strong style="font-size:13px">${escapeHtml(job.name)}</strong>${job.projectNumber ? `<br /><span class="project-number-inline">${escapeHtml(job.projectNumber)}</span>` : ""}<br /><span style="color:var(--muted);font-size:12px">${nl2br(job.address || "No address saved")}</span></p>
+            <button class="overview-job-link" type="button" data-action="open-job" data-contact-id="${contact.id}" data-job-id="${job.id}">
+              <span class="overview-job-link-heading">
+                <strong>${escapeHtml(job.name)}</strong>
+                <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(job.status)}</span>
+              </span>
+              ${job.projectNumber ? `<span class="project-number-inline">${escapeHtml(job.projectNumber)}</span>` : ""}
+              <span class="overview-job-address">${nl2br(job.address || "No address saved")}</span>
+              <span class="overview-job-open">Open this job <span aria-hidden="true">→</span></span>
+            </button>
             ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
           </div>
         `).join("")}
@@ -3726,16 +3842,24 @@ function renderLeadDetail() {
 }
 
 function renderLeadJobs(contact) {
+  const jobs = contactJobs(contact);
+  if (!jobs.some((job) => job.id === state.selectedLeadJobId)) {
+    state.selectedLeadJobId = jobs[0]?.id || "";
+  }
   els.leadJobsList.innerHTML = contactJobs(contact)
     .map(
       (job) => `
-      <article class="job-card">
+      <article class="job-card ${job.id === state.selectedLeadJobId ? "selected" : ""}" data-job-card-id="${job.id}">
         <div>
-          <span class="status-pill">${escapeHtml(job.status)}</span>
-          ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
-          <strong>${escapeHtml(job.name)}</strong>
-          <span>${escapeHtml(job.salesRep || "Unassigned")} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
-          <p>${nl2br(job.address || "No address saved")}</p>
+          <button class="job-select-button" type="button" data-action="open-job" data-contact-id="${contact.id}" data-job-id="${job.id}">
+            <span class="job-status-row">
+              <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(job.status)}</span>
+              ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
+            </span>
+            <strong>${escapeHtml(job.name)}</strong>
+            <span>${escapeHtml(job.salesRep || "Unassigned")} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
+            <span class="job-select-address">${nl2br(job.address || "No address saved")}</span>
+          </button>
           ${job.notes ? `<p>${nl2br(job.notes)}</p>` : ""}
           ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
         </div>
@@ -4020,7 +4144,7 @@ function fillJobForm(job = {}) {
   });
 }
 
-function saveLeadJob(event) {
+async function saveLeadJob(event) {
   event.preventDefault();
   if (!requireAction("manageJobs")) return;
   const contact = getSelectedContact();
@@ -4040,13 +4164,21 @@ function saveLeadJob(event) {
       lastContact: formData.get("lastContact"),
       closedDate:
         formData.get("closedDate") ||
-        (formData.get("status") === "Won" ? existing?.closedDate || todayISO() : ""),
+        (soldJobStatuses.includes(formData.get("status")) ? existing?.closedDate || todayISO() : ""),
       address: formData.get("address").trim(),
       notes: formData.get("notes").trim(),
     },
     contact,
   );
 
+  const jobUpdate = {
+    id: uid("update"),
+    author: job.salesRep || "Local user",
+    status: job.status,
+    jobId: job.id,
+    message: `${existing ? "Updated" : "Added"} job: ${job.name}. Status: ${job.status}.`,
+    createdAt: new Date().toISOString(),
+  };
   updateContact(contact.id, (current) => {
     const jobs = contactJobs(current);
     const nextJobs = existing ? jobs.map((item) => (item.id === jobId ? job : item)) : [job, ...jobs];
@@ -4055,34 +4187,50 @@ function saveLeadJob(event) {
       ...current,
       jobs: nextJobs,
       status: primary.status,
+      type: soldJobStatuses.includes(primary.status) ? "Customer" : current.type,
       value: primary.value,
       salesRep: primary.salesRep,
       address: primary.address,
       closedDate: primary.closedDate,
-      updates: [
-        {
-          id: uid("update"),
-          author: job.salesRep || "Local user",
-          status: job.status,
-          message: `${existing ? "Updated" : "Added"} job: ${job.name}.`,
-          createdAt: new Date().toISOString(),
-        },
-        ...(current.updates || []),
-      ],
+      updates: [jobUpdate, ...(current.updates || [])],
     };
   });
 
-  els.leadJobForm.reset();
+  state.selectedLeadJobId = job.id;
   state.leadDetailTab = "jobs";
-  saveState();
+  saveState({ localOnly: true });
+  window.clearTimeout(durableSaveTimer);
   render();
-  showToast(`${job.name} saved`);
+  setSaveState(els.jobSaveStatus, "Saving job to the shared CRM...", "saving");
+  if (els.jobSaveButton) els.jobSaveButton.disabled = true;
+  let saved = !canUseCloudSync();
+  try {
+    if (canUseCloudSync()) saved = await persistLeadJobRecord(job.id, jobUpdate.id);
+  } catch (error) {
+    console.warn("Job write could not be confirmed", error);
+    saved = false;
+  } finally {
+    if (els.jobSaveButton) els.jobSaveButton.disabled = false;
+  }
+  setSaveState(
+    els.jobSaveStatus,
+    saved ? "Job saved to the shared CRM." : "Not saved to the shared CRM. Keep this page open and try again.",
+    saved ? "success" : "error",
+  );
+  if (!saved) {
+    showToast("Job was not confirmed in the shared CRM");
+    return;
+  }
+  queueCloudSave();
+  fillJobForm({ ...job, jobId: job.id });
+  showToast(`${job.name} saved to the shared CRM`);
 }
 
 function editLeadJob(jobId) {
   const contact = getSelectedContact();
   const job = contactJobs(contact).find((item) => item.id === jobId);
   if (!job) return;
+  state.selectedLeadJobId = jobId;
   state.leadDetailTab = "jobs";
   renderLeadDetail();
   fillJobForm({ ...job, jobId: job.id });
@@ -4114,6 +4262,7 @@ function deleteLeadJob(jobId) {
       ],
     };
   });
+  state.selectedLeadJobId = contactJobs(getContact(contact.id))[0]?.id || "";
   saveState();
   render();
   showToast("Job removed");
@@ -4480,12 +4629,31 @@ async function uploadLeadDocuments(files) {
     ...current,
     documents: [...documents, ...(current.documents || [])],
   }));
-  addContactUpdate(contact.id, {
+  const documentUpdateContact = addContactUpdate(contact.id, {
     message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${category.name}.`,
   });
-  saveState();
+  saveState({ localOnly: true });
+  window.clearTimeout(durableSaveTimer);
   render();
-  showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to ${contact.name}`);
+  showToast("Saving document to the shared CRM...");
+  let saved = !canUseCloudSync();
+  try {
+    if (canUseCloudSync()) {
+      saved = await persistLeadDocumentRecords(
+        documents.map((document) => document.id),
+        documentUpdateContact?.updates?.[0]?.id || "",
+      );
+    }
+  } catch (error) {
+    console.warn("Document upload could not be confirmed", error);
+    saved = false;
+  }
+  if (!saved) {
+    showToast("Document uploaded, but its CRM record was not confirmed. Keep this page open and try again.");
+    return;
+  }
+  queueCloudSave();
+  showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
 }
 
 function removeLeadDocument(documentId) {
@@ -6880,7 +7048,8 @@ function bindEvents() {
     if (action === "download-document") await downloadManagedDocument(actionButton.dataset.documentId);
     if (action === "add-customer") openContactDialog(null, { type: "Customer" });
     if (action === "open-contact") openLeadDetail(contactId);
-    if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview");
+    if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview", actionButton.dataset.jobId || "");
+    if (action === "open-job") openLeadJob(contactId, actionButton.dataset.jobId);
     if (action === "refresh-weather") loadWeather({ force: true });
     if (action === "edit-contact") openContactDialog(contactId);
     if (action === "estimate-contact") createEstimate(contactId);
@@ -7283,7 +7452,7 @@ async function purgeLegacyJobCrestCaches() {
     const keys = await caches.keys();
     await Promise.all(
       keys
-        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v96")
+        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v99")
         .map((key) => caches.delete(key)),
     );
   } catch (error) {
