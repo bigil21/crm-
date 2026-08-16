@@ -33,7 +33,7 @@ const checks = [
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
   ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
-  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=97"') && server.includes('Location: "/?v=97"')],
+  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=98"') && server.includes('Location: "/?v=98"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
   ["Lead Intake stage filter", index.includes('id="leadStageFilter"') && index.includes("Filter leads by pipeline stage") && app.includes("els.leadStageFilter?.addEventListener")],
@@ -53,6 +53,7 @@ const checks = [
   ["production flow preserves verified job saving", productionFlow.includes("Job submissions stay with app.js") && !productionFlow.includes('stopImmediatePropagation();\n        saveLeadJobProduction();')],
   ["same-account devices receive realtime updates", !app.includes("row?.updated_by === authSession.user.id") && !app.includes("row?.actor_user_id === authSession.user.id")],
   ["document uploads verify durable records", app.includes("persistLeadDocumentRecords") && app.includes("saved to the shared CRM")],
+  ["project values accept cents", !index.includes('step="100"') && (index.match(/name="value" type="number" min="0" step="0\.01"/g) || []).length === 2],
 ];
 
 let failed = 0;
