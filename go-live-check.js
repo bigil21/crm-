@@ -37,7 +37,7 @@ const checks = [
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
   ["Lead Intake stage filter", index.includes('id="leadStageFilter"') && index.includes("Filter leads by pipeline stage") && app.includes("els.leadStageFilter?.addEventListener")],
-  ["live partial lead search", index.includes('id="globalSearchResults"') && app.includes("liveLeadSearchMatches") && app.includes('els.globalSearchResults.addEventListener("click"') && app.includes('event.key === "ArrowDown"')],
+  ["live partial lead search", index.includes('id="globalSearchResults"') && app.includes("liveLeadSearchMatches") && app.includes('els.globalSearchResults.addEventListener("pointerdown"') && app.includes('event.key === "ArrowDown"')],
   ["one-time sign-in unlock", login.includes("queueSignInUnlock") && index.includes('id="vaultUnlock"') && app.includes("playSignInUnlockTransition")],
   ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
   ["audit events update in real time", app.includes(`table: SUPABASE_AUDIT_TABLE`) && schema.includes("alter publication supabase_realtime add table public.crm_audit_events")],

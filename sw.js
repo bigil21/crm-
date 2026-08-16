@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v105";
+const CACHE_NAME = "jobcrest-crm-v106";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -78,6 +78,7 @@ const APP_SHELL = [
   "./app.js?v=101",
   "./app.js?v=102",
   "./app.js?v=103",
+  "./app.js?v=104",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",

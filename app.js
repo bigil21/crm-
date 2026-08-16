@@ -7432,13 +7432,15 @@ function bindEvents() {
     renderLeadDetail();
   });
 
-  els.globalSearchResults.addEventListener("click", (event) => {
+  const selectLiveSearchResult = (event) => {
     const result = event.target.closest("[data-live-search-contact]");
     if (!result) return;
     event.preventDefault();
     event.stopPropagation();
     openLiveSearchResult(result.dataset.liveSearchContact);
-  });
+  };
+  els.globalSearchResults.addEventListener("pointerdown", selectLiveSearchResult);
+  els.globalSearchResults.addEventListener("click", selectLiveSearchResult);
 
   els.globalSearch.addEventListener("input", (event) => {
     state.search = event.target.value;
