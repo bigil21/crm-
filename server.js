@@ -513,16 +513,6 @@ const server = http.createServer((req, res) => {
     "/logout": "/logout.html",
   };
 
-  // If hitting root without a version param, redirect to force fresh load
-  if (url.pathname === "/" && !url.searchParams.has("v")) {
-    res.writeHead(302, {
-      Location: "/?v=101",
-      "Cache-Control": "no-store, no-cache, must-revalidate",
-      "Pragma": "no-cache",
-    });
-    res.end();
-    return;
-  }
   const requested = routes[url.pathname] || decodeURIComponent(url.pathname);
   const filePath = path.normalize(path.join(root, requested));
   const relativePath = path.relative(root, filePath);

@@ -33,7 +33,7 @@ const checks = [
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
   ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
-  ["sign-in bypasses bare-root redirect", login.includes('const CRM_ENTRY_URL = "/?v=101"') && server.includes('Location: "/?v=101"')],
+  ["bare root serves CRM directly", !server.includes('Location: "/?v=101"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
   ["Lead Intake stage filter", index.includes('id="leadStageFilter"') && index.includes("Filter leads by pipeline stage") && app.includes("els.leadStageFilter?.addEventListener")],
