@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=52" />
+    <link rel="stylesheet" href="styles.css?v=53" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -135,10 +135,22 @@
               <span aria-hidden="true" data-icon="calendar"></span>
               <span>This week</span>
             </div>
-            <label class="search-field">
-              <span aria-hidden="true" data-icon="search"></span>
-              <input id="globalSearch" type="search" placeholder="Search people, jobs, estimates" />
-            </label>
+            <div class="global-search">
+              <label class="search-field">
+                <span aria-hidden="true" data-icon="search"></span>
+                <input
+                  id="globalSearch"
+                  type="search"
+                  placeholder="Search leads, jobs, phone, email..."
+                  autocomplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="globalSearchResults"
+                  aria-expanded="false"
+                />
+              </label>
+              <div class="live-search-results hidden" id="globalSearchResults" role="listbox" aria-label="Matching leads"></div>
+            </div>
             <button class="icon-button notification-button" type="button" data-view="tasks" aria-label="Open tasks">
               <span aria-hidden="true" data-icon="bell"></span>
               <span class="notification-dot">0</span>
@@ -1261,7 +1273,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=101" defer></script>
+    <script src="app.js?v=102" defer></script>
     <script src="production-flow-v64.js?v=66" defer></script>
     <script src="workflow-checklists-v65.js?v=74" defer></script>
     <script src="project-conversations-v67.js?v=78" defer></script>

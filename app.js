@@ -547,6 +547,7 @@ let durableRecordsSubscription = null;
 let criticalSaveInFlight = false;
 let durableBusinessStateAuthoritative = false;
 let durableWritesEnabled = false;
+let liveSearchActiveIndex = -1;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -561,6 +562,7 @@ const els = {
   workspace: document.querySelector(".workspace"),
   viewTitle: document.querySelector("#viewTitle"),
   globalSearch: document.querySelector("#globalSearch"),
+  globalSearchResults: document.querySelector("#globalSearchResults"),
   installAppButton: document.querySelector("#installAppButton"),
   importZohoButton: document.querySelector("#importZohoButton"),
   zohoCsvInput: document.querySelector("#zohoCsvInput"),
@@ -2181,6 +2183,122 @@ function filteredContacts() {
   );
 }
 
+function liveLeadSearchMatches(query = state.search, limit = 8) {
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  if (!normalizedQuery) return { matches: [], total: 0 };
+  const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+  const scored = state.contacts
+    .map((contact) => {
+      const jobs = contactJobs(contact);
+      const name = String(contact.name || "").toLowerCase();
+      const leadNumber = String(contact.leadNumber || "").toLowerCase();
+      const email = String(contact.email || "").toLowerCase();
+      const phone = String(contact.phone || "").toLowerCase();
+      const phoneDigits = phone.replace(/\D/g, "");
+      const searchable = [
+        name,
+        leadNumber,
+        contact.type,
+        contact.status,
+        contact.source,
+        contact.salesRep,
+        email,
+        phone,
+        phoneDigits,
+        contact.address,
+        ...jobs.flatMap((job) => [job.name, job.projectNumber, job.address, job.status, job.salesRep]),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      if (!terms.every((term) => searchable.includes(term))) return null;
+      let score = 50;
+      if (name === normalizedQuery || leadNumber === normalizedQuery) score = 0;
+      else if (name.startsWith(normalizedQuery)) score = 5;
+      else if (leadNumber.startsWith(normalizedQuery)) score = 8;
+      else if (name.split(/\s+/).some((part) => part.startsWith(normalizedQuery))) score = 10;
+      else if (email.startsWith(normalizedQuery)) score = 15;
+      else if (normalizedQuery.replace(/\D/g, "") && phoneDigits.startsWith(normalizedQuery.replace(/\D/g, ""))) score = 15;
+      else if (name.includes(normalizedQuery)) score = 20;
+      return { contact, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score || String(a.contact.name).localeCompare(String(b.contact.name)));
+  return { matches: scored.slice(0, limit).map((item) => item.contact), total: scored.length };
+}
+
+function hideLiveSearchResults() {
+  els.globalSearchResults?.classList.add("hidden");
+  els.globalSearch?.setAttribute("aria-expanded", "false");
+  els.globalSearch?.removeAttribute("aria-activedescendant");
+}
+
+function renderLiveSearchResults() {
+  if (!els.globalSearchResults || !els.globalSearch) return;
+  const query = state.search.trim();
+  if (!query || document.activeElement !== els.globalSearch) {
+    hideLiveSearchResults();
+    return;
+  }
+  const { matches, total } = liveLeadSearchMatches(query);
+  liveSearchActiveIndex = matches.length
+    ? Math.min(Math.max(liveSearchActiveIndex, -1), matches.length - 1)
+    : -1;
+  els.globalSearchResults.innerHTML = matches.length
+    ? `${matches
+        .map((contact, index) => {
+          const job = primaryJob(contact);
+          const meta = [contact.leadNumber, contact.phone, contact.email].filter(Boolean).join(" · ");
+          return `
+            <button
+              class="live-search-result ${index === liveSearchActiveIndex ? "is-active" : ""}"
+              id="liveSearchResult${index}"
+              type="button"
+              role="option"
+              aria-selected="${index === liveSearchActiveIndex}"
+              data-live-search-contact="${escapeHtml(contact.id)}"
+            >
+              <span class="live-search-result-avatar">${escapeHtml(contactInitials(contact.name))}</span>
+              <span class="live-search-result-copy">
+                <strong>${escapeHtml(contact.name || "Unnamed lead")}</strong>
+                <span>${escapeHtml(meta || job?.address?.split("\n")[0] || "No contact details")}</span>
+              </span>
+              <span class="status-pill ${statusPillClass(job?.status || contact.status)}">${escapeHtml(job?.status || contact.status || "New")}</span>
+            </button>`;
+        })
+        .join("")}
+      <div class="live-search-count">${total > matches.length ? `Showing ${matches.length} of ${total} matches` : `${total} match${total === 1 ? "" : "es"}`}</div>`
+    : '<div class="live-search-empty">No matching leads yet</div>';
+  els.globalSearchResults.classList.remove("hidden");
+  els.globalSearch.setAttribute("aria-expanded", "true");
+  if (liveSearchActiveIndex >= 0) {
+    els.globalSearch.setAttribute("aria-activedescendant", `liveSearchResult${liveSearchActiveIndex}`);
+    els.globalSearchResults.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
+  } else {
+    els.globalSearch.removeAttribute("aria-activedescendant");
+  }
+}
+
+function renderSearchFilteredView() {
+  const renderers = {
+    leads: renderLeadsView,
+    contacts: renderContacts,
+    jobs: renderJobsView,
+    projects: renderProjectsView,
+    estimates: renderEstimates,
+  };
+  renderers[state.view]?.();
+}
+
+function openLiveSearchResult(contactId) {
+  if (!contactId) return;
+  state.search = "";
+  liveSearchActiveIndex = -1;
+  els.globalSearch.value = "";
+  hideLiveSearchResults();
+  openLeadDetail(contactId);
+}
+
 function filteredEstimates() {
   const query = state.search.trim().toLowerCase();
   if (!query) return state.estimates;
@@ -2763,6 +2881,7 @@ function render() {
   renderReviewsView();
   renderReportsView();
   renderCompanyForm();
+  renderLiveSearchResults();
   applyPermissionsToDom();
 }
 
@@ -7156,6 +7275,13 @@ const icons = {
 
 function bindEvents() {
   document.addEventListener("click", async (event) => {
+    const liveSearchResult = event.target.closest("[data-live-search-contact]");
+    if (liveSearchResult) {
+      openLiveSearchResult(liveSearchResult.dataset.liveSearchContact);
+      return;
+    }
+    if (!event.target.closest(".global-search")) hideLiveSearchResults();
+
     const dashboardStage = event.target.closest("[data-dashboard-stage]");
     if (dashboardStage) {
       state.leadStageFilter = dashboardStage.dataset.dashboardStage || "";
@@ -7313,8 +7439,31 @@ function bindEvents() {
 
   els.globalSearch.addEventListener("input", (event) => {
     state.search = event.target.value;
-    saveState();
-    render();
+    liveSearchActiveIndex = -1;
+    renderSearchFilteredView();
+    renderLiveSearchResults();
+  });
+  els.globalSearch.addEventListener("focus", renderLiveSearchResults);
+  els.globalSearch.addEventListener("keydown", (event) => {
+    const { matches } = liveLeadSearchMatches();
+    if (event.key === "Escape") {
+      hideLiveSearchResults();
+      els.globalSearch.blur();
+      return;
+    }
+    if (!matches.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      liveSearchActiveIndex = (liveSearchActiveIndex + 1) % matches.length;
+      renderLiveSearchResults();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      liveSearchActiveIndex = liveSearchActiveIndex <= 0 ? matches.length - 1 : liveSearchActiveIndex - 1;
+      renderLiveSearchResults();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      openLiveSearchResult(matches[Math.max(liveSearchActiveIndex, 0)]?.id);
+    }
   });
 
   els.importZohoButton.addEventListener("click", () => {
