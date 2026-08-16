@@ -105,8 +105,8 @@ create table if not exists public.crm_backups (
 -- Private object storage for lead documents. The metadata row remains in
 -- crm_records; the file bytes live in Storage rather than inside JSON/localStorage.
 insert into storage.buckets (id, name, public, file_size_limit)
-values ('crm-documents', 'crm-documents', false, 52428800)
-on conflict (id) do update set public = false, file_size_limit = 52428800;
+values ('crm-documents', 'crm-documents', false, 262144000)
+on conflict (id) do update set public = false, file_size_limit = 262144000;
 
 -- After your owner account exists, add the owner email here:
 -- insert into public.crm_admins (email)

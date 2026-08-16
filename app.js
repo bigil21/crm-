@@ -6,7 +6,7 @@ const SUPABASE_DOCUMENT_BUCKET = "crm-documents";
 const CLOUD_SAVE_DELAY = 700;
 const COMPANY_STATE_SUFFIX = "company";
 const COMPANY_DOCUMENT_LEAD_ID = "company";
-const MAX_DOCUMENT_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_DOCUMENT_FILE_SIZE = 250 * 1024 * 1024;
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -4551,15 +4551,15 @@ function safeStorageFileName(name = "document") {
 function validateDocumentFiles(files) {
   const selectedFiles = [...(files || [])];
   const oversized = selectedFiles.find((file) => file.size > MAX_DOCUMENT_FILE_SIZE);
-  if (oversized) throw new Error(`${oversized.name} is larger than the 50 MB upload limit`);
+  if (oversized) throw new Error(`${oversized.name} is larger than the 250 MB upload limit`);
   return selectedFiles;
 }
 
 function documentUploadErrorMessage(error) {
   const message = String(error?.message || error || "The upload could not be completed");
   const normalized = message.toLowerCase();
-  if (normalized.includes("larger than the 50 mb") || normalized.includes("payload too large") || normalized.includes("413")) {
-    return "Upload failed: each file must be 50 MB or smaller.";
+  if (normalized.includes("larger than the 250 mb") || normalized.includes("payload too large") || normalized.includes("413")) {
+    return "Upload failed: each file must be 250 MB or smaller.";
   }
   if (normalized.includes("row-level security") || normalized.includes("unauthorized") || normalized.includes("forbidden")) {
     return "Upload failed: shared file storage denied access. Ask an administrator to apply the latest storage setup.";
@@ -7613,7 +7613,7 @@ async function purgeLegacyJobCrestCaches() {
     const keys = await caches.keys();
     await Promise.all(
       keys
-        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v102")
+        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v103")
         .map((key) => caches.delete(key)),
     );
   } catch (error) {
