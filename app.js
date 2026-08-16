@@ -7275,11 +7275,6 @@ const icons = {
 
 function bindEvents() {
   document.addEventListener("click", async (event) => {
-    const liveSearchResult = event.target.closest("[data-live-search-contact]");
-    if (liveSearchResult) {
-      openLiveSearchResult(liveSearchResult.dataset.liveSearchContact);
-      return;
-    }
     if (!event.target.closest(".global-search")) hideLiveSearchResults();
 
     const dashboardStage = event.target.closest("[data-dashboard-stage]");
@@ -7435,6 +7430,14 @@ function bindEvents() {
     state.leadDetailTab = tabButton.dataset.leadTab;
     saveState();
     renderLeadDetail();
+  });
+
+  els.globalSearchResults.addEventListener("click", (event) => {
+    const result = event.target.closest("[data-live-search-contact]");
+    if (!result) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openLiveSearchResult(result.dataset.liveSearchContact);
   });
 
   els.globalSearch.addEventListener("input", (event) => {
