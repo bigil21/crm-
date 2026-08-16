@@ -5,6 +5,8 @@ const SUPABASE_AUDIT_TABLE = "crm_audit_events";
 const SUPABASE_DOCUMENT_BUCKET = "crm-documents";
 const CLOUD_SAVE_DELAY = 700;
 const COMPANY_STATE_SUFFIX = "company";
+const COMPANY_DOCUMENT_LEAD_ID = "company";
+const MAX_DOCUMENT_FILE_SIZE = 50 * 1024 * 1024;
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -631,6 +633,7 @@ const els = {
   leadDocumentCategory: document.querySelector("#leadDocumentCategory"),
   uploadLeadDocumentButton: document.querySelector("#uploadLeadDocumentButton"),
   leadDocumentInput: document.querySelector("#leadDocumentInput"),
+  leadDocumentUploadStatus: document.querySelector("#leadDocumentUploadStatus"),
   leadConversationPanel: document.querySelector("#leadConversationPanel"),
   leadConversationForm: document.querySelector("#leadConversationForm"),
   conversationSaveButton: document.querySelector("#conversationSaveButton"),
@@ -684,6 +687,7 @@ const els = {
   companyDocumentCategory: document.querySelector("#companyDocumentCategory"),
   uploadCompanyDocumentButton: document.querySelector("#uploadCompanyDocumentButton"),
   companyDocumentInput: document.querySelector("#companyDocumentInput"),
+  companyDocumentUploadStatus: document.querySelector("#companyDocumentUploadStatus"),
   companyDocumentsList: document.querySelector("#companyDocumentsList"),
   calendarTaskForm: document.querySelector("#calendarTaskForm"),
   salesRepOptions: document.querySelector("#salesRepOptions"),
@@ -1467,6 +1471,17 @@ function durableRowsFromState() {
     updated_by: updatedBy,
     deleted_at: null,
   }));
+  state.companyDocuments.forEach((document) => rows.push({
+    company_state_id: companyStateId,
+    record_type: "document",
+    id: document.id,
+    lead_id: COMPANY_DOCUMENT_LEAD_ID,
+    job_id: null,
+    owner_id: document.ownerUserId || updatedBy,
+    data: durableRecordData(document),
+    updated_by: updatedBy,
+    deleted_at: null,
+  }));
   return rows;
 }
 
@@ -1512,7 +1527,7 @@ function applyDurableRows(rows = [], auditRows = []) {
     if (!jobsByLead.has(row.lead_id)) jobsByLead.set(row.lead_id, []);
     jobsByLead.get(row.lead_id).push({ ...row.data, id: row.id });
   });
-  byType("document").forEach((row) => {
+  byType("document").filter((row) => row.lead_id !== COMPANY_DOCUMENT_LEAD_ID).forEach((row) => {
     if (!documentsByLead.has(row.lead_id)) documentsByLead.set(row.lead_id, []);
     documentsByLead.get(row.lead_id).push({ ...row.data, id: row.id, leadId: row.lead_id, jobId: row.job_id || row.data?.jobId || "" });
   });
@@ -1537,7 +1552,18 @@ function applyDurableRows(rows = [], auditRows = []) {
   }, state.company.documentCategories));
   const estimates = byType("estimate").map((row) => ({ ...row.data, id: row.id, contactId: row.lead_id, jobId: row.job_id || row.data?.jobId || "", ownerUserId: row.owner_id || "" }));
   const calendarTasks = byType("task").map((row) => ({ ...row.data, id: row.id, contactId: row.lead_id || "", ownerUserId: row.owner_id || "" }));
-  applySharedState({ contacts, estimates, calendarTasks });
+  const companyDocumentRows = byType("document").filter((row) => row.lead_id === COMPANY_DOCUMENT_LEAD_ID);
+  const companyDocuments = companyDocumentRows.map((row) => normalizeDocument({
+    ...row.data,
+    id: row.id,
+    ownerUserId: row.owner_id || row.data?.ownerUserId || "",
+  }));
+  applySharedState({
+    contacts,
+    estimates,
+    calendarTasks,
+    ...(companyDocumentRows.length ? { companyDocuments } : {}),
+  });
 }
 
 async function fetchDurableRows() {
@@ -1773,6 +1799,35 @@ async function persistLeadDocumentRecords(documentIds, updateId) {
     .select("id")
     .eq("company_state_id", supabaseStateId())
     .eq("record_type", "document")
+    .in("id", documentIds);
+  if (confirmError) throw confirmError;
+  if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
+  documentRows.forEach((row) => {
+    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+  });
+  return true;
+}
+
+async function persistCompanyDocumentRecords(documentIds) {
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
+  if (!(await waitForDurableSaveSlot())) return false;
+  const wantedIds = new Set(documentIds);
+  const documentRows = durableRowsFromState().filter(
+    (row) => row.record_type === "document" && row.lead_id === COMPANY_DOCUMENT_LEAD_ID && wantedIds.has(row.id),
+  );
+  if (documentRows.length !== wantedIds.size) return false;
+
+  const { error: writeError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .upsert(documentRows, { onConflict: "company_state_id,record_type,id" });
+  if (writeError) throw writeError;
+
+  const { data: confirmed, error: confirmError } = await cloudClient
+    .from(SUPABASE_RECORDS_TABLE)
+    .select("id")
+    .eq("company_state_id", supabaseStateId())
+    .eq("record_type", "document")
+    .eq("lead_id", COMPANY_DOCUMENT_LEAD_ID)
     .in("id", documentIds);
   if (confirmError) throw confirmError;
   if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
@@ -4493,6 +4548,31 @@ function safeStorageFileName(name = "document") {
   return String(name || "document").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "document";
 }
 
+function validateDocumentFiles(files) {
+  const selectedFiles = [...(files || [])];
+  const oversized = selectedFiles.find((file) => file.size > MAX_DOCUMENT_FILE_SIZE);
+  if (oversized) throw new Error(`${oversized.name} is larger than the 50 MB upload limit`);
+  return selectedFiles;
+}
+
+function documentUploadErrorMessage(error) {
+  const message = String(error?.message || error || "The upload could not be completed");
+  const normalized = message.toLowerCase();
+  if (normalized.includes("larger than the 50 mb") || normalized.includes("payload too large") || normalized.includes("413")) {
+    return "Upload failed: each file must be 50 MB or smaller.";
+  }
+  if (normalized.includes("row-level security") || normalized.includes("unauthorized") || normalized.includes("forbidden")) {
+    return "Upload failed: shared file storage denied access. Ask an administrator to apply the latest storage setup.";
+  }
+  if (normalized.includes("bucket") && normalized.includes("not found")) {
+    return "Upload failed: shared file storage is not configured yet.";
+  }
+  if (normalized.includes("network") || normalized.includes("fetch") || normalized.includes("offline")) {
+    return "Upload failed because the connection was interrupted. Please try again.";
+  }
+  return `Upload failed: ${message}`;
+}
+
 async function storeDocumentFile(file, { documentId, leadId = "company", categoryId = "other" } = {}) {
   if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) {
     return { dataUrl: await readFileAsDataUrl(file), storagePath: "" };
@@ -4501,7 +4581,10 @@ async function storeDocumentFile(file, { documentId, leadId = "company", categor
   const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
     cacheControl: "3600",
     contentType: file.type || "application/octet-stream",
-    upsert: false,
+    // Retrying an interrupted upload or migrating an older inline document can
+    // legitimately target the same object path. Replacing that exact object is
+    // safe and prevents "resource already exists" from stranding the CRM row.
+    upsert: true,
   });
   if (error) throw error;
   return { dataUrl: "", storagePath };
@@ -4597,6 +4680,7 @@ async function uploadLeadDocuments(files) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
   if (!contact || !files?.length) return;
+  const selectedFiles = validateDocumentFiles(files);
   const categoryId = els.leadDocumentCategory?.value || "";
   const category = state.company.documentCategories.find((item) => item.id === categoryId && item.active);
   if (!category) {
@@ -4604,56 +4688,77 @@ async function uploadLeadDocuments(files) {
     return;
   }
 
-  const documents = await Promise.all(
-    [...files].map(async (file) => {
-      const id = uid("doc");
-      const stored = await storeDocumentFile(file, { documentId: id, leadId: contact.id, categoryId: category.id });
-      return normalizeDocument({
-        id,
-        name: file.name,
-        type: file.type || "application/octet-stream",
-        size: file.size,
-        ...stored,
-        uploadedAt: new Date().toISOString(),
-        leadId: contact.id,
-        contactId: contact.id,
-        categoryId: category.id,
-        category: category.name,
-        uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
-        versionNumber: 1,
-      }, { leadId: contact.id, categoryId: category.id, categories: state.company.documentCategories });
-    }),
+  els.uploadLeadDocumentButton.disabled = true;
+  setSaveState(
+    els.leadDocumentUploadStatus,
+    `Uploading ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} to secure storage...`,
+    "saving",
   );
 
-  updateContact(contact.id, (current) => ({
-    ...current,
-    documents: [...documents, ...(current.documents || [])],
-  }));
-  const documentUpdateContact = addContactUpdate(contact.id, {
-    message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${category.name}.`,
-  });
-  saveState({ localOnly: true });
-  window.clearTimeout(durableSaveTimer);
-  render();
-  showToast("Saving document to the shared CRM...");
-  let saved = !canUseCloudSync();
   try {
+    const documents = await Promise.all(
+      selectedFiles.map(async (file) => {
+        const id = uid("doc");
+        const stored = await storeDocumentFile(file, { documentId: id, leadId: contact.id, categoryId: category.id });
+        return normalizeDocument({
+          id,
+          name: file.name,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+          ...stored,
+          uploadedAt: new Date().toISOString(),
+          leadId: contact.id,
+          contactId: contact.id,
+          categoryId: category.id,
+          category: category.name,
+          uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+          versionNumber: 1,
+        }, { leadId: contact.id, categoryId: category.id, categories: state.company.documentCategories });
+      }),
+    );
+
+    updateContact(contact.id, (current) => ({
+      ...current,
+      documents: [...documents, ...(current.documents || [])],
+    }));
+    const documentUpdateContact = addContactUpdate(contact.id, {
+      message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${category.name}.`,
+    });
+    saveState({ localOnly: true });
+    window.clearTimeout(durableSaveTimer);
+    render();
+    setSaveState(els.leadDocumentUploadStatus, "File stored. Confirming the shared CRM record...", "saving");
+    let saved = !canUseCloudSync();
     if (canUseCloudSync()) {
       saved = await persistLeadDocumentRecords(
         documents.map((document) => document.id),
         documentUpdateContact?.updates?.[0]?.id || "",
       );
     }
-  } catch (error) {
-    console.warn("Document upload could not be confirmed", error);
-    saved = false;
+    if (!saved) {
+      queueDurableRecordsSave();
+      queueCloudSave();
+      setSaveState(
+        els.leadDocumentUploadStatus,
+        "File stored, but its shared CRM record is still retrying. Keep this page open.",
+        "error",
+      );
+      showToast("Document stored, but its CRM record was not confirmed. Keep this page open while it retries.");
+      return false;
+    }
+    queueCloudSave();
+    setSaveState(
+      els.leadDocumentUploadStatus,
+      canUseCloudSync()
+        ? `${documents.length} document${documents.length === 1 ? "" : "s"} saved to this lead and shared with the team.`
+        : `${documents.length} document${documents.length === 1 ? "" : "s"} saved to this lead on this device.`,
+      "success",
+    );
+    showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
+    return true;
+  } finally {
+    els.uploadLeadDocumentButton.disabled = false;
   }
-  if (!saved) {
-    showToast("Document uploaded, but its CRM record was not confirmed. Keep this page open and try again.");
-    return;
-  }
-  queueCloudSave();
-  showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
 }
 
 function removeLeadDocument(documentId) {
@@ -4777,27 +4882,69 @@ function renderCompanyDocuments() {
 async function uploadCompanyDocuments(files) {
   if (!requireAction("manageDocuments")) return;
   if (!files?.length) return;
+  const selectedFiles = validateDocumentFiles(files);
   const category = els.companyDocumentCategory.value || "Other";
-  const documents = await Promise.all(
-    [...files].map(async (file) => {
-      const id = uid("doc");
-      const stored = await storeDocumentFile(file, { documentId: id, leadId: "company", categoryId: category });
-      return normalizeDocument({
-        id,
-        name: file.name,
-        category,
-        type: file.type || "application/octet-stream",
-        size: file.size,
-        ...stored,
-        uploadedAt: new Date().toISOString(),
-        uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
-      });
-    }),
+  els.uploadCompanyDocumentButton.disabled = true;
+  setSaveState(
+    els.companyDocumentUploadStatus,
+    `Uploading ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} to secure storage...`,
+    "saving",
   );
-  state.companyDocuments = [...documents, ...state.companyDocuments];
-  saveState();
-  renderCompanyDocuments();
-  showToast(`${documents.length} company document${documents.length === 1 ? "" : "s"} saved`);
+
+  try {
+    const documents = await Promise.all(
+      selectedFiles.map(async (file) => {
+        const id = uid("doc");
+        const stored = await storeDocumentFile(file, { documentId: id, leadId: "company", categoryId: category });
+        return normalizeDocument({
+          id,
+          name: file.name,
+          category,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+          ...stored,
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+          ownerUserId: authSession?.user?.id || "",
+          versionNumber: 1,
+        });
+      }),
+    );
+    state.companyDocuments = [...documents, ...state.companyDocuments];
+    saveState({ localOnly: true });
+    window.clearTimeout(durableSaveTimer);
+    renderCompanyDocuments();
+    setSaveState(els.companyDocumentUploadStatus, "File stored. Confirming the shared company library...", "saving");
+
+    let saved = !canUseCloudSync();
+    if (canUseCloudSync()) {
+      saved = await persistCompanyDocumentRecords(documents.map((document) => document.id));
+    }
+    if (!saved) {
+      queueDurableRecordsSave();
+      queueCloudSave();
+      setSaveState(
+        els.companyDocumentUploadStatus,
+        "File stored, but its shared library record is still retrying. Keep this page open.",
+        "error",
+      );
+      showToast("Company document stored, but its shared record was not confirmed. Keep this page open while it retries.");
+      return false;
+    }
+
+    queueCloudSave();
+    setSaveState(
+      els.companyDocumentUploadStatus,
+      canUseCloudSync()
+        ? `${documents.length} company document${documents.length === 1 ? "" : "s"} saved and shared with the team.`
+        : `${documents.length} company document${documents.length === 1 ? "" : "s"} saved on this device.`,
+      "success",
+    );
+    showToast(`${documents.length} company document${documents.length === 1 ? "" : "s"} saved`);
+    return true;
+  } finally {
+    els.uploadCompanyDocumentButton.disabled = false;
+  }
 }
 
 function removeCompanyDocument(documentId) {
@@ -7209,10 +7356,17 @@ function bindEvents() {
     els.leadDocumentInput.click();
   });
   els.leadDocumentInput.addEventListener("change", async (event) => {
+    const files = [...(event.target.files || [])];
     try {
-      await uploadLeadDocuments(event.target.files);
-    } catch {
-      showToast("Document upload failed");
+      await uploadLeadDocuments(files);
+    } catch (error) {
+      console.warn("Lead document upload failed", error);
+      const message = documentUploadErrorMessage(error);
+      setSaveState(els.leadDocumentUploadStatus, message, "error");
+      showToast(message);
+      els.uploadLeadDocumentButton.disabled = false;
+    } finally {
+      event.target.value = "";
     }
   });
   els.leadConversationForm.addEventListener("submit", submitLeadConversation);
@@ -7234,10 +7388,17 @@ function bindEvents() {
     els.companyDocumentInput.click();
   });
   els.companyDocumentInput.addEventListener("change", async (event) => {
+    const files = [...(event.target.files || [])];
     try {
-      await uploadCompanyDocuments(event.target.files);
-    } catch {
-      showToast("Company document upload failed");
+      await uploadCompanyDocuments(files);
+    } catch (error) {
+      console.warn("Company document upload failed", error);
+      const message = documentUploadErrorMessage(error);
+      setSaveState(els.companyDocumentUploadStatus, message, "error");
+      showToast(message);
+      els.uploadCompanyDocumentButton.disabled = false;
+    } finally {
+      event.target.value = "";
     }
   });
   els.uploadCompanyLogoButton.addEventListener("click", () => {
@@ -7452,7 +7613,7 @@ async function purgeLegacyJobCrestCaches() {
     const keys = await caches.keys();
     await Promise.all(
       keys
-        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v100")
+        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v102")
         .map((key) => caches.delete(key)),
     );
   } catch (error) {
