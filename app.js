@@ -7452,7 +7452,7 @@ async function purgeLegacyJobCrestCaches() {
     const keys = await caches.keys();
     await Promise.all(
       keys
-        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v99")
+        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v100")
         .map((key) => caches.delete(key)),
     );
   } catch (error) {

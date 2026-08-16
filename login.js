@@ -10,7 +10,7 @@
   const domainHint = document.querySelector("#domainHint");
   const config = window.RooflineAuth?.config || {};
   const params = new URLSearchParams(location.search);
-  const CRM_ENTRY_URL = "/?v=97";
+  const CRM_ENTRY_URL = "/?v=98";
   const SIGN_IN_UNLOCK_KEY = "jobcrest.crm.sign-in-unlock";
   const redirect = params.get("redirect") || CRM_ENTRY_URL;
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
