@@ -9,6 +9,7 @@ const server = read("server.js");
 const auth = read("auth.js");
 const login = read("login.js");
 const index = read("index.html");
+const styles = read("styles.css");
 const projectConversations = read("project-conversations-v67.js");
 const productionFlow = read("production-flow-v64.js");
 
