@@ -190,6 +190,8 @@ button:disabled {
 .topbar {
   align-items: flex-start;
   margin-bottom: 20px;
+  z-index: 40;
+  overflow: visible;
 }
 
 .topbar-title {
