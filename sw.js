@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v107";
+const CACHE_NAME = "jobcrest-crm-v109";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -20,6 +20,8 @@ const APP_SHELL = [
   "./production-flow-launch.html",
   "./production-flow-v64.js",
   "./workflow-checklists-v65.js",
+  "./workflow-checklists-v65.js?v=75",
+  "./workflow-checklists-v65.js?v=76",
   "./project-conversations-v67.js",
   "./production-flow-check-v64.js",
   "./profit-role-test.html",
@@ -80,6 +82,8 @@ const APP_SHELL = [
   "./app.js?v=102",
   "./app.js?v=103",
   "./app.js?v=104",
+  "./app.js?v=105",
+  "./app.js?v=106",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -173,7 +177,7 @@ function patchIndexHtml(html, url) {
   if (isCrmIndexPath(url) && !patched.includes("workflow-checklists-v65.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="workflow-checklists-v65.js?v=74" defer></script>\n  </body>',
+      '    <script src="workflow-checklists-v65.js?v=76" defer></script>\n  </body>',
     );
   }
 

@@ -12,6 +12,7 @@ const index = read("index.html");
 const styles = read("styles.css");
 const projectConversations = read("project-conversations-v67.js");
 const productionFlow = read("production-flow-v64.js");
+const workflowChecklists = read("workflow-checklists-v65.js");
 
 const checks = [
   ["durable per-record table", schema.includes("create table if not exists public.crm_records")],
@@ -41,6 +42,11 @@ const checks = [
   ["live partial lead search", index.includes('id="globalSearchResults"') && index.includes('style="z-index: 40; overflow: visible"') && app.includes("liveLeadSearchMatches") && app.includes('els.globalSearchResults.addEventListener("pointerdown"') && styles.includes("z-index: 40") && app.includes('event.key === "ArrowDown"')],
   ["one-time sign-in unlock", login.includes("queueSignInUnlock") && index.includes('id="vaultUnlock"') && app.includes("playSignInUnlockTransition")],
   ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
+  ["every authorized checklist box is actionable", workflowChecklists.includes('${!editable ? "disabled" : ""}') && workflowChecklists.includes("Can confirm manually")],
+  ["checklists verify shared database saves", app.includes("persistChecklistRecord") && workflowChecklists.includes("The checkbox was restored")],
+  ["estimate values verify shared database saves", app.includes("persistEstimateRecord") && index.includes('id="estimateSaveStatus"') && index.includes('id="saveEstimateButton"')],
+  ["estimate form cannot reload before saving", app.includes('els.estimateForm.addEventListener("submit"') && app.includes("queueEstimateVerifiedSave")],
+  ["estimate money fields accept commas and cents", app.includes('value.replace(/[$,%\\s,]/g, "")') && index.includes('name="deposit" type="text" inputmode="decimal"')],
   ["audit events update in real time", app.includes(`table: SUPABASE_AUDIT_TABLE`) && schema.includes("alter publication supabase_realtime add table public.crm_audit_events")],
   ["executive database permissions", schema.includes("devon@coastalcrestroofing.com") && schema.includes("public.is_crm_admin()")],
   ["project conversations survive navigation", projectConversations.includes("durableConversationRows.set(row.id, row)") && projectConversations.includes("saveState({ localOnly: true })")],

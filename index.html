@@ -776,11 +776,11 @@
                     </label>
                     <label>
                       Sales Rep Email
-                      <input id="salesRepEmail" name="salesRepEmail" type="email" autocomplete="email" />
+                      <input id="salesRepEmail" name="salesRepEmail" type="email" autocomplete="off" />
                     </label>
                     <label>
                       Sales Rep Phone
-                      <input id="salesRepPhone" name="salesRepPhone" autocomplete="tel" />
+                      <input id="salesRepPhone" name="salesRepPhone" autocomplete="off" />
                     </label>
                     <label>
                       Issue Date
@@ -838,11 +838,11 @@
                     <div class="form-grid two">
                       <label>
                         Tax Rate %
-                        <input id="taxRate" name="taxRate" type="number" min="0" step="0.01" />
+                        <input id="taxRate" name="taxRate" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" />
                       </label>
                       <label>
                         Deposit Required
-                        <input id="deposit" name="deposit" type="number" min="0" step="0.01" />
+                        <input id="deposit" name="deposit" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" />
                       </label>
                     </div>
                     <label>
@@ -853,11 +853,18 @@
                 </details>
 
                 <div class="estimate-action-bar">
-                  <button class="ghost-button danger" type="button" id="deleteEstimateButton">
-                    <span aria-hidden="true" data-icon="trash"></span>
-                    Delete
-                  </button>
                   <div>
+                    <button class="ghost-button danger" type="button" id="deleteEstimateButton">
+                      <span aria-hidden="true" data-icon="trash"></span>
+                      Delete
+                    </button>
+                    <p class="save-state-message" id="estimateSaveStatus" role="status" aria-live="polite"></p>
+                  </div>
+                  <div>
+                    <button class="secondary-button" type="submit" id="saveEstimateButton">
+                      <span aria-hidden="true" data-icon="check"></span>
+                      Save Estimate
+                    </button>
                     <button class="secondary-button" type="button" id="copyEstimateButton">
                       <span aria-hidden="true" data-icon="copy"></span>
                       Copy
@@ -1273,9 +1280,9 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=104" defer></script>
+    <script src="app.js?v=106" defer></script>
     <script src="production-flow-v64.js?v=66" defer></script>
-    <script src="workflow-checklists-v65.js?v=74" defer></script>
+    <script src="workflow-checklists-v65.js?v=76" defer></script>
     <script src="project-conversations-v67.js?v=78" defer></script>
   </body>
 </html>
