@@ -455,6 +455,7 @@
     const progress = checklist.total ? Math.round((checklist.completed / checklist.total) * 100) : 100;
     const terminal = status === "Lost" || !next;
     const saveStateForChecklist = checklistSaveStates.get(checklistSaveKey(contact.id, job.id, status));
+    const checklistSaveInProgress = saveStateForChecklist?.tone === "saving";
     const actionLabel =
       status === "Lost"
         ? "Lost lead checklist"
@@ -533,7 +534,7 @@
             ${
               next
                 ? `<button class="primary-button" type="button" data-workflow-action="advance" data-contact-id="${contact.id}" data-job-id="${job.id}" ${
-                    !checklist.ready || !editable ? "disabled" : ""
+                    !checklist.ready || !editable || checklistSaveInProgress ? "disabled" : ""
                   }>
                     <span aria-hidden="true" data-icon="check"></span>
                     Move to ${escapeHtml(next)}
