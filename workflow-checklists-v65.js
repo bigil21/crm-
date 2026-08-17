@@ -144,6 +144,7 @@
 
   let selectedWorkflowJobId = "";
   let originalApplyStatusUpdate = null;
+  const checklistSaveStates = new Map();
 
   function autoItem(id, label, test) {
     return { id, label, mode: "auto", test };
@@ -194,6 +195,10 @@
   }
 
   function itemComplete(contact, job, stage, item) {
+    const stageData = workflowData(contact, job)?.[stage] || {};
+    if (Object.prototype.hasOwnProperty.call(stageData, item.id)) {
+      return Boolean(stageData[item.id]);
+    }
     if (item.mode === "auto") {
       try {
         return Boolean(item.test(contact, job));
@@ -257,9 +262,19 @@
     return { allowed: true, checklist };
   }
 
-  function updateChecklistItem(contactId, jobId, stage, itemId, checked) {
+  function checklistSaveKey(contactId, jobId, stage) {
+    return `${contactId}:${jobId}:${stage}`;
+  }
+
+  async function updateChecklistItem(contactId, jobId, stage, itemId, checked) {
+    if (!requireAction("manageJobs")) return false;
     const contact = getContact(contactId);
-    if (!contact) return;
+    if (!contact) return false;
+    const job = contactJobs(contact).find((item) => item.id === jobId);
+    if (!job) return false;
+    const definition = (checklistDefinitions[stage] || []).find((item) => item.id === itemId);
+    const previousValue = definition ? itemComplete(contact, job, stage, definition) : false;
+    const saveKey = checklistSaveKey(contactId, jobId, stage);
     updateContact(contactId, (current) => {
       const currentJobData = current.workflowChecklists?.[jobId] || {};
       const currentStageData = currentJobData[stage] || {};
@@ -277,7 +292,41 @@
         },
       };
     });
-    saveState();
+    saveState({ localOnly: true });
+    checklistSaveStates.set(saveKey, { message: "Saving checklist to the shared CRM...", tone: "saving" });
+    renderLeadDetail();
+
+    const saved = typeof persistChecklistRecord === "function"
+      ? await persistChecklistRecord(contactId, jobId, stage, itemId, checked)
+      : (saveState(), true);
+    if (saved) {
+      checklistSaveStates.set(saveKey, { message: "Checklist saved to the shared CRM.", tone: "success" });
+      renderLeadDetail();
+      return true;
+    }
+
+    updateContact(contactId, (current) => {
+      const currentJobData = current.workflowChecklists?.[jobId] || {};
+      const currentStageData = currentJobData[stage] || {};
+      return {
+        ...current,
+        workflowChecklists: {
+          ...(current.workflowChecklists || {}),
+          [jobId]: {
+            ...currentJobData,
+            [stage]: { ...currentStageData, [itemId]: previousValue },
+          },
+        },
+      };
+    });
+    saveState({ localOnly: true });
+    checklistSaveStates.set(saveKey, {
+      message: "Not saved to the shared CRM. The checkbox was restored—please try again.",
+      tone: "error",
+    });
+    renderLeadDetail();
+    showToast("Checklist save failed. Please try that checkbox again.");
+    return false;
   }
 
   function selectedWorkflowJob(contact) {
@@ -386,11 +435,11 @@
               data-stage="${escapeHtml(checklist.stage)}"
               data-item-id="${item.id}"
               ${item.complete ? "checked" : ""}
-              ${automatic || !editable ? "disabled" : ""}
+              ${!editable ? "disabled" : ""}
             />
             <span class="workflow-check-box" aria-hidden="true"></span>
             <span class="workflow-check-label">${escapeHtml(item.label)}</span>
-            ${automatic ? `<span class="workflow-check-mode">${item.complete ? "Verified" : "Missing"}</span>` : ""}
+            ${automatic ? `<span class="workflow-check-mode">${item.complete ? "Verified" : editable ? "Can confirm manually" : "Missing"}</span>` : ""}
           </label>
         `;
       })
@@ -405,6 +454,7 @@
     const automaticMissing = checklist.missing.some((item) => item.mode === "auto");
     const progress = checklist.total ? Math.round((checklist.completed / checklist.total) * 100) : 100;
     const terminal = status === "Lost" || !next;
+    const saveStateForChecklist = checklistSaveStates.get(checklistSaveKey(contact.id, job.id, status));
     const actionLabel =
       status === "Lost"
         ? "Lost lead checklist"
@@ -457,6 +507,8 @@
         <div class="workflow-check-items">
           ${checklistItemsMarkup(contact, job, checklist, editable)}
         </div>
+
+        <p class="save-state-message" data-workflow-save-status data-tone="${escapeHtml(saveStateForChecklist?.tone || "")}" role="status" aria-live="polite">${escapeHtml(saveStateForChecklist?.message || "Every checklist change is saved automatically.")}</p>
 
         <div class="workflow-checklist-actions">
           <div class="workflow-gate-status ${checklist.ready ? "ready" : "blocked"}">
@@ -581,7 +633,7 @@
     }));
   }
 
-  function advanceWorkflowJob(contactId, jobId) {
+  async function advanceWorkflowJob(contactId, jobId) {
     if (!requireAction("manageJobs")) return;
     const contact = getContact(contactId);
     if (!contact) return;
@@ -594,15 +646,41 @@
       return;
     }
 
+    let updatedContact;
     if (primaryJob(contact).id === job.id) {
-      originalApplyStatusUpdate(contact.id, targetStatus, state.currentUser?.name || "CRM user");
+      updatedContact = originalApplyStatusUpdate(contact.id, targetStatus, state.currentUser?.name || "CRM user");
     } else {
-      advanceSecondaryJob(contact, job, targetStatus);
+      updatedContact = advanceSecondaryJob(contact, job, targetStatus);
     }
     selectedWorkflowJobId = job.id;
-    saveState();
+    saveState({ localOnly: true });
+    const nextSaveKey = checklistSaveKey(contact.id, job.id, targetStatus);
+    checklistSaveStates.set(nextSaveKey, { message: `Saving ${targetStatus} to the shared CRM...`, tone: "saving" });
     render();
-    showToast(`${job.name} moved to ${targetStatus}`);
+    const updateId = updatedContact?.updates?.[0]?.id || "";
+    let saved = !canUseCloudSync();
+    try {
+      if (canUseCloudSync()) saved = await persistLeadJobRecord(job.id, updateId);
+    } catch {
+      saved = false;
+    }
+    if (!saved) {
+      updateContact(contact.id, () => contact);
+      saveState({ localOnly: true });
+      selectedWorkflowJobId = job.id;
+      const previousSaveKey = checklistSaveKey(contact.id, job.id, job.status);
+      checklistSaveStates.set(previousSaveKey, {
+        message: "Stage change was not saved. The job was restored—please try again.",
+        tone: "error",
+      });
+      render();
+      showToast("Stage change was not saved to the shared CRM");
+      return;
+    }
+    checklistSaveStates.set(nextSaveKey, { message: `${targetStatus} saved to the shared CRM.`, tone: "success" });
+    queueCloudSave();
+    render();
+    showToast(`${job.name} moved to ${targetStatus} and saved`);
   }
 
   function formTransitionContext(form) {
@@ -659,14 +737,13 @@
   function handleWorkflowChange(event) {
     const checkbox = event.target.closest("[data-workflow-checkbox]");
     if (checkbox) {
-      updateChecklistItem(
+      void updateChecklistItem(
         checkbox.dataset.contactId,
         checkbox.dataset.jobId,
         checkbox.dataset.stage,
         checkbox.dataset.itemId,
         checkbox.checked,
       );
-      renderLeadDetail();
       return;
     }
 
@@ -684,7 +761,7 @@
     event.stopImmediatePropagation();
 
     if (button.dataset.workflowAction === "advance") {
-      advanceWorkflowJob(button.dataset.contactId, button.dataset.jobId);
+      void advanceWorkflowJob(button.dataset.contactId, button.dataset.jobId);
       return;
     }
 
@@ -870,7 +947,7 @@
         border-bottom: 1px solid var(--line);
         cursor: pointer;
       }
-      .workflow-check-item.automatic { cursor: default; }
+      .workflow-check-item.automatic { cursor: pointer; }
       .workflow-check-item input {
         position: absolute;
         opacity: 0;

@@ -23,7 +23,8 @@ const money = new Intl.NumberFormat("en-US", {
 });
 
 const number = (value) => {
-  const parsed = Number(value);
+  const normalized = typeof value === "string" ? value.replace(/[$,%\s,]/g, "") : value;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
@@ -548,6 +549,9 @@ let criticalSaveInFlight = false;
 let durableBusinessStateAuthoritative = false;
 let durableWritesEnabled = false;
 let liveSearchActiveIndex = -1;
+const estimateSaveTimers = new Map();
+const estimateSaveRevisions = new Map();
+const estimateSaveStates = new Map();
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -672,6 +676,8 @@ const els = {
   taxRate: document.querySelector("#taxRate"),
   deposit: document.querySelector("#deposit"),
   estimateNotes: document.querySelector("#estimateNotes"),
+  estimateSaveStatus: document.querySelector("#estimateSaveStatus"),
+  saveEstimateButton: document.querySelector("#saveEstimateButton"),
   newEstimateButton: document.querySelector("#newEstimateButton"),
   addLineItemButton: document.querySelector("#addLineItemButton"),
   lineItemTemplatesButton: document.querySelector("#lineItemTemplatesButton"),
@@ -1514,6 +1520,17 @@ function durableFingerprint(row) {
   });
 }
 
+function hasPendingDurableChanges() {
+  if (!durableRecordsReady) return false;
+  const rows = durableRowsFromState();
+  const currentKeys = new Set(rows.map(durableRecordKey));
+  if (rows.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row))) {
+    return true;
+  }
+  if ([...durableRecordFingerprints.keys()].some((key) => !currentKeys.has(key))) return true;
+  return durableAuditRowsFromState().some((row) => !durableAuditIds.has(row.id));
+}
+
 function rememberDurableRows(rows = [], auditRows = []) {
   durableRecordFingerprints = new Map(rows.map((row) => [durableRecordKey(row), durableFingerprint(row)]));
   durableAuditIds = new Set(auditRows.map((row) => row.id));
@@ -1747,31 +1764,106 @@ async function persistLeadJobRecord(jobId, updateId) {
   );
   const rowsToWrite = contactRow ? [contactRow, jobRow] : [jobRow];
 
-  const { error: writeError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .upsert(rowsToWrite, { onConflict: "company_state_id,record_type,id" });
-  if (writeError) throw writeError;
-  if (auditRow) {
-    const { error: auditError } = await cloudClient
-      .from(SUPABASE_AUDIT_TABLE)
-      .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
-    if (auditError) throw auditError;
-    durableAuditIds.add(auditRow.id);
-  }
+  durableSaveInFlight = true;
+  try {
+    const { error: writeError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .upsert(rowsToWrite, { onConflict: "company_state_id,record_type,id" });
+    if (writeError) throw writeError;
+    if (auditRow) {
+      const { error: auditError } = await cloudClient
+        .from(SUPABASE_AUDIT_TABLE)
+        .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
+      if (auditError) throw auditError;
+      durableAuditIds.add(auditRow.id);
+    }
 
-  const { data: confirmed, error: confirmError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .select("data")
-    .eq("company_state_id", supabaseStateId())
-    .eq("record_type", "job")
-    .eq("id", jobId)
-    .single();
-  if (confirmError) throw confirmError;
-  if (confirmed?.data?.status !== jobRow.data.status) return false;
-  rowsToWrite.forEach((row) => {
+    const { data: confirmed, error: confirmError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .select("data")
+      .eq("company_state_id", supabaseStateId())
+      .eq("record_type", "job")
+      .eq("id", jobId)
+      .single();
+    if (confirmError) throw confirmError;
+    if (confirmed?.data?.status !== jobRow.data.status) return false;
+    rowsToWrite.forEach((row) => {
+      durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+    });
+    return true;
+  } finally {
+    durableSaveInFlight = false;
+    queueDurableRecordsSave();
+  }
+}
+
+function canonicalRecordValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalRecordValue);
+  if (value && typeof value === "object") {
+    return Object.keys(value)
+      .sort()
+      .reduce((result, key) => {
+        result[key] = canonicalRecordValue(value[key]);
+        return result;
+      }, {});
+  }
+  return value;
+}
+
+function durableRecordDataMatches(left, right) {
+  return JSON.stringify(canonicalRecordValue(left)) === JSON.stringify(canonicalRecordValue(right));
+}
+
+async function persistDurableRecordNow(recordType, recordId, verify) {
+  if (!canUseCloudSync()) return true;
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
+
+  window.clearTimeout(durableSaveTimer);
+  if (!(await waitForDurableSaveSlot())) return false;
+  const row = durableRowsFromState().find(
+    (candidate) => candidate.record_type === recordType && candidate.id === recordId,
+  );
+  if (!row) return false;
+
+  durableSaveInFlight = true;
+  try {
+    const { error: writeError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .upsert(row, { onConflict: "company_state_id,record_type,id" });
+    if (writeError) throw writeError;
+
+    const { data: confirmed, error: confirmError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .select("data")
+      .eq("company_state_id", supabaseStateId())
+      .eq("record_type", recordType)
+      .eq("id", recordId)
+      .single();
+    if (confirmError) throw confirmError;
+    if (!verify(confirmed?.data || {}, row.data)) return false;
+
     durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
-  });
-  return true;
+    queueCloudSave();
+    return true;
+  } catch (error) {
+    console.warn(`${recordType} record could not be verified in the shared CRM`, error);
+    return false;
+  } finally {
+    durableSaveInFlight = false;
+    queueDurableRecordsSave();
+  }
+}
+
+async function persistChecklistRecord(contactId, jobId, stage, itemId, expectedValue) {
+  return persistDurableRecordNow("contact", contactId, (confirmedData) =>
+    confirmedData?.workflowChecklists?.[jobId]?.[stage]?.[itemId] === Boolean(expectedValue),
+  );
+}
+
+async function persistEstimateRecord(estimateId) {
+  return persistDurableRecordNow("estimate", estimateId, (confirmedData, expectedData) =>
+    durableRecordDataMatches(confirmedData, expectedData),
+  );
 }
 
 async function persistLeadDocumentRecords(documentIds, updateId) {
@@ -1864,12 +1956,18 @@ async function initializeDurableRecords() {
     .channel(`crm-records-${supabaseStateId()}-${authSession.user.id}`)
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
-      if (durableSaveInFlight) return;
+      if (durableSaveInFlight || hasPendingDurableChanges()) {
+        queueDurableRecordsSave();
+        return;
+      }
       await reloadDurableRecords({ showUpdateToast: true });
       render();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
-      if (durableSaveInFlight) return;
+      if (durableSaveInFlight || hasPendingDurableChanges()) {
+        queueDurableRecordsSave();
+        return;
+      }
       await reloadDurableRecords({ showUpdateToast: true });
       render();
     })
@@ -2954,6 +3052,7 @@ function applyPermissionsToDom() {
     [els.newEstimateButton, "manageEstimates"],
     [els.addLineItemButton, "manageEstimates"],
     [els.deleteEstimateButton, "manageEstimates"],
+    [els.saveEstimateButton, "manageEstimates"],
     [els.sendEstimateButton, "manageEstimates"],
     [els.deleteContactButton, "manageContacts"],
     [els.estimateFromContactButton, "manageEstimates"],
@@ -5933,7 +6032,11 @@ function renderEstimateForm(estimate) {
   els.printEstimateButton.disabled = disabled;
   els.sendEstimateButton.disabled = disabled;
 
-  if (!estimate) return;
+  if (!estimate) {
+    setSaveState(els.estimateSaveStatus, "", "");
+    return;
+  }
+  renderEstimateSaveState(estimate.id);
 
   els.estimateContact.innerHTML = state.contacts
     .map(
@@ -5986,7 +6089,7 @@ function renderEstimateForm(estimate) {
           </label>
           <label>
             Qty
-            <input data-line-field="quantity" type="number" min="0" step="0.01" value="${number(
+            <input data-line-field="quantity" type="text" inputmode="decimal" autocomplete="off" value="${number(
               item.quantity,
             )}" />
           </label>
@@ -5996,7 +6099,7 @@ function renderEstimateForm(estimate) {
           </label>
           <label>
             Rate
-            <input data-line-field="rate" type="number" min="0" step="0.01" value="${number(item.rate)}" />
+            <input data-line-field="rate" type="text" inputmode="decimal" autocomplete="off" value="${number(item.rate)}" />
           </label>
           <div class="remove-cell">
             <button class="mini-button" type="button" title="Remove line item" aria-label="Remove line item" data-action="remove-line" data-line-index="${index}">
@@ -6554,6 +6657,7 @@ function createEstimate(contactId, shouldRender = true, jobId = "") {
   state.newEstimateJobId = "";
   state.view = "estimates";
   saveState();
+  queueEstimateVerifiedSave(estimate.id, { immediate: true });
   if (shouldRender) render();
   return estimate;
 }
@@ -6564,6 +6668,54 @@ function nextEstimateNumber() {
     .filter(Number.isFinite);
   const next = values.length ? Math.max(...values) + 1 : 1001;
   return `EST-${next}`;
+}
+
+function renderEstimateSaveState(estimateId = getSelectedEstimate()?.id) {
+  if (!els.estimateSaveStatus) return;
+  const stateForEstimate = estimateSaveStates.get(estimateId) || {
+    message: "All estimate values are saved automatically",
+    tone: "success",
+  };
+  setSaveState(els.estimateSaveStatus, stateForEstimate.message, stateForEstimate.tone);
+}
+
+function setEstimateSaveState(estimateId, message, tone = "") {
+  estimateSaveStates.set(estimateId, { message, tone });
+  if (getSelectedEstimate()?.id === estimateId) renderEstimateSaveState(estimateId);
+}
+
+async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevisions.get(estimateId) || 0) {
+  if (!estimateId || !state.estimates.some((estimate) => estimate.id === estimateId)) return false;
+  window.clearTimeout(estimateSaveTimers.get(estimateId));
+  estimateSaveTimers.delete(estimateId);
+  setEstimateSaveState(estimateId, "Saving every estimate value to the shared CRM...", "saving");
+  if (getSelectedEstimate()?.id === estimateId && els.saveEstimateButton) els.saveEstimateButton.disabled = true;
+
+  const saved = await persistEstimateRecord(estimateId);
+  const latestRevision = estimateSaveRevisions.get(estimateId) || 0;
+  if (saved && revision === latestRevision) {
+    setEstimateSaveState(estimateId, "All estimate values saved to the shared CRM.", "success");
+  } else if (!saved && revision === latestRevision) {
+    setEstimateSaveState(estimateId, "Not saved to the shared CRM. Use Save Estimate to retry.", "error");
+    showToast("Estimate save failed—your values are still on this page. Please retry.");
+  }
+  if (getSelectedEstimate()?.id === estimateId && els.saveEstimateButton) {
+    els.saveEstimateButton.disabled = !canAction("manageEstimates");
+  }
+  return saved;
+}
+
+function queueEstimateVerifiedSave(estimateId, { immediate = false } = {}) {
+  if (!estimateId) return;
+  const revision = (estimateSaveRevisions.get(estimateId) || 0) + 1;
+  estimateSaveRevisions.set(estimateId, revision);
+  window.clearTimeout(estimateSaveTimers.get(estimateId));
+  setEstimateSaveState(estimateId, "Saving estimate values...", "saving");
+  const timer = window.setTimeout(
+    () => void flushEstimateVerifiedSave(estimateId, revision),
+    immediate ? 0 : 500,
+  );
+  estimateSaveTimers.set(estimateId, timer);
 }
 
 function updateSelectedEstimateFromField(fieldName, value) {
@@ -6598,20 +6750,10 @@ function updateSelectedEstimateFromField(fieldName, value) {
     estimate.projectTitle = numbered?.job?.name || estimate.projectTitle;
   }
   saveState();
+  queueEstimateVerifiedSave(estimate.id);
   renderEstimatePreview(estimate);
   renderSummary();
-  renderEstimateListOnly();
-}
-
-function renderEstimateListOnly() {
-  const currentFormState = document.activeElement;
-  const estimate = getSelectedEstimate();
-  const estimates = filteredEstimates();
-  renderEstimateHistory(estimate, estimates);
   renderEstimateActiveSummary(estimate);
-  if (currentFormState?.id) {
-    document.getElementById(currentFormState.id)?.focus();
-  }
 }
 
 function updateLineItem(input) {
@@ -6625,8 +6767,9 @@ function updateLineItem(input) {
 
   estimate.items[index][field] = ["quantity", "rate"].includes(field) ? number(input.value) : input.value;
   saveState();
+  queueEstimateVerifiedSave(estimate.id);
   renderEstimatePreview(estimate);
-  renderEstimateListOnly();
+  renderEstimateActiveSummary(estimate);
 }
 
 function deleteEstimate() {
@@ -7684,6 +7827,14 @@ function bindEvents() {
     showToast(`${tpl.name} template added`);
   });
 
+  els.estimateForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!requireAction("manageEstimates")) return;
+    const estimate = getSelectedEstimate();
+    if (!estimate) return;
+    queueEstimateVerifiedSave(estimate.id, { immediate: true });
+  });
+
   els.estimateForm.addEventListener("input", (event) => {
     if (!canAction("manageEstimates")) return;
     if (event.target.matches("[data-line-field]")) {
@@ -7695,8 +7846,16 @@ function bindEvents() {
 
   els.estimateForm.addEventListener("change", (event) => {
     if (!canAction("manageEstimates")) return;
+    if (event.target.matches("[data-line-field]")) {
+      updateLineItem(event.target);
+      const estimate = getSelectedEstimate();
+      if (estimate) queueEstimateVerifiedSave(estimate.id, { immediate: true });
+      return;
+    }
     if (event.target.name) {
       updateSelectedEstimateFromField(event.target.name, event.target.value);
+      const estimate = getSelectedEstimate();
+      if (estimate) queueEstimateVerifiedSave(estimate.id, { immediate: true });
       renderEstimates();
     }
   });
