@@ -44,6 +44,7 @@ const checks = [
   ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
   ["every authorized checklist box is actionable", workflowChecklists.includes('${!editable ? "disabled" : ""}') && workflowChecklists.includes("Can confirm manually")],
   ["checklists verify shared database saves", app.includes("persistChecklistRecord") && workflowChecklists.includes("The checkbox was restored")],
+  ["lead progression waits for checklist save", workflowChecklists.includes('saveStateForChecklist?.tone === "saving"') && workflowChecklists.includes("!checklist.ready || !editable || checklistSaveInProgress")],
   ["estimate values verify shared database saves", app.includes("persistEstimateRecord") && index.includes('id="estimateSaveStatus"') && index.includes('id="saveEstimateButton"')],
   ["estimate form cannot reload before saving", app.includes('els.estimateForm.addEventListener("submit"') && app.includes("queueEstimateVerifiedSave")],
   ["estimate money fields accept commas and cents", app.includes('value.replace(/[$,%\\s,]/g, "")') && index.includes('name="deposit" type="text" inputmode="decimal"')],
