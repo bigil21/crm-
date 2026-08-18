@@ -78,6 +78,11 @@ const checks = [
   ["file pickers allow retrying the same file", (app.match(/event\.target\.value = "";/g) || []).length >= 2],
   ["document uploads allow 250 MB", app.includes("MAX_DOCUMENT_FILE_SIZE = 250 * 1024 * 1024") && schema.includes("file_size_limit = 262144000")],
   ["project values accept cents", !index.includes('step="100"') && (index.match(/name="value" type="number" min="0" step="0\.01"/g) || []).length === 2],
+  ["manual payments are admin only", index.includes('data-lead-tab="payments"') && app.includes('return currentRole() === "admin";') && app.includes("Only an administrator can record payments")],
+  ["manual payments are isolated by job", index.includes('id="paymentJobSelect"') && app.includes("manualPayments: (currentJob.manualPayments || [])") && app.includes("state.selectedLeadJobId = event.target.value")],
+  ["Square and manual payments do not overwrite each other", app.includes("squarePaidAmount + manualPaidAmount") && app.includes("squarePaidAmount,") && app.includes("manualPayments")],
+  ["manual payments verify the exact durable job row", app.includes("persistManualPaymentRecord") && app.includes("confirmed?.data?.manualPayments") && app.includes("durableRecordDataMatches")],
+  ["manual payment amounts accept cents", index.includes('name="amount" type="number" min="0.01" step="0.01" inputmode="decimal"')],
 ];
 
 let failed = 0;

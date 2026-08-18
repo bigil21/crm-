@@ -586,6 +586,14 @@ const els = {
   profitSaveStatus: document.querySelector("#profitSaveStatus"),
   clearProfitCostForm: document.querySelector("#clearProfitCostForm"),
   profitCostList: document.querySelector("#profitCostList"),
+  leadPaymentsPanel: document.querySelector("#leadPaymentsPanel"),
+  paymentJobSelect: document.querySelector("#paymentJobSelect"),
+  paymentSummary: document.querySelector("#paymentSummary"),
+  manualPaymentForm: document.querySelector("#manualPaymentForm"),
+  manualPaymentSaveButton: document.querySelector("#manualPaymentSaveButton"),
+  manualPaymentSaveStatus: document.querySelector("#manualPaymentSaveStatus"),
+  clearManualPaymentForm: document.querySelector("#clearManualPaymentForm"),
+  manualPaymentList: document.querySelector("#manualPaymentList"),
   leadEmailPanel: document.querySelector("#leadEmailPanel"),
   leadEmailHeading: document.querySelector("#leadEmailHeading"),
   leadEmailJobSelect: document.querySelector("#leadEmailJobSelect"),
@@ -864,6 +872,27 @@ function normalizeJob(job, contact = {}) {
   const status = job.status || contact.status || "New";
   const closedDate =
     job.closedDate || (soldJobStatuses.includes(status) ? contact.closedDate || contact.lastContact || todayISO() : "");
+  const manualPayments = (job.manualPayments || []).map(normalizeManualPayment);
+  const manualPaidAmount = manualPayments.reduce((sum, payment) => sum + number(payment.amount), 0);
+  const legacyPaidAmount = number(job.paidAmount);
+  const squarePaidAmount = Math.max(
+    0,
+    number(
+      job.squarePaidAmount ??
+        job.square_paid_amount ??
+        Math.max(legacyPaidAmount - manualPaidAmount, 0),
+    ),
+  );
+  const paidAmount = Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
+  const contractValue = number(job.contractValue ?? job.value ?? contact.value);
+  const squareLastPaymentAt = job.squareLastPaymentAt || job.square_last_payment_at || (!manualPayments.length ? job.lastPaymentAt || "" : "");
+  const lastPaymentAt = [
+    squareLastPaymentAt,
+    ...manualPayments.map((payment) => payment.date || payment.createdAt || ""),
+  ]
+    .filter(Boolean)
+    .sort()
+    .at(-1) || "";
   return {
     id: job.id || uid("job"),
     projectNumber: job.projectNumber || "",
@@ -871,10 +900,13 @@ function normalizeJob(job, contact = {}) {
     address: job.address || contact.address || "",
     status,
     value: number(job.value ?? contact.value),
-    contractValue: number(job.contractValue ?? job.value ?? contact.value),
-    paidAmount: number(job.paidAmount),
-    paymentPercent: number(job.paymentPercent),
-    lastPaymentAt: job.lastPaymentAt || "",
+    contractValue,
+    squarePaidAmount,
+    manualPayments,
+    paidAmount,
+    paymentPercent: contractValue ? Math.min(100, (paidAmount / contractValue) * 100) : 0,
+    squareLastPaymentAt,
+    lastPaymentAt,
     ownerUserId: job.ownerUserId || contact.ownerUserId || "",
     ownerEmail: job.ownerEmail || contact.ownerEmail || "",
     ownerName: job.ownerName || contact.ownerName || "",
@@ -932,6 +964,20 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     kind:
       document.kind || document.recordKind ||
       ((document.categoryId || categoryId) === JOB_PHOTO_CATEGORY_ID ? "photo" : "document"),
+  };
+}
+
+function normalizeManualPayment(payment = {}) {
+  return {
+    id: payment.id || uid("payment"),
+    date: payment.date || todayISO(),
+    method: payment.method || "Check",
+    amount: Math.round(Math.max(0, number(payment.amount)) * 100) / 100,
+    reference: payment.reference || "",
+    note: payment.note || payment.memo || "",
+    createdAt: payment.createdAt || new Date().toISOString(),
+    updatedAt: payment.updatedAt || payment.createdAt || new Date().toISOString(),
+    createdBy: payment.createdBy || "CRM admin",
   };
 }
 
@@ -1741,6 +1787,48 @@ async function persistProfitCostRecord(jobId, costId, updateId) {
   return true;
 }
 
+async function persistManualPaymentRecord(jobId, paymentId, shouldExist, updateId) {
+  if (!canUseCloudSync()) return true;
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
+  if (!(await waitForDurableSaveSlot())) return false;
+  const jobRow = durableRowsFromState().find((row) => row.record_type === "job" && row.id === jobId);
+  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (!jobRow) return false;
+
+  durableSaveInFlight = true;
+  try {
+    const { error: writeError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .upsert(jobRow, { onConflict: "company_state_id,record_type,id" });
+    if (writeError) throw writeError;
+    if (auditRow) {
+      const { error: auditError } = await cloudClient
+        .from(SUPABASE_AUDIT_TABLE)
+        .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
+      if (auditError) throw auditError;
+      durableAuditIds.add(auditRow.id);
+    }
+
+    const { data: confirmed, error: confirmError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .select("data")
+      .eq("company_state_id", supabaseStateId())
+      .eq("record_type", "job")
+      .eq("id", jobId)
+      .single();
+    if (confirmError) throw confirmError;
+    const exists = (confirmed?.data?.manualPayments || []).some((payment) => payment.id === paymentId);
+    if (exists !== shouldExist) return false;
+    if (!durableRecordDataMatches(confirmed?.data || {}, jobRow.data)) return false;
+    durableRecordFingerprints.set(durableRecordKey(jobRow), durableFingerprint(jobRow));
+    queueCloudSave();
+    return true;
+  } finally {
+    durableSaveInFlight = false;
+    queueDurableRecordsSave();
+  }
+}
+
 async function persistLeadJobRecord(jobId, updateId) {
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
@@ -2006,6 +2094,10 @@ function canManageTeamData() {
 
 function canManageJobFinancials() {
   return Boolean(rolePolicies[currentRole()]);
+}
+
+function canManageManualPayments() {
+  return currentRole() === "admin";
 }
 
 function currentUserFromAuthSession(session) {
@@ -3957,7 +4049,7 @@ function renderRecordCard(contact) {
 
 function jobPaymentMetrics(job = {}) {
   const contractValue = number(job.contractValue) || number(job.value);
-  const paidAmount = Math.min(number(job.paidAmount), contractValue || number(job.paidAmount));
+  const paidAmount = number(job.paidAmount);
   return {
     contractValue,
     paidAmount,
@@ -4006,13 +4098,19 @@ function renderLeadDetail() {
   els.leadDetailTitle.textContent = contact.name;
   els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${contact.status} - ${contact.salesRep || "Unassigned"}`;
 
-  if (state.leadDetailTab === "profit" && !canManageJobFinancials()) {
+  if (
+    (state.leadDetailTab === "profit" && !canManageJobFinancials()) ||
+    (state.leadDetailTab === "payments" && !canManageManualPayments())
+  ) {
     state.leadDetailTab = "overview";
   }
 
   document.querySelectorAll("[data-lead-tab]").forEach((button) => {
     if (button.dataset.leadTab === "profit") {
       button.classList.toggle("hidden", !canManageJobFinancials());
+    }
+    if (button.dataset.leadTab === "payments") {
+      button.classList.toggle("hidden", !canManageManualPayments());
     }
     button.classList.toggle("active", button.dataset.leadTab === state.leadDetailTab);
   });
@@ -4021,6 +4119,7 @@ function renderLeadDetail() {
     overview: els.leadOverviewPanel,
     jobs: els.leadJobsPanel,
     profit: els.leadProfitPanel,
+    payments: els.leadPaymentsPanel,
     email: els.leadEmailPanel,
     documents: els.leadDocumentsPanel,
     photos: els.leadPhotosPanel,
@@ -4112,6 +4211,7 @@ function renderLeadDetail() {
 
   renderLeadJobs(contact);
   renderLeadProfit(contact);
+  renderLeadPayments(contact);
   renderLeadEmail(contact);
   renderLeadDocuments(contact);
   renderLeadPhotos(contact);
@@ -4160,6 +4260,14 @@ function renderLeadJobs(contact) {
               ? `<button class="secondary-button" type="button" data-action="open-job-profit" data-contact-id="${contact.id}" data-job-id="${job.id}">
                   <span aria-hidden="true" data-icon="dollar"></span>
                   Profit & Cost
+                </button>`
+              : ""
+          }
+          ${
+            canManageManualPayments()
+              ? `<button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-job-id="${job.id}" data-tab="payments">
+                  <span aria-hidden="true" data-icon="dollar"></span>
+                  Payments
                 </button>`
               : ""
           }
@@ -4276,6 +4384,249 @@ function renderLeadProfit(contact) {
       : '<div class="empty-state">No costs have been entered for this job yet.</div>';
     hydrateIcons(els.profitCostList);
   }
+}
+
+function renderLeadPayments(contact) {
+  if (!els.leadPaymentsPanel) return;
+  if (!canManageManualPayments()) {
+    els.leadPaymentsPanel.innerHTML = '<div class="empty-state">Payments are restricted to administrators.</div>';
+    return;
+  }
+
+  const job = selectedLeadJob(contact);
+  if (!job) return;
+  if (els.paymentJobSelect) els.paymentJobSelect.innerHTML = jobContextOptions(contact, job.id);
+  if (els.manualPaymentForm && !els.manualPaymentForm.elements.date.value) fillManualPaymentForm();
+
+  const metrics = jobPaymentMetrics(job);
+  const manualPaidAmount = (job.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0);
+  const squarePaidAmount = number(job.squarePaidAmount);
+  const overpayment = Math.max(metrics.paidAmount - metrics.contractValue, 0);
+  const balanceLabel = overpayment ? "Customer Credit" : "Balance Due";
+  const balanceAmount = overpayment || metrics.balance;
+  const roundedPercent = Math.round(metrics.percentage);
+
+  if (els.paymentSummary) {
+    els.paymentSummary.innerHTML = [
+      ["Contract Value", money.format(metrics.contractValue), job.projectNumber || job.name],
+      ["Total Collected", money.format(metrics.paidAmount), `${roundedPercent}% paid`],
+      [balanceLabel, money.format(balanceAmount), overpayment ? "Collected above contract value" : "Still owed on this job"],
+      ["Payment Sources", `${money.format(squarePaidAmount)} Square`, `${money.format(manualPaidAmount)} recorded manually`],
+    ]
+      .map(
+        ([label, value, caption]) => `
+          <article class="summary-card">
+            <span class="eyebrow">${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+            <span>${escapeHtml(caption)}</span>
+          </article>
+        `,
+      )
+      .join("");
+  }
+
+  if (els.manualPaymentList) {
+    const manualRows = [...(job.manualPayments || [])].sort((a, b) =>
+      `${b.date}|${b.createdAt}`.localeCompare(`${a.date}|${a.createdAt}`),
+    );
+    const squareRow = squarePaidAmount
+      ? `
+          <article class="cost-card payment-ledger-card payment-ledger-square">
+            <div>
+              <span class="status-pill pill-won">Square · Automatic</span>
+              <strong>${money.format(squarePaidAmount)}</strong>
+              <span>${job.squareLastPaymentAt ? `Updated ${escapeHtml(formatDate(job.squareLastPaymentAt))}` : "Synced from Square invoices"}</span>
+              <p>Square payments are refreshed automatically and cannot be edited here.</p>
+            </div>
+          </article>
+        `
+      : "";
+    const manualMarkup = manualRows
+      .map(
+        (payment) => `
+          <article class="cost-card payment-ledger-card">
+            <div>
+              <span class="status-pill">${escapeHtml(payment.method)}</span>
+              <strong>${money.format(number(payment.amount))}</strong>
+              <span>${escapeHtml(formatDate(payment.date))}${payment.reference ? ` · ${escapeHtml(payment.reference)}` : ""}</span>
+              <p>${nl2br(payment.note || "No note")}</p>
+              <small>Recorded by ${escapeHtml(payment.createdBy || "CRM admin")}</small>
+            </div>
+            <div class="row-actions">
+              <button class="mini-button" type="button" title="Edit payment" aria-label="Edit payment" data-action="edit-manual-payment" data-payment-id="${payment.id}">
+                <span aria-hidden="true" data-icon="edit"></span>
+              </button>
+              <button class="mini-button" type="button" title="Delete payment" aria-label="Delete payment" data-action="delete-manual-payment" data-payment-id="${payment.id}">
+                <span aria-hidden="true" data-icon="trash"></span>
+              </button>
+            </div>
+          </article>
+        `,
+      )
+      .join("");
+    els.manualPaymentList.innerHTML = squareRow || manualMarkup
+      ? `${squareRow}${manualMarkup}`
+      : '<div class="empty-state">No payments have been collected for this job yet.</div>';
+    hydrateIcons(els.manualPaymentList);
+  }
+}
+
+function fillManualPaymentForm(payment = {}) {
+  if (!els.manualPaymentForm) return;
+  const data = {
+    paymentId: "",
+    date: todayISO(),
+    method: "Check",
+    amount: "",
+    reference: "",
+    note: "",
+    ...payment,
+  };
+  Object.entries(data).forEach(([key, value]) => {
+    const field = els.manualPaymentForm.elements[key];
+    if (field) field.value = value ?? "";
+  });
+  if (els.manualPaymentSaveButton) {
+    els.manualPaymentSaveButton.lastChild.textContent = payment.id ? " Update Payment" : " Record Payment";
+  }
+}
+
+async function saveManualPayment(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) {
+    showToast("Only an administrator can record payments");
+    return;
+  }
+  const contact = getSelectedContact();
+  const job = selectedLeadJob(contact);
+  if (!contact || !job) return;
+  const formData = new FormData(els.manualPaymentForm);
+  const amount = Math.round(number(formData.get("amount")) * 100) / 100;
+  if (amount <= 0) {
+    setSaveState(els.manualPaymentSaveStatus, "Enter a payment amount greater than $0.00.", "error");
+    return;
+  }
+
+  const paymentId = formData.get("paymentId") || uid("payment");
+  const previousPayments = [...(job.manualPayments || [])];
+  const existing = previousPayments.find((payment) => payment.id === paymentId);
+  const now = new Date().toISOString();
+  const payment = normalizeManualPayment({
+    ...(existing || { id: paymentId, createdAt: now }),
+    id: paymentId,
+    date: formData.get("date") || todayISO(),
+    method: formData.get("method") || "Other",
+    amount,
+    reference: String(formData.get("reference") || "").trim(),
+    note: String(formData.get("note") || "").trim(),
+    updatedAt: now,
+    createdBy: existing?.createdBy || state.currentUser.name || state.currentUser.email || "CRM admin",
+  });
+
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    manualPayments: existing
+      ? (currentJob.manualPayments || []).map((item) => (item.id === paymentId ? payment : item))
+      : [payment, ...(currentJob.manualPayments || [])],
+  }));
+  const updatedContact = addContactUpdate(contact.id, {
+    author: state.currentUser.name || "CRM admin",
+    jobId: job.id,
+    message: `${existing ? "Updated" : "Recorded"} ${payment.method} payment on ${job.name}: ${money.format(payment.amount)}.`,
+  });
+  const updateId = updatedContact?.updates?.[0]?.id || "";
+
+  state.leadDetailTab = "payments";
+  saveState({ localOnly: true });
+  renderLeadDetail();
+  setSaveState(els.manualPaymentSaveStatus, "Saving securely to the shared CRM...", "saving");
+  els.manualPaymentSaveButton.disabled = true;
+  let saved = false;
+  try {
+    saved = await persistManualPaymentRecord(job.id, paymentId, true, updateId);
+  } catch (error) {
+    console.warn("Payment write could not be confirmed", error);
+  } finally {
+    els.manualPaymentSaveButton.disabled = false;
+  }
+
+  if (!saved) {
+    updateContact(contact.id, (current) => ({
+      ...current,
+      jobs: contactJobs(current).map((item) =>
+        item.id === job.id ? { ...item, manualPayments: previousPayments } : item,
+      ),
+      updates: (current.updates || []).filter((update) => update.id !== updateId),
+    }));
+    saveState({ localOnly: true });
+    renderLeadDetail();
+    setSaveState(els.manualPaymentSaveStatus, "Payment was not saved to the shared CRM. Please try again.", "error");
+    return;
+  }
+
+  fillManualPaymentForm();
+  setSaveState(els.manualPaymentSaveStatus, "Payment saved to the shared CRM.", "success");
+  saveState();
+  render();
+  showToast(`${payment.method} payment recorded`);
+}
+
+function editManualPayment(paymentId) {
+  if (!canManageManualPayments()) return;
+  const contact = getSelectedContact();
+  const job = selectedLeadJob(contact);
+  const payment = (job?.manualPayments || []).find((item) => item.id === paymentId);
+  if (!payment) return;
+  state.leadDetailTab = "payments";
+  renderLeadDetail();
+  fillManualPaymentForm({ ...payment, paymentId: payment.id });
+  els.manualPaymentForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function deleteManualPayment(paymentId) {
+  if (!canManageManualPayments()) return;
+  const contact = getSelectedContact();
+  const job = selectedLeadJob(contact);
+  const payment = (job?.manualPayments || []).find((item) => item.id === paymentId);
+  if (!contact || !job || !payment) return;
+  if (!window.confirm(`Delete the ${money.format(payment.amount)} ${payment.method} payment from ${job.name}?`)) return;
+
+  const previousPayments = [...(job.manualPayments || [])];
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    manualPayments: (currentJob.manualPayments || []).filter((item) => item.id !== paymentId),
+  }));
+  const updatedContact = addContactUpdate(contact.id, {
+    author: state.currentUser.name || "CRM admin",
+    jobId: job.id,
+    message: `Removed ${payment.method} payment from ${job.name}: ${money.format(payment.amount)}.`,
+  });
+  const updateId = updatedContact?.updates?.[0]?.id || "";
+  saveState({ localOnly: true });
+  renderLeadDetail();
+  let saved = false;
+  try {
+    saved = await persistManualPaymentRecord(job.id, paymentId, false, updateId);
+  } catch (error) {
+    console.warn("Payment deletion could not be confirmed", error);
+  }
+  if (!saved) {
+    updateContact(contact.id, (current) => ({
+      ...current,
+      jobs: contactJobs(current).map((item) =>
+        item.id === job.id ? { ...item, manualPayments: previousPayments } : item,
+      ),
+      updates: (current.updates || []).filter((update) => update.id !== updateId),
+    }));
+    saveState({ localOnly: true });
+    renderLeadDetail();
+    showToast("Payment was not deleted because the shared CRM did not confirm the change");
+    return;
+  }
+  fillManualPaymentForm();
+  saveState();
+  render();
+  showToast("Payment deleted");
 }
 
 function fillProfitCostForm(item = {}) {
@@ -5889,23 +6240,41 @@ function updateJobPaymentSnapshot(contactId, jobId) {
   const invoices = state.estimates.filter(
     (estimate) => estimate.contactId === contactId && estimate.jobId === jobId && estimate.squareInvoiceId,
   );
-  const paidAmount = invoices.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
+  const squarePaidAmount = invoices.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
+  const manualPaidAmount = (job.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0);
+  const paidAmount = Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
   const invoiceContract = invoices.reduce(
     (maximum, estimate) => Math.max(maximum, number(estimate.contractValue) || totalsFor(estimate).total),
     0,
   );
   const contractValue = invoiceContract || number(job.contractValue) || number(job.value);
   const paymentPercent = contractValue ? Math.min(100, (paidAmount / contractValue) * 100) : 0;
-  const lastPaymentAt = invoices
+  const squareLastPaymentAt = invoices
     .map((estimate) => estimate.paymentUpdatedAt || estimate.paidAt || "")
     .filter(Boolean)
     .sort()
-    .at(-1) || job.lastPaymentAt || "";
+    .at(-1) || job.squareLastPaymentAt || "";
+  const lastPaymentAt = [
+    squareLastPaymentAt,
+    ...(job.manualPayments || []).map((payment) => payment.date || payment.createdAt || ""),
+  ]
+    .filter(Boolean)
+    .sort()
+    .at(-1) || "";
   updateContact(contactId, (current) => ({
     ...current,
     jobs: contactJobs(current).map((item) =>
       item.id === jobId
-        ? { ...item, value: contractValue, contractValue, paidAmount, paymentPercent, lastPaymentAt }
+        ? {
+            ...item,
+            value: contractValue,
+            contractValue,
+            squarePaidAmount,
+            paidAmount,
+            paymentPercent,
+            squareLastPaymentAt,
+            lastPaymentAt,
+          }
         : item,
     ),
   }));
@@ -5979,7 +6348,19 @@ async function sendToSquare(estimateId) {
       ...current,
       jobs: contactJobs(current).map((item) =>
         item.id === estimate.jobId
-          ? { ...item, value: totals.total, contractValue: totals.total, paidAmount: 0, paymentPercent: 0 }
+          ? {
+              ...item,
+              value: totals.total,
+              contractValue: totals.total,
+              squarePaidAmount: 0,
+              paidAmount: (item.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0),
+              paymentPercent: totals.total
+                ? Math.min(
+                    100,
+                    ((item.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0) / totals.total) * 100,
+                  )
+                : 0,
+            }
           : item,
       ),
     }));
@@ -7968,6 +8349,12 @@ function bindEvents() {
     if (action === "delete-cost-item") {
       deleteCostItem(actionButton.dataset.costId);
     }
+    if (action === "edit-manual-payment") {
+      editManualPayment(actionButton.dataset.paymentId);
+    }
+    if (action === "delete-manual-payment") {
+      await deleteManualPayment(actionButton.dataset.paymentId);
+    }
     if (action === "open-calendar-task") {
       editCalendarTask(actionButton.dataset.taskId);
     }
@@ -7985,6 +8372,10 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const tabButton = event.target.closest("[data-lead-tab]");
     if (!tabButton) return;
+    if (tabButton.dataset.leadTab === "payments" && !canManageManualPayments()) {
+      showToast("Only an administrator can view payments");
+      return;
+    }
     state.leadDetailTab = tabButton.dataset.leadTab;
     saveState();
     renderLeadDetail();
@@ -8129,6 +8520,19 @@ function bindEvents() {
   });
   els.profitCostForm?.addEventListener("submit", saveProfitCost);
   els.clearProfitCostForm?.addEventListener("click", () => fillProfitCostForm());
+  els.paymentJobSelect?.addEventListener("change", (event) => {
+    if (!canManageManualPayments()) return;
+    const contact = getSelectedContact();
+    if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
+    state.selectedLeadJobId = event.target.value;
+    state.selectedProfitJobId = event.target.value;
+    fillManualPaymentForm();
+    setSaveState(els.manualPaymentSaveStatus, "", "");
+    saveState({ localOnly: true });
+    renderLeadDetail();
+  });
+  els.manualPaymentForm?.addEventListener("submit", saveManualPayment);
+  els.clearManualPaymentForm?.addEventListener("click", () => fillManualPaymentForm());
   els.leadEmailForm.addEventListener("submit", submitLeadEmail);
   els.leadEmailJobSelect?.addEventListener("change", (event) => {
     const contact = getSelectedContact();

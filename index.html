@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=56" />
+    <link rel="stylesheet" href="styles.css?v=57" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -429,6 +429,7 @@
               <button type="button" class="active" data-lead-tab="overview">Overview</button>
               <button type="button" data-lead-tab="jobs">Jobs</button>
               <button type="button" class="hidden" data-lead-tab="profit">Profit & Cost</button>
+              <button type="button" class="hidden" data-lead-tab="payments">Payments</button>
               <button type="button" data-lead-tab="email">Email</button>
               <button type="button" data-lead-tab="documents">Documents</button>
               <button type="button" data-lead-tab="photos">Photos</button>
@@ -571,6 +572,68 @@
                   <p class="save-state-message" id="profitSaveStatus" role="status" aria-live="polite"></p>
                 </form>
                 <div id="profitCostList" class="cost-list"></div>
+              </div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadPaymentsPanel">
+              <div class="view-toolbar job-context-toolbar">
+                <div>
+                  <p class="eyebrow">Admin only</p>
+                  <h2>Payments collected</h2>
+                  <p class="section-description">Record checks, cash, bank transfers, financing, and other payments for the selected job. Square payments update automatically.</p>
+                </div>
+                <label class="compact-select">
+                  Job
+                  <select id="paymentJobSelect" aria-label="Payment job"></select>
+                </label>
+              </div>
+              <div id="paymentSummary" class="profit-summary"></div>
+              <div class="profit-cost-layout payment-ledger-layout">
+                <form id="manualPaymentForm" class="conversation-form">
+                  <input type="hidden" name="paymentId" />
+                  <div class="form-grid two">
+                    <label>
+                      Date received
+                      <input name="date" type="date" required />
+                    </label>
+                    <label>
+                      Payment method
+                      <select name="method" required>
+                        <option>Check</option>
+                        <option>Cash</option>
+                        <option>ACH / Bank Transfer</option>
+                        <option>Credit / Debit Card</option>
+                        <option>Financing</option>
+                        <option>Money Order</option>
+                        <option>Other</option>
+                      </select>
+                    </label>
+                    <label>
+                      Amount received
+                      <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required />
+                    </label>
+                    <label>
+                      Reference / Check number
+                      <input name="reference" autocomplete="off" placeholder="Check #, transaction ID, or receipt" />
+                    </label>
+                  </div>
+                  <label>
+                    Note
+                    <textarea name="note" rows="3" placeholder="Deposit, progress draw, final payment..."></textarea>
+                  </label>
+                  <div class="builder-actions">
+                    <button class="ghost-button" type="button" id="clearManualPaymentForm">
+                      <span aria-hidden="true" data-icon="x"></span>
+                      Clear
+                    </button>
+                    <button class="primary-button" type="submit" id="manualPaymentSaveButton">
+                      <span aria-hidden="true" data-icon="check"></span>
+                      Record Payment
+                    </button>
+                  </div>
+                  <p class="save-state-message" id="manualPaymentSaveStatus" role="status" aria-live="polite"></p>
+                </form>
+                <div id="manualPaymentList" class="cost-list payment-ledger-list"></div>
               </div>
             </div>
 
@@ -1330,7 +1393,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=109" defer></script>
+    <script src="app.js?v=111" defer></script>
     <script src="production-flow-v64.js?v=66" defer></script>
     <script src="workflow-checklists-v65.js?v=78" defer></script>
     <script src="project-conversations-v67.js?v=79" defer></script>
