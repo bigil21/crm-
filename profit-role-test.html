@@ -75,7 +75,6 @@
       const rawResultsEl = document.querySelector("#rawResults");
       const results = [];
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const upperFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
 
       function counts() {
         document.querySelector("#passCount").textContent = results.filter((item) => item.status === "pass").length;
@@ -115,8 +114,8 @@
         return !node.classList.contains("hidden") && styles.display !== "none" && styles.visibility !== "hidden";
       }
 
-      function expectedFinancials(role, email) {
-        return role === "admin" || upperFinancialEmails.includes(String(email || "").toLowerCase());
+      function expectedFinancials() {
+        return true;
       }
 
       function expectBoolean(name, actual, expected, passDetail, failDetail) {

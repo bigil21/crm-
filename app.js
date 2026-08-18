@@ -149,106 +149,61 @@ const leaderboardRanges = {
   ytd: "Year to Date",
 };
 
+const sharedCrmViews = [
+  "dashboard",
+  "leads",
+  "contacts",
+  "jobs",
+  "leadDetail",
+  "estimates",
+  "companyDocuments",
+  "projects",
+  "calendar",
+  "tasks",
+  "invoices",
+  "reviews",
+  "reports",
+  "pipeline",
+];
+
+const sharedCrmActions = [
+  "manageContacts",
+  "manageJobs",
+  "manageEstimates",
+  "manageDocuments",
+  "manageTasks",
+  "manageJobFinancials",
+  "sendEmail",
+];
+
 const rolePolicies = {
   admin: {
     views: "all",
     actions: "all",
   },
   office_manager: {
-    views: [
-      "dashboard",
-      "leads",
-      "contacts",
-      "jobs",
-      "leadDetail",
-      "estimates",
-      "companyDocuments",
-      "projects",
-      "calendar",
-      "tasks",
-      "invoices",
-      "reviews",
-      "reports",
-      "company",
-    ],
-    actions: [
-      "manageContacts",
-      "manageJobs",
-      "manageEstimates",
-      "manageDocuments",
-      "manageTasks",
-      "manageCompany",
-      "sendEmail",
-    ],
+    views: [...sharedCrmViews, "company"],
+    actions: [...sharedCrmActions, "manageCompany"],
   },
   sales_manager: {
-    views: [
-      "dashboard",
-      "leads",
-      "contacts",
-      "jobs",
-      "leadDetail",
-      "estimates",
-      "companyDocuments",
-      "calendar",
-      "tasks",
-      "invoices",
-      "reviews",
-      "reports",
-    ],
-    actions: ["manageContacts", "manageJobs", "manageEstimates", "manageDocuments", "manageTasks", "sendEmail"],
+    views: [...sharedCrmViews],
+    actions: [...sharedCrmActions],
   },
   operations_manager: {
-    views: [
-      "dashboard",
-      "contacts",
-      "jobs",
-      "leadDetail",
-      "companyDocuments",
-      "projects",
-      "calendar",
-      "tasks",
-      "invoices",
-      "reviews",
-      "reports",
-    ],
-    actions: ["manageJobs", "manageDocuments", "manageTasks", "sendEmail"],
+    views: [...sharedCrmViews],
+    actions: [...sharedCrmActions],
   },
   sales: {
-    views: [
-      "dashboard",
-      "leads",
-      "contacts",
-      "jobs",
-      "leadDetail",
-      "estimates",
-      "companyDocuments",
-      "calendar",
-      "tasks",
-      "reviews",
-      "reports",
-    ],
-    actions: ["manageContacts", "manageJobs", "manageEstimates", "manageDocuments", "manageTasks", "sendEmail"],
+    views: [...sharedCrmViews],
+    actions: [...sharedCrmActions],
   },
   production: {
-    views: ["dashboard", "jobs", "projects", "leadDetail", "companyDocuments", "calendar", "tasks", "reports"],
-    actions: ["manageJobs", "manageDocuments", "manageTasks", "sendEmail"],
+    views: [...sharedCrmViews],
+    actions: [...sharedCrmActions],
   },
   viewer: {
-    views: [
-      "dashboard",
-      "leads",
-      "contacts",
-      "jobs",
-      "projects",
-      "leadDetail",
-      "estimates",
-      "companyDocuments",
-      "calendar",
-      "tasks",
-      "reports",
-    ],
-    actions: [],
+    views: [...sharedCrmViews],
+    actions: [...sharedCrmActions],
   },
 };
 
@@ -298,8 +253,6 @@ const defaultCurrentUser = {
   email: "",
   role: "viewer",
 };
-
-const privilegedFinancialEmails = ["gil@coastalcrestroofing.com", "devon@coastalcrestroofing.com"];
 
 const costCategories = ["Materials", "Labor", "Subcontractor", "Permits", "Dump Fees", "Equipment", "Other"];
 
@@ -2006,12 +1959,8 @@ function canManageTeamData() {
   return ["admin", "office_manager", "sales_manager", "operations_manager"].includes(currentRole());
 }
 
-function currentUserEmail() {
-  return String(authSession?.user?.email || state.currentUser.email || "").toLowerCase();
-}
-
 function canManageJobFinancials() {
-  return currentRole() === "admin" || privilegedFinancialEmails.includes(currentUserEmail());
+  return Boolean(rolePolicies[currentRole()]);
 }
 
 function currentUserFromAuthSession(session) {

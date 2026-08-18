@@ -346,7 +346,6 @@ on public.crm_records for select to authenticated
 using (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
-  and (public.can_manage_team_crm() or owner_id = auth.uid() or record_type = 'document')
 );
 
 create policy "Company users create durable CRM records"
@@ -355,7 +354,6 @@ with check (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
   and updated_by = auth.uid()
-  and (public.can_manage_team_crm() or owner_id = auth.uid())
 );
 
 create policy "Company users update durable CRM records"
@@ -363,13 +361,11 @@ on public.crm_records for update to authenticated
 using (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
-  and (public.can_manage_team_crm() or owner_id = auth.uid())
 )
 with check (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
   and updated_by = auth.uid()
-  and (public.can_manage_team_crm() or owner_id = auth.uid())
 );
 
 create policy "Company users delete durable CRM records"
@@ -377,7 +373,6 @@ on public.crm_records for delete to authenticated
 using (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
-  and (public.can_manage_team_crm() or owner_id = auth.uid())
 );
 
 drop policy if exists "Company users read CRM audit events" on public.crm_audit_events;

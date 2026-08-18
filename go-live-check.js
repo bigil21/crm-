@@ -13,6 +13,8 @@ const styles = read("styles.css");
 const projectConversations = read("project-conversations-v67.js");
 const productionFlow = read("production-flow-v64.js");
 const workflowChecklists = read("workflow-checklists-v65.js");
+const sharedRecordMigration = read("supabase/migrations/20260817_all_users_edit_shared_records.sql");
+const sharedInputRoles = ["sales_manager", "operations_manager", "sales", "production", "viewer"];
 
 const checks = [
   ["durable per-record table", schema.includes("create table if not exists public.crm_records")],
@@ -21,6 +23,7 @@ const checks = [
   ["daily recovery backups", schema.includes("create table if not exists public.crm_backups")],
   ["private document bucket", schema.includes("values ('crm-documents', 'crm-documents', false")],
   ["row-level security on records", schema.includes("alter table public.crm_records enable row level security")],
+  ["all company users can edit shared CRM records", schema.includes('create policy "Company users update durable CRM records"') && !schema.includes("and (public.can_manage_team_crm() or owner_id = auth.uid())") && sharedRecordMigration.includes('on public.crm_records for update to authenticated')],
   ["record-level client save", app.includes("flushDurableRecordsSave")],
   ["legacy record migration", app.includes("initializeDurableRecords")],
   ["managed file upload", app.includes("storeDocumentFile")],
@@ -43,6 +46,7 @@ const checks = [
   ["one-time sign-in unlock", login.includes("queueSignInUnlock") && index.includes('id="vaultUnlock"') && app.includes("playSignInUnlockTransition")],
   ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
   ["every authorized checklist box is actionable", workflowChecklists.includes('${!editable ? "disabled" : ""}') && workflowChecklists.includes("Can confirm manually")],
+  ["every signed-in role can edit CRM inputs", sharedInputRoles.every((role) => app.includes(`${role}: {\n    views: [...sharedCrmViews],\n    actions: [...sharedCrmActions]`)) && app.includes('office_manager: {\n    views: [...sharedCrmViews, "company"],\n    actions: [...sharedCrmActions, "manageCompany"]') && app.includes('return Boolean(rolePolicies[currentRole()]);') && app.includes('"manageEstimates"')],
   ["checklists verify shared database saves", app.includes("persistChecklistRecord") && workflowChecklists.includes("The checkbox was restored")],
   ["lead progression waits for checklist save", workflowChecklists.includes('saveStateForChecklist?.tone === "saving"') && workflowChecklists.includes("!checklist.ready || !editable || checklistSaveInProgress")],
   ["estimate values verify shared database saves", app.includes("persistEstimateRecord") && index.includes('id="estimateSaveStatus"') && index.includes('id="saveEstimateButton"')],
