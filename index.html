@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=54" />
+    <link rel="stylesheet" href="styles.css?v=55" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -431,6 +431,7 @@
               <button type="button" class="hidden" data-lead-tab="profit">Profit & Cost</button>
               <button type="button" data-lead-tab="email">Email</button>
               <button type="button" data-lead-tab="documents">Documents</button>
+              <button type="button" data-lead-tab="photos">Photos</button>
               <button type="button" data-lead-tab="conversation">Conversation</button>
             </div>
 
@@ -626,6 +627,35 @@
               </div>
               <p class="save-state-message" id="leadDocumentUploadStatus" role="status" aria-live="polite"></p>
               <div id="leadDocumentsList" class="document-list"></div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadPhotosPanel">
+              <div class="view-toolbar photo-toolbar">
+                <div>
+                  <p class="eyebrow">Job Photos</p>
+                  <h2 id="leadPhotoHeading">Photos for this job</h2>
+                  <p class="section-description">Photos stay attached to the selected job and do not appear inside the lead's other jobs.</p>
+                </div>
+                <div class="document-upload-controls">
+                  <label class="compact-select">
+                    Job
+                    <select id="leadPhotoJobSelect" aria-label="Job photo library"></select>
+                  </label>
+                  <button class="primary-button" type="button" id="uploadLeadPhotoButton">
+                    <span aria-hidden="true" data-icon="upload"></span>
+                    Upload Photos
+                  </button>
+                </div>
+                <input
+                  class="file-input-hidden"
+                  id="leadPhotoInput"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,image/avif,.heic,.heif"
+                  multiple
+                />
+              </div>
+              <p class="save-state-message" id="leadPhotoUploadStatus" role="status" aria-live="polite"></p>
+              <div id="leadPhotosGrid" class="job-photo-grid"></div>
             </div>
 
             <div class="lead-tab-panel hidden" id="leadConversationPanel">
@@ -1280,7 +1310,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=107" defer></script>
+    <script src="app.js?v=108" defer></script>
     <script src="production-flow-v64.js?v=66" defer></script>
     <script src="workflow-checklists-v65.js?v=77" defer></script>
     <script src="project-conversations-v67.js?v=78" defer></script>
