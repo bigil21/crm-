@@ -1549,6 +1549,29 @@ button:disabled {
   font-weight: 900;
 }
 
+.payment-ledger-layout {
+  grid-template-columns: minmax(300px, 440px) minmax(340px, 1fr);
+}
+
+.payment-ledger-list {
+  max-height: 680px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.payment-ledger-card {
+  border-left: 4px solid var(--accent);
+}
+
+.payment-ledger-square {
+  border-left-color: var(--green);
+  background: linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--green) 6%, white));
+}
+
+.payment-ledger-card .row-actions {
+  flex-shrink: 0;
+}
+
 .project-number-pill,
 .project-number-inline {
   display: inline-flex;
@@ -4738,7 +4761,8 @@ textarea:focus {
   .record-grid,
   .reports-grid,
   .profit-summary,
-  .profit-cost-layout {
+  .profit-cost-layout,
+  .payment-ledger-layout {
     grid-template-columns: 1fr;
   }
 

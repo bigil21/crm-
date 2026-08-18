@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v113";
+const CACHE_NAME = "jobcrest-crm-v115";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -55,6 +55,7 @@ const APP_SHELL = [
   "./styles.css?v=54",
   "./styles.css?v=55",
   "./styles.css?v=56",
+  "./styles.css?v=57",
   "./app.js?v=37",
   "./app.js?v=40",
   "./app.js?v=41",
@@ -92,6 +93,8 @@ const APP_SHELL = [
   "./app.js?v=107",
   "./app.js?v=108",
   "./app.js?v=109",
+  "./app.js?v=110",
+  "./app.js?v=111",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -174,11 +177,14 @@ function patchIndexHtml(html, url) {
     .replaceAll('login.js?v=88', 'login.js?v=91')
     .replaceAll('login.js?v=89', 'login.js?v=91')
     .replaceAll('login.js?v=90', 'login.js?v=91')
-    .replaceAll('styles.css?v=54', 'styles.css?v=56')
-    .replaceAll('styles.css?v=55', 'styles.css?v=56')
-    .replaceAll('app.js?v=106', 'app.js?v=109')
-    .replaceAll('app.js?v=107', 'app.js?v=109')
-    .replaceAll('app.js?v=108', 'app.js?v=109')
+    .replaceAll('styles.css?v=54', 'styles.css?v=57')
+    .replaceAll('styles.css?v=55', 'styles.css?v=57')
+    .replaceAll('styles.css?v=56', 'styles.css?v=57')
+    .replaceAll('app.js?v=106', 'app.js?v=111')
+    .replaceAll('app.js?v=107', 'app.js?v=111')
+    .replaceAll('app.js?v=108', 'app.js?v=111')
+    .replaceAll('app.js?v=109', 'app.js?v=111')
+    .replaceAll('app.js?v=110', 'app.js?v=111')
     .replaceAll('workflow-checklists-v65.js?v=77', 'workflow-checklists-v65.js?v=78')
     .replaceAll('project-conversations-v67.js?v=78', 'project-conversations-v67.js?v=79');
 
