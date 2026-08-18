@@ -587,9 +587,15 @@ const els = {
   clearProfitCostForm: document.querySelector("#clearProfitCostForm"),
   profitCostList: document.querySelector("#profitCostList"),
   leadEmailPanel: document.querySelector("#leadEmailPanel"),
+  leadEmailHeading: document.querySelector("#leadEmailHeading"),
+  leadEmailJobSelect: document.querySelector("#leadEmailJobSelect"),
   leadEmailForm: document.querySelector("#leadEmailForm"),
+  leadEmailHistory: document.querySelector("#leadEmailHistory"),
+  leadEmailSaveStatus: document.querySelector("#leadEmailSaveStatus"),
   copyLeadEmailButton: document.querySelector("#copyLeadEmailButton"),
   leadDocumentsPanel: document.querySelector("#leadDocumentsPanel"),
+  leadDocumentHeading: document.querySelector("#leadDocumentHeading"),
+  leadDocumentJobSelect: document.querySelector("#leadDocumentJobSelect"),
   leadDocumentsList: document.querySelector("#leadDocumentsList"),
   leadDocumentCategory: document.querySelector("#leadDocumentCategory"),
   uploadLeadDocumentButton: document.querySelector("#uploadLeadDocumentButton"),
@@ -843,9 +849,14 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
   const jobs = contact.jobs?.length
     ? contact.jobs.map((job) => normalizeJob(job, baseContact))
     : [normalizeJob({}, baseContact)];
+  const primaryJobId = jobs[0]?.id || "";
   return {
     ...baseContact,
     jobs,
+    documents: baseContact.documents.map((document) => ({
+      ...document,
+      jobId: document.jobId || primaryJobId,
+    })),
   };
 }
 
@@ -872,6 +883,7 @@ function normalizeJob(job, contact = {}) {
     closedDate,
     notes: job.notes || "",
     costItems: (job.costItems || job.costs || []).map(normalizeCostItem),
+    emails: (job.emails || []).map(normalizeJobEmail),
     profitNotes: job.profitNotes || "",
     createdAt: job.createdAt || contact.createdAt || todayISO(),
   };
@@ -920,6 +932,18 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     kind:
       document.kind || document.recordKind ||
       ((document.categoryId || categoryId) === JOB_PHOTO_CATEGORY_ID ? "photo" : "document"),
+  };
+}
+
+function normalizeJobEmail(email = {}) {
+  return {
+    id: email.id || uid("job_email"),
+    fromEmail: email.fromEmail || "",
+    toEmail: email.toEmail || "",
+    subject: email.subject || "",
+    message: email.message || "",
+    createdAt: email.createdAt || new Date().toISOString(),
+    createdBy: email.createdBy || "CRM user",
   };
 }
 
@@ -1825,6 +1849,15 @@ async function persistChecklistRecord(contactId, jobId, stage, itemId, expectedV
   );
 }
 
+async function persistChecklistStageRecord(contactId, jobId, stage, expectedStageData = {}) {
+  return persistDurableRecordNow("contact", contactId, (confirmedData) => {
+    const confirmedStage = confirmedData?.workflowChecklists?.[jobId]?.[stage] || {};
+    return Object.entries(expectedStageData).every(
+      ([itemId, expectedValue]) => confirmedStage[itemId] === Boolean(expectedValue),
+    );
+  });
+}
+
 async function persistEstimateRecord(estimateId) {
   return persistDurableRecordNow("estimate", estimateId, (confirmedData, expectedData) =>
     durableRecordDataMatches(confirmedData, expectedData),
@@ -2061,6 +2094,7 @@ function openLeadDetail(contactId, tab = "overview", jobId = "") {
   } else if (changingContact || !jobs.some((job) => job.id === state.selectedLeadJobId)) {
     state.selectedLeadJobId = jobs[0]?.id || "";
   }
+  state.selectedProfitJobId = state.selectedLeadJobId;
   state.leadDetailTab = tab;
   state.view = "leadDetail";
   saveState();
@@ -2834,7 +2868,7 @@ async function importZohoCsv(file) {
   showToast(`Zoho import complete: ${added} added, ${updated} updated`);
 }
 
-function addContactUpdate(contactId, { author = "Local user", message, status = "" }) {
+function addContactUpdate(contactId, { author = "Local user", message, status = "", jobId = "" }) {
   if (!message?.trim() && !status) return null;
   return updateContact(contactId, (contact) => ({
     ...contact,
@@ -2844,6 +2878,7 @@ function addContactUpdate(contactId, { author = "Local user", message, status = 
         author: author.trim() || "Local user",
         message: message?.trim() || "",
         status,
+        jobId,
         createdAt: new Date().toISOString(),
       },
       ...(contact.updates || []),
@@ -2879,6 +2914,7 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
           id: uid("update"),
           author: author.trim() || "Local user",
           status: nextStatus,
+          jobId: nextJobs[0]?.id || "",
           message: message || `Status changed from ${wasStatus} to ${nextStatus}.`,
           createdAt: new Date().toISOString(),
         },
@@ -4144,9 +4180,27 @@ function renderLeadJobs(contact) {
   hydrateIcons(els.leadJobsList);
 }
 
-function selectedProfitJob(contact) {
+function selectedLeadJob(contact) {
   const jobs = contactJobs(contact);
-  return jobs.find((job) => job.id === state.selectedProfitJobId) || jobs[0];
+  const selected = jobs.find((job) => job.id === state.selectedLeadJobId) || jobs[0];
+  state.selectedLeadJobId = selected?.id || "";
+  state.selectedProfitJobId = selected?.id || "";
+  return selected;
+}
+
+function selectedProfitJob(contact) {
+  return selectedLeadJob(contact);
+}
+
+function jobContextOptions(contact, selectedId = state.selectedLeadJobId) {
+  return contactJobs(contact)
+    .map(
+      (job) =>
+        `<option value="${escapeHtml(job.id)}" ${job.id === selectedId ? "selected" : ""}>${escapeHtml(job.name)} - ${escapeHtml(
+          (job.address || "No address").split("\n")[0],
+        )}</option>`,
+    )
+    .join("");
 }
 
 function jobCostTotal(job) {
@@ -4168,20 +4222,10 @@ function renderLeadProfit(contact) {
     return;
   }
 
-  const jobs = contactJobs(contact);
   const selected = selectedProfitJob(contact);
-  state.selectedProfitJobId = selected?.id || "";
 
   if (els.profitJobSelect) {
-    els.profitJobSelect.innerHTML = jobs
-      .map(
-        (job) => `
-          <option value="${job.id}" ${job.id === selected?.id ? "selected" : ""}>
-            ${escapeHtml(job.name)} - ${escapeHtml((job.address || "No address").split("\n")[0])}
-          </option>
-        `,
-      )
-      .join("");
+    els.profitJobSelect.innerHTML = jobContextOptions(contact, selected?.id);
   }
 
   const metrics = jobProfitMetrics(selected);
@@ -4257,11 +4301,11 @@ function fillProfitCostForm(item = {}) {
 
 function updateSelectedProfitJob(updater) {
   const contact = getSelectedContact();
-  if (!contact || !state.selectedProfitJobId) return null;
+  if (!contact || !state.selectedLeadJobId) return null;
   let updatedJob = null;
   updateContact(contact.id, (current) => {
     const jobs = contactJobs(current).map((job) => {
-      if (job.id !== state.selectedProfitJobId) return job;
+      if (job.id !== state.selectedLeadJobId) return job;
       updatedJob = normalizeJob(updater({ ...job }), current);
       return updatedJob;
     });
@@ -4285,6 +4329,7 @@ async function saveProfitCost(event) {
   const contact = getSelectedContact();
   const job = selectedProfitJob(contact);
   if (!contact || !job) return;
+  state.selectedLeadJobId = job.id;
   state.selectedProfitJobId = job.id;
   const formData = new FormData(els.profitCostForm);
   const costId = formData.get("costId") || uid("cost");
@@ -4312,6 +4357,7 @@ async function saveProfitCost(event) {
 
   const costUpdateContact = addContactUpdate(contact.id, {
     author: state.currentUser.name || "Upper admin",
+    jobId: job.id,
     message: `${existing ? "Updated" : "Added"} cost on ${job.name}: ${money.format(nextItem.amount)} ${nextItem.category}.`,
   });
 
@@ -4361,6 +4407,7 @@ function deleteCostItem(costId) {
   }));
   addContactUpdate(contact.id, {
     author: state.currentUser.name || "Upper admin",
+    jobId: job.id,
     message: `Removed cost on ${job.name}: ${item ? money.format(item.amount) : "cost item"}.`,
   });
   fillProfitCostForm();
@@ -4476,6 +4523,7 @@ function editLeadJob(jobId) {
   const job = contactJobs(contact).find((item) => item.id === jobId);
   if (!job) return;
   state.selectedLeadJobId = jobId;
+  state.selectedProfitJobId = jobId;
   state.leadDetailTab = "jobs";
   renderLeadDetail();
   fillJobForm({ ...job, jobId: job.id });
@@ -4485,9 +4533,11 @@ function deleteLeadJob(jobId) {
   const contact = getSelectedContact();
   if (!contact || contactJobs(contact).length <= 1) return;
   const job = contactJobs(contact).find((item) => item.id === jobId);
-  const linkedPhotoCount = photosForJob(contact, jobId).length;
-  if (linkedPhotoCount) {
-    showToast(`Remove the ${linkedPhotoCount} photo${linkedPhotoCount === 1 ? "" : "s"} from ${job?.name || "this job"} before deleting it.`);
+  const linkedDocumentCount = (contact.documents || []).filter((document) => document.jobId === jobId).length;
+  if (linkedDocumentCount) {
+    showToast(
+      `Remove the ${linkedDocumentCount} file${linkedDocumentCount === 1 ? "" : "s"} from ${job?.name || "this job"} before deleting it.`,
+    );
     return;
   }
   updateContact(contact.id, (current) => {
@@ -4518,31 +4568,59 @@ function deleteLeadJob(jobId) {
   showToast("Job removed");
 }
 
-function defaultLeadEmail(contact) {
-  const primary = primaryJob(contact);
+function defaultLeadEmail(contact, job = selectedLeadJob(contact)) {
+  const projectLabel = job?.projectNumber ? `${job.projectNumber} - ${job.name}` : job?.name || "your project";
   return {
     fromEmail: state.currentUser.email || state.company.email || "",
     toEmail: contact.email || "",
-    subject: `${state.company.name} follow-up for ${primary?.name || "your project"}`,
-    message: `Hi ${contact.name},\n\nI wanted to follow up on ${primary?.name || "your project"}.\n\nPlease let me know if you have any questions or if there is a good time to connect.\n\nThank you,\n${state.currentUser.name || state.company.name}`,
+    subject: `${state.company.name} follow-up for ${projectLabel}`,
+    message: `Hi ${contact.name},\n\nI wanted to follow up on ${projectLabel}.\n\nPlease let me know if you have any questions or if there is a good time to connect.\n\nThank you,\n${state.currentUser.name || state.company.name}`,
   };
 }
 
 function renderLeadEmail(contact) {
   if (!els.leadEmailForm) return;
-  const data = defaultLeadEmail(contact);
+  const job = selectedLeadJob(contact);
+  if (els.leadEmailJobSelect) {
+    els.leadEmailJobSelect.innerHTML = jobContextOptions(contact, job?.id);
+    els.leadEmailJobSelect.disabled = !job;
+  }
+  if (els.leadEmailHeading) els.leadEmailHeading.textContent = job ? `${job.name} Email` : "Email for this job";
+  const data = defaultLeadEmail(contact, job);
   Object.entries(data).forEach(([key, value]) => {
     const field = els.leadEmailForm.elements[key];
     if (field && !field.matches(":focus")) field.value = value;
   });
+  if (els.leadEmailHistory) {
+    const emails = [...(job?.emails || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    els.leadEmailHistory.innerHTML = emails.length
+      ? emails
+          .map(
+            (email) => `
+              <article class="conversation-item">
+                <div class="conversation-meta">
+                  <strong>${escapeHtml(email.subject || "Client email")}</strong>
+                  <span>${escapeHtml(formatDateTime(email.createdAt))}</span>
+                </div>
+                <span class="status-pill">${escapeHtml(email.toEmail || "No recipient")}</span>
+                <p>${nl2br(email.message || "No message saved")}</p>
+                <small>Prepared by ${escapeHtml(email.createdBy || "CRM user")}</small>
+              </article>`,
+          )
+          .join("")
+      : `<div class="empty-state">No email activity saved for ${escapeHtml(job?.name || "this job")} yet.</div>`;
+  }
 }
 
 function leadEmailPayload() {
   const contact = getSelectedContact();
   if (!contact || !els.leadEmailForm) return null;
+  const job = selectedLeadJob(contact);
+  if (!job) return null;
   const formData = new FormData(els.leadEmailForm);
   return {
     contact,
+    job,
     fromEmail: formData.get("fromEmail").trim(),
     toEmail: formData.get("toEmail").trim(),
     subject: formData.get("subject").trim(),
@@ -4568,13 +4646,48 @@ function submitLeadEmail(event) {
   if (payload.fromEmail) {
     state.currentUser.email = payload.fromEmail;
   }
-  addContactUpdate(payload.contact.id, {
+  const emailRecord = normalizeJobEmail({
+    id: uid("job_email"),
+    fromEmail: payload.fromEmail,
+    toEmail: payload.toEmail,
+    subject: payload.subject,
+    message: payload.message,
+    createdBy: state.currentUser.name || state.currentUser.email || "CRM user",
+  });
+  updateContact(payload.contact.id, (current) => ({
+    ...current,
+    jobs: contactJobs(current).map((job) =>
+      job.id === payload.job.id ? { ...job, emails: [emailRecord, ...(job.emails || [])] } : job,
+    ),
+  }));
+  const emailUpdateContact = addContactUpdate(payload.contact.id, {
     author: state.currentUser.name || "Local user",
+    jobId: payload.job.id,
     message: `Opened email draft: ${payload.subject || "Client email"}.`,
   });
-  saveState();
+  saveState({ localOnly: true });
+  renderLeadEmail(getSelectedContact());
+  setSaveState(els.leadEmailSaveStatus, "Email saved to this job. Syncing in the background...", "saving");
+  const emailSave = canUseCloudSync()
+    ? persistLeadJobRecord(payload.job.id, emailUpdateContact?.updates?.[0]?.id || "")
+    : Promise.resolve(true);
+  void emailSave
+    .then((saved) => {
+      if (!saved) {
+        queueDurableRecordsSave();
+        setSaveState(els.leadEmailSaveStatus, "Email is saved locally and will retry shared CRM sync.", "error");
+        return;
+      }
+      queueCloudSave();
+      setSaveState(els.leadEmailSaveStatus, "Email activity saved to this job.", "success");
+    })
+    .catch((error) => {
+      console.warn("Job email sync failed", error);
+      queueDurableRecordsSave();
+      setSaveState(els.leadEmailSaveStatus, "Email is saved locally and will retry shared CRM sync.", "error");
+    });
   window.location.href = mailtoUrl(payload.toEmail, payload.subject, payload.message);
-  showToast("Email draft opened");
+  showToast(`Email draft opened and saved to ${payload.job.name}`);
 }
 
 async function copyLeadEmail() {
@@ -4591,17 +4704,28 @@ async function copyLeadEmail() {
 }
 
 function renderLeadDocuments(contact) {
+  const selectedJob = selectedLeadJob(contact);
   const configuredCategories = state.company.documentCategories || [];
   const visibleCategories = configuredCategories.filter(
     (category) =>
       category.active ||
-      contact.documents.some((document) => document.kind !== "photo" && document.categoryId === category.id),
+      contact.documents.some(
+        (document) =>
+          document.kind !== "photo" && document.jobId === selectedJob?.id && document.categoryId === category.id,
+      ),
   );
   const activeCategories = configuredCategories.filter((category) => category.active);
   const selectedCategoryId = activeCategories.some((category) => category.id === els.leadDocumentCategory?.value)
     ? els.leadDocumentCategory.value
     : activeCategories[0]?.id || "";
 
+  if (els.leadDocumentJobSelect) {
+    els.leadDocumentJobSelect.innerHTML = jobContextOptions(contact, selectedJob?.id);
+    els.leadDocumentJobSelect.disabled = !selectedJob;
+  }
+  if (els.leadDocumentHeading) {
+    els.leadDocumentHeading.textContent = selectedJob ? `${selectedJob.name} Documents` : "Files for this job";
+  }
   if (els.leadDocumentCategory) {
     els.leadDocumentCategory.innerHTML = activeCategories
       .map(
@@ -4611,13 +4735,20 @@ function renderLeadDocuments(contact) {
       .join("");
     els.leadDocumentCategory.disabled = !activeCategories.length;
   }
-  if (els.uploadLeadDocumentButton) els.uploadLeadDocumentButton.disabled = !activeCategories.length;
+  if (els.uploadLeadDocumentButton) {
+    els.uploadLeadDocumentButton.disabled = !selectedJob || !activeCategories.length || !canAction("manageDocuments");
+  }
 
   els.leadDocumentsList.innerHTML = visibleCategories.length
     ? visibleCategories
         .map((category) => {
           const documents = contact.documents
-            .filter((document) => document.kind !== "photo" && document.categoryId === category.id)
+            .filter(
+              (document) =>
+                document.kind !== "photo" &&
+                document.jobId === selectedJob?.id &&
+                document.categoryId === category.id,
+            )
             .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
           return `
             <section class="document-folder ${category.active ? "" : "is-inactive"}" style="--category-color:${escapeHtml(category.color)}">
@@ -4661,7 +4792,9 @@ function renderLeadDocuments(contact) {
             </section>`;
         })
         .join("")
-    : '<div class="empty-state">No active document categories. An administrator can add one in CRM Settings.</div>';
+    : selectedJob
+      ? '<div class="empty-state">No active document categories. An administrator can add one in CRM Settings.</div>'
+      : '<div class="empty-state">Add or select a job before managing documents.</div>';
   hydrateIcons(els.leadDocumentsList);
 }
 
@@ -4780,8 +4913,13 @@ function renderLeadPhotos(contact) {
 }
 
 function renderLeadConversation(contact) {
-  els.leadConversationList.innerHTML = contact.updates.length
-    ? contact.updates
+  const job = selectedLeadJob(contact);
+  const primary = primaryJob(contact);
+  const updates = (contact.updates || []).filter((update) =>
+    update.jobId ? update.jobId === job?.id : primary?.id === job?.id,
+  );
+  els.leadConversationList.innerHTML = updates.length
+    ? updates
         .map(
           (update) => `
         <article class="conversation-item">
@@ -5006,6 +5144,11 @@ async function uploadLeadDocuments(files) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
   if (!contact || !files?.length) return;
+  const job = selectedLeadJob(contact);
+  if (!job) {
+    showToast("Select a job before uploading documents");
+    return;
+  }
   const selectedFiles = validateDocumentFiles(files);
   const categoryId = els.leadDocumentCategory?.value || "";
   const category = state.company.documentCategories.find((item) => item.id === categoryId && item.active);
@@ -5025,7 +5168,12 @@ async function uploadLeadDocuments(files) {
     const documents = await Promise.all(
       selectedFiles.map(async (file) => {
         const id = uid("doc");
-        const stored = await storeDocumentFile(file, { documentId: id, leadId: contact.id, categoryId: category.id });
+        const stored = await storeDocumentFile(file, {
+          documentId: id,
+          leadId: contact.id,
+          jobId: job.id,
+          categoryId: category.id,
+        });
         return normalizeDocument({
           id,
           name: file.name,
@@ -5035,6 +5183,7 @@ async function uploadLeadDocuments(files) {
           uploadedAt: new Date().toISOString(),
           leadId: contact.id,
           contactId: contact.id,
+          jobId: job.id,
           categoryId: category.id,
           category: category.name,
           uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
@@ -5048,7 +5197,8 @@ async function uploadLeadDocuments(files) {
       documents: [...documents, ...(current.documents || [])],
     }));
     const documentUpdateContact = addContactUpdate(contact.id, {
-      message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${category.name}.`,
+      jobId: job.id,
+      message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${job.name} / ${category.name}.`,
     });
     saveState({ localOnly: true });
     window.clearTimeout(durableSaveTimer);
@@ -5076,8 +5226,8 @@ async function uploadLeadDocuments(files) {
     setSaveState(
       els.leadDocumentUploadStatus,
       canUseCloudSync()
-        ? `${documents.length} document${documents.length === 1 ? "" : "s"} saved to this lead and shared with the team.`
-        : `${documents.length} document${documents.length === 1 ? "" : "s"} saved to this lead on this device.`,
+        ? `${documents.length} document${documents.length === 1 ? "" : "s"} saved to ${job.name} and shared with the team.`
+        : `${documents.length} document${documents.length === 1 ? "" : "s"} saved to ${job.name} on this device.`,
       "success",
     );
     showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
@@ -5238,15 +5388,17 @@ async function submitLeadConversation(event) {
   if (!requireAction("manageJobs")) return;
   const contact = getSelectedContact();
   if (!contact) return;
+  const job = selectedLeadJob(contact);
+  if (!job) return;
   const formData = new FormData(els.leadConversationForm);
   const author = formData.get("author") || "Local user";
   const status = formData.get("status");
   const message = formData.get("message").trim();
 
-  if (status && status !== contact.status) {
+  if (status && status !== job.status && primaryJob(contact)?.id === job.id) {
     applyStatusUpdate(contact.id, status, author, message || `Status changed to ${status}.`);
   } else {
-    addContactUpdate(contact.id, { author, message, status });
+    addContactUpdate(contact.id, { author, message, status, jobId: job.id });
   }
 
   state.leadDetailTab = "conversation";
@@ -6063,7 +6215,8 @@ function renderReviewsView() {
                 <a class="primary-button"
                   href="${mailtoUrl(email, reviewRequestEmail(contact).subject, reviewRequestEmail(contact).message)}"
                   data-action="log-review-request"
-                  data-contact-id="${contact.id}">
+                  data-contact-id="${contact.id}"
+                  data-job-id="${job.id}">
                   <span aria-hidden="true" data-icon="star"></span>
                   Send Review Request
                 </a>
@@ -7093,6 +7246,7 @@ function saveEstimatePdfDocument(estimate, contact, doc) {
   if (createdDocument) {
     addContactUpdate(contact.id, {
       author: state.currentUser.name || "CRM",
+      jobId: estimate.jobId || job?.id || "",
       message: `Saved estimate PDF ${estimate.estimateNumber} to documents.`,
     });
   }
@@ -7492,16 +7646,44 @@ async function sendEstimate() {
   estimate.status = "Sent";
   estimate.sentAt = todayISO();
   syncEstimatePipelineStage(estimate, "Sent");
+  const job = getEstimateJob(estimate);
+  const rawSubject = `${estimate.estimateNumber} from ${state.company.name}`;
+  const rawMessage = `Hi ${contact.name},\n\nPlease review the estimate below. I also downloaded the PDF so it can be attached to this email.\n\n${estimateText(
+    estimate,
+  )}`;
+  if (job) {
+    updateContact(contact.id, (current) => ({
+      ...current,
+      jobs: contactJobs(current).map((item) =>
+        item.id === job.id
+          ? {
+              ...item,
+              emails: [
+                normalizeJobEmail({
+                  fromEmail: state.currentUser.email || state.company.email || "",
+                  toEmail: contact.email,
+                  subject: rawSubject,
+                  message: rawMessage,
+                  createdBy: state.currentUser.name || "CRM user",
+                }),
+                ...(item.emails || []),
+              ],
+            }
+          : item,
+      ),
+    }));
+    addContactUpdate(contact.id, {
+      author: state.currentUser.name || "CRM user",
+      jobId: job.id,
+      message: `Opened estimate email draft: ${rawSubject}.`,
+    });
+  }
   saveState();
   render();
   await downloadEstimatePdf({ silent: true });
 
-  const subject = encodeURIComponent(`${estimate.estimateNumber} from ${state.company.name}`);
-  const body = encodeURIComponent(
-    `Hi ${contact.name},\n\nPlease review the estimate below. I also downloaded the PDF so it can be attached to this email.\n\n${estimateText(
-      estimate,
-    )}`,
-  );
+  const subject = encodeURIComponent(rawSubject);
+  const body = encodeURIComponent(rawMessage);
   window.location.href = `mailto:${encodeURIComponent(contact.email)}?subject=${subject}&body=${body}`;
   showToast("Email draft opened");
 }
@@ -7680,8 +7862,34 @@ function bindEvents() {
     }
     if (action === "log-review-request") {
       if (contactId) {
+        const contact = getContact(contactId);
+        const job = contactJobs(contact).find((item) => item.id === actionButton.dataset.jobId) || primaryJob(contact);
+        const draft = reviewRequestEmail(contact);
+        if (job) {
+          updateContact(contactId, (current) => ({
+            ...current,
+            jobs: contactJobs(current).map((item) =>
+              item.id === job.id
+                ? {
+                    ...item,
+                    emails: [
+                      normalizeJobEmail({
+                        toEmail: contact.email,
+                        fromEmail: state.currentUser.email || state.company.email || "",
+                        subject: draft.subject,
+                        message: draft.message,
+                        createdBy: state.currentUser.name || "CRM",
+                      }),
+                      ...(item.emails || []),
+                    ],
+                  }
+                : item,
+            ),
+          }));
+        }
         addContactUpdate(contactId, {
           author: state.currentUser.name || "CRM",
+          jobId: job?.id || "",
           message: "Sent review request email.",
         });
         saveState();
@@ -7873,13 +8081,22 @@ function bindEvents() {
       event.target.value = "";
     }
   });
+  els.leadDocumentJobSelect?.addEventListener("change", (event) => {
+    const contact = getSelectedContact();
+    if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
+    state.selectedLeadJobId = event.target.value;
+    state.selectedProfitJobId = event.target.value;
+    saveState({ localOnly: true });
+    renderLeadDetail();
+  });
   els.leadPhotoJobSelect?.addEventListener("change", (event) => {
     const contact = getSelectedContact();
     if (!contact) return;
     if (!contactJobs(contact).some((job) => job.id === event.target.value)) return;
     state.selectedLeadJobId = event.target.value;
-    saveState();
-    renderLeadPhotos(contact);
+    state.selectedProfitJobId = event.target.value;
+    saveState({ localOnly: true });
+    renderLeadDetail();
   });
   els.uploadLeadPhotoButton?.addEventListener("click", () => {
     if (!requireAction("manageDocuments")) return;
@@ -7905,13 +8122,22 @@ function bindEvents() {
   els.clearJobFormButton.addEventListener("click", () => fillJobForm());
   els.profitJobSelect?.addEventListener("change", (event) => {
     if (!requireAction("manageJobFinancials")) return;
+    state.selectedLeadJobId = event.target.value;
     state.selectedProfitJobId = event.target.value;
-    saveState();
+    saveState({ localOnly: true });
     renderLeadDetail();
   });
   els.profitCostForm?.addEventListener("submit", saveProfitCost);
   els.clearProfitCostForm?.addEventListener("click", () => fillProfitCostForm());
   els.leadEmailForm.addEventListener("submit", submitLeadEmail);
+  els.leadEmailJobSelect?.addEventListener("change", (event) => {
+    const contact = getSelectedContact();
+    if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
+    state.selectedLeadJobId = event.target.value;
+    state.selectedProfitJobId = event.target.value;
+    saveState({ localOnly: true });
+    renderLeadDetail();
+  });
   els.copyLeadEmailButton.addEventListener("click", copyLeadEmail);
   els.uploadCompanyDocumentButton.addEventListener("click", () => {
     if (!requireAction("manageDocuments")) return;

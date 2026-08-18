@@ -145,6 +145,9 @@
   let selectedWorkflowJobId = "";
   let originalApplyStatusUpdate = null;
   const checklistSaveStates = new Map();
+  const checklistSaveTimers = new Map();
+  const checklistSaveRevisions = new Map();
+  const checklistSaveRetries = new Map();
 
   function autoItem(id, label, test) {
     return { id, label, mode: "auto", test };
@@ -266,14 +269,123 @@
     return `${contactId}:${jobId}:${stage}`;
   }
 
-  async function updateChecklistItem(contactId, jobId, stage, itemId, checked) {
+  function refreshChecklistSaveStatus(saveKey) {
+    const panel = document.querySelector("#workflowChecklistPanel");
+    if (!panel || panel.dataset.workflowSaveKey !== saveKey) return;
+    const status = panel.querySelector("[data-workflow-save-status]");
+    const nextState = checklistSaveStates.get(saveKey);
+    if (!status || !nextState) return;
+    status.textContent = nextState.message;
+    status.dataset.tone = nextState.tone || "";
+  }
+
+  function refreshChecklistPanel(contactId, jobId, stage) {
+    const saveKey = checklistSaveKey(contactId, jobId, stage);
+    const panel = document.querySelector("#workflowChecklistPanel");
+    if (!panel || panel.dataset.workflowSaveKey !== saveKey) return;
+    const contact = getContact(contactId);
+    const job = contact ? contactJobs(contact).find((item) => item.id === jobId) : null;
+    if (!contact || !job) return;
+    const checklist = stageChecklist(contact, job, stage);
+    const progress = checklist.total ? Math.round((checklist.completed / checklist.total) * 100) : 100;
+    checklist.items.forEach((item) => {
+      const checkbox = [...panel.querySelectorAll("[data-workflow-checkbox]")].find(
+        (input) => input.dataset.itemId === item.id,
+      );
+      if (!checkbox) return;
+      checkbox.checked = item.complete;
+      checkbox.closest(".workflow-check-item")?.classList.toggle("complete", item.complete);
+      checkbox.closest(".workflow-check-item")?.classList.toggle("missing", !item.complete);
+    });
+    const summary = panel.querySelector(".workflow-checklist-summary > div:first-child span");
+    if (summary) summary.textContent = `${checklist.completed} of ${checklist.total} required items complete`;
+    const progressNode = panel.querySelector(".workflow-progress");
+    progressNode?.setAttribute("aria-valuenow", String(progress));
+    if (progressNode?.firstElementChild) progressNode.firstElementChild.style.width = `${progress}%`;
+    const gate = panel.querySelector(".workflow-gate-status");
+    if (gate) {
+      gate.classList.toggle("ready", checklist.ready);
+      gate.classList.toggle("blocked", !checklist.ready);
+      gate.innerHTML = `<span aria-hidden="true" data-icon="${checklist.ready ? "check" : "clipboard"}"></span>${
+        checklist.ready
+          ? stage === "Lost" || !nextStage(stage)
+            ? "Checklist complete"
+            : `All requirements complete for ${escapeHtml(nextStage(stage))}`
+          : `${checklist.missing.length} required item${checklist.missing.length === 1 ? "" : "s"} remaining`
+      }`;
+      hydrateIcons(gate);
+    }
+    const advanceButton = panel.querySelector('[data-workflow-action="advance"]');
+    if (advanceButton) advanceButton.disabled = !checklist.ready || !canAction("manageJobs");
+    refreshChecklistSaveStatus(saveKey);
+  }
+
+  function scheduleChecklistSave(contactId, jobId, stage, delay = 800) {
+    const saveKey = checklistSaveKey(contactId, jobId, stage);
+    window.clearTimeout(checklistSaveTimers.get(saveKey));
+    checklistSaveTimers.set(
+      saveKey,
+      window.setTimeout(() => {
+        checklistSaveTimers.delete(saveKey);
+        void flushChecklistSave(contactId, jobId, stage);
+      }, delay),
+    );
+  }
+
+  async function flushChecklistSave(contactId, jobId, stage) {
+    const saveKey = checklistSaveKey(contactId, jobId, stage);
+    const revision = checklistSaveRevisions.get(saveKey) || 0;
+    const contact = getContact(contactId);
+    const expectedStageData = { ...(contact?.workflowChecklists?.[jobId]?.[stage] || {}) };
+    if (!contact) return false;
+
+    let saved = true;
+    try {
+      saved = typeof persistChecklistStageRecord === "function"
+        ? await persistChecklistStageRecord(contactId, jobId, stage, expectedStageData)
+        : typeof persistChecklistRecord === "function"
+          ? await persistChecklistRecord(
+              contactId,
+              jobId,
+              stage,
+              Object.keys(expectedStageData)[0],
+              Object.values(expectedStageData)[0],
+            )
+          : (saveState(), true);
+    } catch (error) {
+      console.warn("Checklist background save failed", error);
+      saved = false;
+    }
+
+    if ((checklistSaveRevisions.get(saveKey) || 0) !== revision) {
+      scheduleChecklistSave(contactId, jobId, stage, 200);
+      return saved;
+    }
+    if (saved) {
+      checklistSaveRetries.delete(saveKey);
+      checklistSaveStates.set(saveKey, { message: "Checklist saved to the shared CRM.", tone: "success" });
+      refreshChecklistSaveStatus(saveKey);
+      return true;
+    }
+
+    const retryCount = (checklistSaveRetries.get(saveKey) || 0) + 1;
+    checklistSaveRetries.set(saveKey, retryCount);
+    checklistSaveStates.set(saveKey, {
+      message: "Your checks are saved locally. Shared CRM sync is retrying in the background.",
+      tone: "error",
+    });
+    queueDurableRecordsSave();
+    refreshChecklistSaveStatus(saveKey);
+    scheduleChecklistSave(contactId, jobId, stage, Math.min(1500 * retryCount, 6000));
+    return false;
+  }
+
+  function updateChecklistItem(contactId, jobId, stage, itemId, checked) {
     if (!requireAction("manageJobs")) return false;
     const contact = getContact(contactId);
     if (!contact) return false;
     const job = contactJobs(contact).find((item) => item.id === jobId);
     if (!job) return false;
-    const definition = (checklistDefinitions[stage] || []).find((item) => item.id === itemId);
-    const previousValue = definition ? itemComplete(contact, job, stage, definition) : false;
     const saveKey = checklistSaveKey(contactId, jobId, stage);
     updateContact(contactId, (current) => {
       const currentJobData = current.workflowChecklists?.[jobId] || {};
@@ -293,46 +405,19 @@
       };
     });
     saveState({ localOnly: true });
-    checklistSaveStates.set(saveKey, { message: "Saving checklist to the shared CRM...", tone: "saving" });
-    renderLeadDetail();
-
-    const saved = typeof persistChecklistRecord === "function"
-      ? await persistChecklistRecord(contactId, jobId, stage, itemId, checked)
-      : (saveState(), true);
-    if (saved) {
-      checklistSaveStates.set(saveKey, { message: "Checklist saved to the shared CRM.", tone: "success" });
-      renderLeadDetail();
-      return true;
-    }
-
-    updateContact(contactId, (current) => {
-      const currentJobData = current.workflowChecklists?.[jobId] || {};
-      const currentStageData = currentJobData[stage] || {};
-      return {
-        ...current,
-        workflowChecklists: {
-          ...(current.workflowChecklists || {}),
-          [jobId]: {
-            ...currentJobData,
-            [stage]: { ...currentStageData, [itemId]: previousValue },
-          },
-        },
-      };
-    });
-    saveState({ localOnly: true });
-    checklistSaveStates.set(saveKey, {
-      message: "Not saved to the shared CRM. The checkbox was restored—please try again.",
-      tone: "error",
-    });
-    renderLeadDetail();
-    showToast("Checklist save failed. Please try that checkbox again.");
-    return false;
+    checklistSaveRevisions.set(saveKey, (checklistSaveRevisions.get(saveKey) || 0) + 1);
+    checklistSaveStates.set(saveKey, { message: "Checklist updated. Saving in the background...", tone: "saving" });
+    refreshChecklistPanel(contactId, jobId, stage);
+    scheduleChecklistSave(contactId, jobId, stage);
+    return true;
   }
 
   function selectedWorkflowJob(contact) {
     const jobs = contactJobs(contact);
-    const selected = jobs.find((job) => job.id === selectedWorkflowJobId) || jobs[0];
+    const selected = jobs.find((job) => job.id === (state.selectedLeadJobId || selectedWorkflowJobId)) || jobs[0];
     selectedWorkflowJobId = selected?.id || "";
+    state.selectedLeadJobId = selected?.id || "";
+    state.selectedProfitJobId = selected?.id || "";
     return selected;
   }
 
@@ -455,7 +540,6 @@
     const progress = checklist.total ? Math.round((checklist.completed / checklist.total) * 100) : 100;
     const terminal = status === "Lost" || !next;
     const saveStateForChecklist = checklistSaveStates.get(checklistSaveKey(contact.id, job.id, status));
-    const checklistSaveInProgress = saveStateForChecklist?.tone === "saving";
     const actionLabel =
       status === "Lost"
         ? "Lost lead checklist"
@@ -466,7 +550,9 @@
             : "Final closeout";
 
     return `
-      <section class="workflow-checklist" id="workflowChecklistPanel" aria-label="Job progression checklist">
+      <section class="workflow-checklist" id="workflowChecklistPanel" data-workflow-save-key="${escapeHtml(
+        checklistSaveKey(contact.id, job.id, status),
+      )}" aria-label="Job progression checklist">
         <div class="workflow-checklist-head">
           <div>
             <p class="eyebrow">Job progression</p>
@@ -534,7 +620,7 @@
             ${
               next
                 ? `<button class="primary-button" type="button" data-workflow-action="advance" data-contact-id="${contact.id}" data-job-id="${job.id}" ${
-                    !checklist.ready || !editable || checklistSaveInProgress ? "disabled" : ""
+                    !checklist.ready || !editable ? "disabled" : ""
                   }>
                     <span aria-hidden="true" data-icon="check"></span>
                     Move to ${escapeHtml(next)}
@@ -585,6 +671,8 @@
 
   function showBlockedTransition(contact, job, result) {
     selectedWorkflowJobId = job.id;
+    state.selectedLeadJobId = job.id;
+    state.selectedProfitJobId = job.id;
     state.selectedContactId = contact.id;
     state.leadDetailTab = "overview";
     state.view = "leadDetail";
@@ -626,6 +714,7 @@
           id: uid("update"),
           author,
           status: targetStatus,
+          jobId: job.id,
           message: `${job.name} moved from ${job.status} to ${targetStatus}.`,
           createdAt: new Date().toISOString(),
         },
@@ -647,6 +736,10 @@
       return;
     }
 
+    const currentSaveKey = checklistSaveKey(contact.id, job.id, job.status);
+    window.clearTimeout(checklistSaveTimers.get(currentSaveKey));
+    checklistSaveTimers.delete(currentSaveKey);
+
     let updatedContact;
     if (primaryJob(contact).id === job.id) {
       updatedContact = originalApplyStatusUpdate(contact.id, targetStatus, state.currentUser?.name || "CRM user");
@@ -654,6 +747,8 @@
       updatedContact = advanceSecondaryJob(contact, job, targetStatus);
     }
     selectedWorkflowJobId = job.id;
+    state.selectedLeadJobId = job.id;
+    state.selectedProfitJobId = job.id;
     saveState({ localOnly: true });
     const nextSaveKey = checklistSaveKey(contact.id, job.id, targetStatus);
     checklistSaveStates.set(nextSaveKey, { message: `Saving ${targetStatus} to the shared CRM...`, tone: "saving" });
@@ -751,6 +846,9 @@
     const jobSelect = event.target.closest("[data-workflow-job-select]");
     if (jobSelect) {
       selectedWorkflowJobId = jobSelect.value;
+      state.selectedLeadJobId = jobSelect.value;
+      state.selectedProfitJobId = jobSelect.value;
+      saveState({ localOnly: true });
       renderLeadDetail();
     }
   }
@@ -768,6 +866,8 @@
 
     if (button.dataset.workflowAction === "open-job") {
       selectedWorkflowJobId = button.dataset.jobId;
+      state.selectedLeadJobId = button.dataset.jobId;
+      state.selectedProfitJobId = button.dataset.jobId;
       state.selectedContactId = button.dataset.contactId;
       state.leadDetailTab = "overview";
       state.view = "leadDetail";

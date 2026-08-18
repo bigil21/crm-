@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=55" />
+    <link rel="stylesheet" href="styles.css?v=56" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -575,6 +575,18 @@
             </div>
 
             <div class="lead-tab-panel hidden" id="leadEmailPanel">
+              <div class="view-toolbar job-context-toolbar">
+                <div>
+                  <p class="eyebrow">Job Email</p>
+                  <h2 id="leadEmailHeading">Email for this job</h2>
+                  <p class="section-description">Email activity is saved only with the selected job.</p>
+                </div>
+                <label class="compact-select">
+                  Job
+                  <select id="leadEmailJobSelect" aria-label="Job email"></select>
+                </label>
+              </div>
+              <div class="job-email-layout">
               <form id="leadEmailForm" class="conversation-form email-form">
                 <div class="form-grid two">
                   <label>
@@ -604,16 +616,24 @@
                     Open Email
                   </button>
                 </div>
+                <p class="save-state-message" id="leadEmailSaveStatus" role="status" aria-live="polite"></p>
               </form>
+                <div id="leadEmailHistory" class="conversation-list"></div>
+              </div>
             </div>
 
             <div class="lead-tab-panel hidden" id="leadDocumentsPanel">
               <div class="view-toolbar">
                 <div>
-                  <p class="eyebrow">Documents</p>
-                  <h2>Files for this lead</h2>
+                  <p class="eyebrow">Job Documents</p>
+                  <h2 id="leadDocumentHeading">Files for this job</h2>
+                  <p class="section-description">Documents stay with the selected job.</p>
                 </div>
                 <div class="document-upload-controls">
+                  <label class="compact-select">
+                    Job
+                    <select id="leadDocumentJobSelect" aria-label="Job documents"></select>
+                  </label>
                   <label class="compact-select">
                     Category
                     <select id="leadDocumentCategory" aria-label="Document category"></select>
@@ -1310,9 +1330,9 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=108" defer></script>
+    <script src="app.js?v=109" defer></script>
     <script src="production-flow-v64.js?v=66" defer></script>
-    <script src="workflow-checklists-v65.js?v=77" defer></script>
-    <script src="project-conversations-v67.js?v=78" defer></script>
+    <script src="workflow-checklists-v65.js?v=78" defer></script>
+    <script src="project-conversations-v67.js?v=79" defer></script>
   </body>
 </html>

@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "78";
+  const VERSION = "79";
   const CONVERSATION_TABLE = "crm_conversation_messages";
   const soldStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
   let selectedConversationJobId = "";
@@ -438,10 +438,12 @@
 
   function currentConversationJob(contact) {
     const jobs = contactJobs(contact);
-    const selected = jobs.find((job) => job.id === selectedConversationJobId);
+    const selected = jobs.find((job) => job.id === (state.selectedLeadJobId || selectedConversationJobId));
     const fallback = jobs.find(isSoldJob) || jobs[0];
     const job = selected || fallback;
     selectedConversationJobId = job?.id || "";
+    state.selectedLeadJobId = job?.id || "";
+    state.selectedProfitJobId = job?.id || "";
     return job;
   }
 
@@ -524,9 +526,9 @@
       source: "project",
     }));
     const primary = primaryJob(contact);
-    const legacy =
-      primary?.id === job.id
-        ? (contact.updates || []).map((update) => ({
+    const legacy = (contact.updates || [])
+      .filter((update) => (update.jobId ? update.jobId === job.id : primary?.id === job.id))
+      .map((update) => ({
             id: update.id,
             authorName: update.author || "CRM user",
             authorRole: "",
@@ -535,8 +537,7 @@
             mentions: [],
             createdAt: update.createdAt,
             source: "lead",
-          }))
-        : [];
+          }));
     return [...legacy, ...shared].sort(
       (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
     );
@@ -918,7 +919,7 @@
     [...els.leadJobsList.querySelectorAll(".job-card")].forEach((card, index) => {
       const job = jobs[index];
       const actions = card.querySelector(".row-actions");
-      if (!job || !actions || !isSoldJob(job) || actions.querySelector("[data-collab-action='open-job-conversation']")) {
+      if (!job || !actions || actions.querySelector("[data-collab-action='open-job-conversation']")) {
         return;
       }
       actions.prepend(htmlToElement(conversationButton(contact.id, job.id)));
@@ -939,6 +940,8 @@
       return false;
     }
     selectedConversationJobId = jobId;
+    state.selectedLeadJobId = jobId;
+    state.selectedProfitJobId = jobId;
     selectedMentionKeys = new Set();
     mentionSuggestionQuery = "";
     state.selectedContactId = contactId;
@@ -1150,6 +1153,9 @@
   function handleConversationJobChange(event) {
     if (event.target?.id !== "jobConversationSelect") return;
     selectedConversationJobId = event.target.value;
+    state.selectedLeadJobId = event.target.value;
+    state.selectedProfitJobId = event.target.value;
+    saveState({ localOnly: true });
     selectedMentionKeys = new Set();
     mentionSuggestionQuery = "";
     renderLeadDetail();

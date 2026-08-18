@@ -1661,6 +1661,23 @@ button:disabled {
   align-items: flex-end;
 }
 
+.job-context-toolbar {
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+
+.job-email-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.85fr) minmax(0, 1.15fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.job-email-layout .conversation-list {
+  max-height: 620px;
+  overflow: auto;
+}
+
 .job-photo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -1932,6 +1949,10 @@ button:disabled {
 }
 
 @media (max-width: 1180px) {
+  .job-email-layout {
+    grid-template-columns: 1fr;
+  }
+
   .document-category-admin-row {
     grid-template-columns: 24px 42px minmax(280px, 1fr);
   }
