@@ -6,6 +6,7 @@ const SUPABASE_DOCUMENT_BUCKET = "crm-documents";
 const CLOUD_SAVE_DELAY = 700;
 const COMPANY_STATE_SUFFIX = "company";
 const COMPANY_DOCUMENT_LEAD_ID = "company";
+const JOB_PHOTO_CATEGORY_ID = "job_photos";
 const MAX_DOCUMENT_FILE_SIZE = 250 * 1024 * 1024;
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -505,6 +506,7 @@ let liveSearchActiveIndex = -1;
 const estimateSaveTimers = new Map();
 const estimateSaveRevisions = new Map();
 const estimateSaveStates = new Map();
+const photoPreviewCache = new Map();
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -593,6 +595,13 @@ const els = {
   uploadLeadDocumentButton: document.querySelector("#uploadLeadDocumentButton"),
   leadDocumentInput: document.querySelector("#leadDocumentInput"),
   leadDocumentUploadStatus: document.querySelector("#leadDocumentUploadStatus"),
+  leadPhotosPanel: document.querySelector("#leadPhotosPanel"),
+  leadPhotoHeading: document.querySelector("#leadPhotoHeading"),
+  leadPhotoJobSelect: document.querySelector("#leadPhotoJobSelect"),
+  uploadLeadPhotoButton: document.querySelector("#uploadLeadPhotoButton"),
+  leadPhotoInput: document.querySelector("#leadPhotoInput"),
+  leadPhotoUploadStatus: document.querySelector("#leadPhotoUploadStatus"),
+  leadPhotosGrid: document.querySelector("#leadPhotosGrid"),
   leadConversationPanel: document.querySelector("#leadConversationPanel"),
   leadConversationForm: document.querySelector("#leadConversationForm"),
   conversationSaveButton: document.querySelector("#conversationSaveButton"),
@@ -908,6 +917,9 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     estimateId: document.estimateId || "",
     contactId: document.contactId || resolvedLeadId,
     jobId: document.jobId || "",
+    kind:
+      document.kind || document.recordKind ||
+      ((document.categoryId || categoryId) === JOB_PHOTO_CATEGORY_ID ? "photo" : "document"),
   };
 }
 
@@ -2062,6 +2074,10 @@ function openLeadJob(contactId, jobId) {
   if (job) fillJobForm({ ...job, jobId: job.id });
 }
 
+function openLeadJobPhotos(contactId, jobId) {
+  openLeadDetail(contactId, "photos", jobId);
+}
+
 function setSelectedEstimate(id) {
   state.selectedEstimateId = id;
   const estimate = getSelectedEstimate();
@@ -2996,6 +3012,7 @@ function applyPermissionsToDom() {
     [els.emailLeadDetailButton, "sendEmail"],
     [els.estimateLeadDetailButton, "manageEstimates"],
     [els.uploadLeadDocumentButton, "manageDocuments"],
+    [els.uploadLeadPhotoButton, "manageDocuments"],
     [els.uploadCompanyDocumentButton, "manageDocuments"],
     [els.toggleEstimateCreateButton, "manageEstimates"],
     [els.newEstimateButton, "manageEstimates"],
@@ -3970,6 +3987,7 @@ function renderLeadDetail() {
     profit: els.leadProfitPanel,
     email: els.leadEmailPanel,
     documents: els.leadDocumentsPanel,
+    photos: els.leadPhotosPanel,
     conversation: els.leadConversationPanel,
   };
   Object.entries(panels).forEach(([tab, panel]) => {
@@ -4060,6 +4078,7 @@ function renderLeadDetail() {
   renderLeadProfit(contact);
   renderLeadEmail(contact);
   renderLeadDocuments(contact);
+  renderLeadPhotos(contact);
   renderLeadConversation(contact);
 }
 
@@ -4086,6 +4105,10 @@ function renderLeadJobs(contact) {
           ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
         </div>
         <div class="row-actions">
+          <button class="secondary-button" type="button" data-action="open-job-photos" data-contact-id="${contact.id}" data-job-id="${job.id}">
+            <span aria-hidden="true" data-icon="image"></span>
+            Photos (${contact.documents.filter((document) => document.kind === "photo" && document.jobId === job.id).length})
+          </button>
           <button class="secondary-button" type="button" data-action="estimate-job" data-contact-id="${contact.id}" data-job-id="${
             job.id
           }">
@@ -4462,6 +4485,11 @@ function deleteLeadJob(jobId) {
   const contact = getSelectedContact();
   if (!contact || contactJobs(contact).length <= 1) return;
   const job = contactJobs(contact).find((item) => item.id === jobId);
+  const linkedPhotoCount = photosForJob(contact, jobId).length;
+  if (linkedPhotoCount) {
+    showToast(`Remove the ${linkedPhotoCount} photo${linkedPhotoCount === 1 ? "" : "s"} from ${job?.name || "this job"} before deleting it.`);
+    return;
+  }
   updateContact(contact.id, (current) => {
     const nextJobs = contactJobs(current).filter((item) => item.id !== jobId);
     const primary = nextJobs[0];
@@ -4565,7 +4593,9 @@ async function copyLeadEmail() {
 function renderLeadDocuments(contact) {
   const configuredCategories = state.company.documentCategories || [];
   const visibleCategories = configuredCategories.filter(
-    (category) => category.active || contact.documents.some((document) => document.categoryId === category.id),
+    (category) =>
+      category.active ||
+      contact.documents.some((document) => document.kind !== "photo" && document.categoryId === category.id),
   );
   const activeCategories = configuredCategories.filter((category) => category.active);
   const selectedCategoryId = activeCategories.some((category) => category.id === els.leadDocumentCategory?.value)
@@ -4587,7 +4617,7 @@ function renderLeadDocuments(contact) {
     ? visibleCategories
         .map((category) => {
           const documents = contact.documents
-            .filter((document) => document.categoryId === category.id)
+            .filter((document) => document.kind !== "photo" && document.categoryId === category.id)
             .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
           return `
             <section class="document-folder ${category.active ? "" : "is-inactive"}" style="--category-color:${escapeHtml(category.color)}">
@@ -4633,6 +4663,120 @@ function renderLeadDocuments(contact) {
         .join("")
     : '<div class="empty-state">No active document categories. An administrator can add one in CRM Settings.</div>';
   hydrateIcons(els.leadDocumentsList);
+}
+
+function photosForJob(contact, jobId) {
+  return (contact?.documents || [])
+    .filter((document) => document.kind === "photo" && document.jobId === jobId)
+    .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+}
+
+async function managedPhotoPreviewUrl(photo) {
+  if (photo.dataUrl) return photo.dataUrl;
+  if (!photo.storagePath || !cloudClient?.storage) return "";
+  const cached = photoPreviewCache.get(photo.id);
+  if (cached?.url && cached.expiresAt > Date.now()) return cached.url;
+  const { data, error } = await cloudClient.storage
+    .from(SUPABASE_DOCUMENT_BUCKET)
+    .createSignedUrl(photo.storagePath, 300);
+  if (error) throw error;
+  const url = data?.signedUrl || "";
+  if (url) photoPreviewCache.set(photo.id, { url, expiresAt: Date.now() + 240000 });
+  return url;
+}
+
+async function hydrateLeadPhotoPreviews(contactId, jobId) {
+  const contact = getContact(contactId);
+  if (!contact || state.selectedContactId !== contactId || state.selectedLeadJobId !== jobId) return;
+  const photos = photosForJob(contact, jobId);
+  await Promise.all(
+    photos.map(async (photo) => {
+      try {
+        const url = await managedPhotoPreviewUrl(photo);
+        if (!url || state.selectedContactId !== contactId || state.selectedLeadJobId !== jobId) return;
+        const image = [...document.querySelectorAll("[data-photo-preview]")].find(
+          (element) => element.dataset.photoPreview === photo.id,
+        );
+        if (!image) return;
+        const placeholder = image.closest(".job-photo-preview")?.querySelector("[data-photo-placeholder]");
+        image.addEventListener(
+          "load",
+          () => {
+            image.classList.remove("hidden");
+            placeholder?.classList.add("hidden");
+          },
+          { once: true },
+        );
+        image.addEventListener(
+          "error",
+          () => {
+            image.classList.add("hidden");
+            placeholder?.classList.remove("hidden");
+          },
+          { once: true },
+        );
+        image.src = url;
+      } catch (error) {
+        console.warn(`Photo ${photo.id} preview could not be loaded`, error);
+      }
+    }),
+  );
+}
+
+function renderLeadPhotos(contact) {
+  if (!els.leadPhotosGrid || !els.leadPhotoJobSelect) return;
+  const jobs = contactJobs(contact);
+  if (!jobs.some((job) => job.id === state.selectedLeadJobId)) {
+    state.selectedLeadJobId = jobs[0]?.id || "";
+  }
+  const selectedJob = jobs.find((job) => job.id === state.selectedLeadJobId) || jobs[0];
+  const photos = selectedJob ? photosForJob(contact, selectedJob.id) : [];
+
+  els.leadPhotoJobSelect.innerHTML = jobs
+    .map(
+      (job) =>
+        `<option value="${escapeHtml(job.id)}" ${job.id === selectedJob?.id ? "selected" : ""}>${escapeHtml(job.name)} - ${escapeHtml(
+          (job.address || "No address saved").split("\n")[0],
+        )}</option>`,
+    )
+    .join("");
+  els.leadPhotoJobSelect.disabled = !selectedJob;
+  els.uploadLeadPhotoButton.disabled = !selectedJob || !canAction("manageDocuments");
+  els.leadPhotoHeading.textContent = selectedJob ? `${selectedJob.name} Photos` : "Photos for this job";
+
+  els.leadPhotosGrid.innerHTML = selectedJob
+    ? photos.length
+      ? photos
+          .map(
+            (photo) => `
+              <article class="job-photo-card">
+                <button class="job-photo-preview" type="button" data-action="download-document" data-document-id="${escapeHtml(photo.id)}" aria-label="Open ${escapeHtml(photo.name)}">
+                  <img class="hidden" data-photo-preview="${escapeHtml(photo.id)}" alt="${escapeHtml(photo.name)}" />
+                  <span class="job-photo-placeholder" data-photo-placeholder>
+                    <span aria-hidden="true" data-icon="image"></span>
+                    <strong>Open photo</strong>
+                  </span>
+                </button>
+                <div class="job-photo-details">
+                  <div>
+                    <strong>${escapeHtml(photo.name)}</strong>
+                    <span>${escapeHtml(formatBytes(photo.size))} · ${escapeHtml(formatDateTime(photo.uploadedAt))}</span>
+                    <span>Uploaded by ${escapeHtml(photo.uploadedBy)}</span>
+                  </div>
+                  <div class="row-actions">
+                    <button class="mini-button" type="button" title="Rename photo" aria-label="Rename ${escapeHtml(photo.name)}" data-action="rename-document" data-document-id="${escapeHtml(photo.id)}"><span aria-hidden="true" data-icon="edit"></span></button>
+                    <button class="mini-button" type="button" title="Remove photo" aria-label="Remove ${escapeHtml(photo.name)}" data-action="remove-document" data-document-id="${escapeHtml(photo.id)}"><span aria-hidden="true" data-icon="trash"></span></button>
+                  </div>
+                </div>
+              </article>`,
+          )
+          .join("")
+      : `<div class="job-photo-empty"><span aria-hidden="true" data-icon="image"></span><strong>No photos for ${escapeHtml(
+          selectedJob.name,
+        )} yet</strong><span>Upload inspection, damage, progress, and completion photos here.</span></div>`
+    : '<div class="empty-state">Add a job before uploading photos.</div>';
+  hydrateIcons(els.leadPhotosGrid);
+  if (selectedJob) void hydrateLeadPhotoPreviews(contact.id, selectedJob.id);
 }
 
 function renderLeadConversation(contact) {
@@ -4722,11 +4866,24 @@ function validateDocumentFiles(files) {
   return selectedFiles;
 }
 
+function validatePhotoFiles(files) {
+  const selectedFiles = validateDocumentFiles(files);
+  const acceptedPhotoName = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i;
+  const invalid = selectedFiles.find(
+    (file) => !String(file.type || "").toLowerCase().startsWith("image/") && !acceptedPhotoName.test(file.name || ""),
+  );
+  if (invalid) throw new Error(`${invalid.name} is not a supported photo file`);
+  return selectedFiles;
+}
+
 function documentUploadErrorMessage(error) {
   const message = String(error?.message || error || "The upload could not be completed");
   const normalized = message.toLowerCase();
   if (normalized.includes("larger than the 250 mb") || normalized.includes("payload too large") || normalized.includes("413")) {
     return "Upload failed: each file must be 250 MB or smaller.";
+  }
+  if (normalized.includes("not a supported photo file")) {
+    return "Upload failed: choose JPG, PNG, WebP, GIF, AVIF, HEIC, or HEIF photos.";
   }
   if (normalized.includes("row-level security") || normalized.includes("unauthorized") || normalized.includes("forbidden")) {
     return "Upload failed: shared file storage denied access. Ask an administrator to apply the latest storage setup.";
@@ -4740,11 +4897,12 @@ function documentUploadErrorMessage(error) {
   return `Upload failed: ${message}`;
 }
 
-async function storeDocumentFile(file, { documentId, leadId = "company", categoryId = "other" } = {}) {
+async function storeDocumentFile(file, { documentId, leadId = "company", jobId = "", categoryId = "other" } = {}) {
   if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) {
     return { dataUrl: await readFileAsDataUrl(file), storagePath: "" };
   }
-  const storagePath = `${supabaseStateId()}/${leadId}/${categoryId}/${documentId}/${safeStorageFileName(file.name)}`;
+  const recordScope = jobId ? `${leadId}/jobs/${jobId}` : leadId;
+  const storagePath = `${supabaseStateId()}/${recordScope}/${categoryId}/${documentId}/${safeStorageFileName(file.name)}`;
   const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
     cacheControl: "3600",
     contentType: file.type || "application/octet-stream",
@@ -4792,7 +4950,7 @@ async function migrateInlineDocumentsToStorage() {
   const candidates = [];
   state.contacts.forEach((contact) => (contact.documents || []).forEach((record) => {
     if (!record.storagePath && String(record.dataUrl || "").startsWith("data:")) {
-      candidates.push({ record, leadId: contact.id, categoryId: record.categoryId || "other" });
+      candidates.push({ record, leadId: contact.id, jobId: record.jobId || "", categoryId: record.categoryId || "other" });
     }
   }));
   state.companyDocuments.forEach((record) => {
@@ -4807,6 +4965,7 @@ async function migrateInlineDocumentsToStorage() {
       const stored = await storeDocumentFile(file, {
         documentId: candidate.record.id,
         leadId: candidate.leadId,
+        jobId: candidate.jobId || "",
         categoryId: candidate.categoryId,
       });
       candidate.record.storagePath = stored.storagePath;
@@ -4928,22 +5087,117 @@ async function uploadLeadDocuments(files) {
   }
 }
 
+async function uploadLeadPhotos(files) {
+  if (!requireAction("manageDocuments")) return false;
+  const contact = getSelectedContact();
+  if (!contact || !files?.length) return false;
+  const job = contactJobs(contact).find((item) => item.id === state.selectedLeadJobId);
+  if (!job) return false;
+  const selectedFiles = validatePhotoFiles(files);
+
+  els.uploadLeadPhotoButton.disabled = true;
+  setSaveState(
+    els.leadPhotoUploadStatus,
+    `Uploading ${selectedFiles.length} photo${selectedFiles.length === 1 ? "" : "s"} to ${job.name}...`,
+    "saving",
+  );
+
+  try {
+    const photos = await Promise.all(
+      selectedFiles.map(async (file) => {
+        const id = uid("photo");
+        const stored = await storeDocumentFile(file, {
+          documentId: id,
+          leadId: contact.id,
+          jobId: job.id,
+          categoryId: JOB_PHOTO_CATEGORY_ID,
+        });
+        return normalizeDocument(
+          {
+            id,
+            name: file.name,
+            type: file.type || "image/jpeg",
+            size: file.size,
+            ...stored,
+            uploadedAt: new Date().toISOString(),
+            leadId: contact.id,
+            contactId: contact.id,
+            jobId: job.id,
+            categoryId: JOB_PHOTO_CATEGORY_ID,
+            category: "Photos",
+            kind: "photo",
+            uploadedBy: state.currentUser.name || state.currentUser.email || "CRM user",
+            versionNumber: 1,
+          },
+          { leadId: contact.id, categoryId: JOB_PHOTO_CATEGORY_ID, categories: state.company.documentCategories },
+        );
+      }),
+    );
+
+    updateContact(contact.id, (current) => ({
+      ...current,
+      documents: [...photos, ...(current.documents || [])],
+    }));
+    const photoUpdateContact = addContactUpdate(contact.id, {
+      jobId: job.id,
+      message: `Uploaded ${photos.length} job photo${photos.length === 1 ? "" : "s"} to ${job.name}.`,
+    });
+    state.leadDetailTab = "photos";
+    saveState({ localOnly: true });
+    window.clearTimeout(durableSaveTimer);
+    render();
+    setSaveState(els.leadPhotoUploadStatus, "Photos stored. Confirming their shared CRM records...", "saving");
+
+    let saved = !canUseCloudSync();
+    if (canUseCloudSync()) {
+      saved = await persistLeadDocumentRecords(
+        photos.map((photo) => photo.id),
+        photoUpdateContact?.updates?.[0]?.id || "",
+      );
+    }
+    if (!saved) {
+      queueDurableRecordsSave();
+      queueCloudSave();
+      setSaveState(
+        els.leadPhotoUploadStatus,
+        "Photos uploaded, but their shared CRM records are still retrying. Keep this page open.",
+        "error",
+      );
+      showToast("Photos uploaded, but their CRM records were not confirmed yet.");
+      return false;
+    }
+
+    queueCloudSave();
+    setSaveState(
+      els.leadPhotoUploadStatus,
+      `${photos.length} photo${photos.length === 1 ? "" : "s"} saved only to ${job.name}.`,
+      "success",
+    );
+    showToast(`${photos.length} job photo${photos.length === 1 ? "" : "s"} saved to ${job.name}`);
+    return true;
+  } finally {
+    els.uploadLeadPhotoButton.disabled = !canAction("manageDocuments");
+  }
+}
+
 function removeLeadDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
   if (!contact) return;
   const document = contact.documents.find((item) => item.id === documentId);
+  photoPreviewCache.delete(documentId);
   void deleteStoredDocument(document);
   updateContact(contact.id, (current) => ({
     ...current,
     documents: current.documents.filter((item) => item.id !== documentId),
   }));
   addContactUpdate(contact.id, {
-    message: `Removed document ${document?.name || "from lead record"}.`,
+    jobId: document?.jobId || "",
+    message: `Removed ${document?.kind === "photo" ? "photo" : "document"} ${document?.name || "from lead record"}.`,
   });
   saveState();
   render();
-  showToast("Document removed");
+  showToast(document?.kind === "photo" ? "Photo removed" : "Document removed");
 }
 
 function documentExtension(name = "") {
@@ -4971,11 +5225,12 @@ function renameLeadDocument(documentId) {
     documents: current.documents.map((item) => (item.id === documentId ? { ...item, name: nextName } : item)),
   }));
   addContactUpdate(contact.id, {
-    message: `Renamed document ${document.name} to ${nextName}.`,
+    jobId: document.jobId || "",
+    message: `Renamed ${document.kind === "photo" ? "photo" : "document"} ${document.name} to ${nextName}.`,
   });
   saveState();
   render();
-  showToast("Document renamed");
+  showToast(document.kind === "photo" ? "Photo renamed" : "Document renamed");
 }
 
 async function submitLeadConversation(event) {
@@ -7329,6 +7584,8 @@ const icons = {
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>',
   file:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>',
+  image:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
   folder:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>',
   calendar:
@@ -7410,6 +7667,7 @@ function bindEvents() {
     if (action === "open-contact") openLeadDetail(contactId);
     if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview", actionButton.dataset.jobId || "");
     if (action === "open-job") openLeadJob(contactId, actionButton.dataset.jobId);
+    if (action === "open-job-photos") openLeadJobPhotos(contactId, actionButton.dataset.jobId);
     if (action === "refresh-weather") loadWeather({ force: true });
     if (action === "edit-contact") openContactDialog(contactId);
     if (action === "estimate-contact") createEstimate(contactId);
@@ -7611,6 +7869,33 @@ function bindEvents() {
       setSaveState(els.leadDocumentUploadStatus, message, "error");
       showToast(message);
       els.uploadLeadDocumentButton.disabled = false;
+    } finally {
+      event.target.value = "";
+    }
+  });
+  els.leadPhotoJobSelect?.addEventListener("change", (event) => {
+    const contact = getSelectedContact();
+    if (!contact) return;
+    if (!contactJobs(contact).some((job) => job.id === event.target.value)) return;
+    state.selectedLeadJobId = event.target.value;
+    saveState();
+    renderLeadPhotos(contact);
+  });
+  els.uploadLeadPhotoButton?.addEventListener("click", () => {
+    if (!requireAction("manageDocuments")) return;
+    els.leadPhotoInput.value = "";
+    els.leadPhotoInput.click();
+  });
+  els.leadPhotoInput?.addEventListener("change", async (event) => {
+    const files = [...(event.target.files || [])];
+    try {
+      await uploadLeadPhotos(files);
+    } catch (error) {
+      console.warn("Job photo upload failed", error);
+      const message = documentUploadErrorMessage(error);
+      setSaveState(els.leadPhotoUploadStatus, message, "error");
+      showToast(message);
+      els.uploadLeadPhotoButton.disabled = !canAction("manageDocuments");
     } finally {
       event.target.value = "";
     }
