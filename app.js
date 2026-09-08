@@ -489,6 +489,7 @@ let cloudClient = null;
 let cloudReady = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
+let localStateSaveTimer = null;
 let lastCloudSnapshot = "";
 let cloudSubscription = null;
 let applyingCloudState = false;
@@ -506,6 +507,7 @@ let liveSearchActiveIndex = -1;
 const estimateSaveTimers = new Map();
 const estimateSaveRevisions = new Map();
 const estimateSaveStates = new Map();
+const estimateExplicitSaves = new Set();
 const recentLocalDurableWrites = new Map();
 let estimateVisualRefreshTimer = null;
 const photoPreviewCache = new Map();
@@ -1077,8 +1079,25 @@ function normalizeLineItem(item) {
   };
 }
 
-function saveState(options = {}) {
+function writeStateToLocalStorage() {
   localStorage.setItem(activeStorageKey(), JSON.stringify(state));
+}
+
+function flushQueuedLocalStateSave() {
+  window.clearTimeout(localStateSaveTimer);
+  localStateSaveTimer = null;
+  writeStateToLocalStorage();
+}
+
+function queueLocalStateSave(delay = 200) {
+  window.clearTimeout(localStateSaveTimer);
+  localStateSaveTimer = window.setTimeout(flushQueuedLocalStateSave, delay);
+}
+
+function saveState(options = {}) {
+  window.clearTimeout(localStateSaveTimer);
+  localStateSaveTimer = null;
+  writeStateToLocalStorage();
   if (!options.localOnly && !applyingCloudState) {
     queueCloudSave();
     queueDurableRecordsSave();
@@ -2003,30 +2022,40 @@ async function persistLeadDocumentRecords(documentIds, updateId) {
   const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
   if (documentRows.length !== wantedIds.size) return false;
 
-  const { error: writeError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .upsert(documentRows, { onConflict: "company_state_id,record_type,id" });
-  if (writeError) throw writeError;
-  if (auditRow) {
-    const { error: auditError } = await cloudClient
-      .from(SUPABASE_AUDIT_TABLE)
-      .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
-    if (auditError) throw auditError;
-    durableAuditIds.add(auditRow.id);
-  }
+  durableSaveInFlight = true;
+  documentRows.forEach(markRecentLocalDurableWrite);
+  try {
+    const { error: writeError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .upsert(documentRows, { onConflict: "company_state_id,record_type,id" });
+    if (writeError) {
+      documentRows.forEach(clearRecentLocalDurableWrite);
+      throw writeError;
+    }
+    if (auditRow) {
+      const { error: auditError } = await cloudClient
+        .from(SUPABASE_AUDIT_TABLE)
+        .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
+      if (auditError) throw auditError;
+      durableAuditIds.add(auditRow.id);
+    }
 
-  const { data: confirmed, error: confirmError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .select("id")
-    .eq("company_state_id", supabaseStateId())
-    .eq("record_type", "document")
-    .in("id", documentIds);
-  if (confirmError) throw confirmError;
-  if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
-  documentRows.forEach((row) => {
-    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
-  });
-  return true;
+    const { data: confirmed, error: confirmError } = await cloudClient
+      .from(SUPABASE_RECORDS_TABLE)
+      .select("id")
+      .eq("company_state_id", supabaseStateId())
+      .eq("record_type", "document")
+      .in("id", documentIds);
+    if (confirmError) throw confirmError;
+    if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
+    documentRows.forEach((row) => {
+      durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+    });
+    return true;
+  } finally {
+    durableSaveInFlight = false;
+    queueDurableRecordsSave();
+  }
 }
 
 async function persistCompanyDocumentRecords(documentIds) {
@@ -6803,6 +6832,52 @@ function renderEstimateActiveSummary(estimate) {
     </div>`;
 }
 
+function estimateLineItemMarkup(item, index) {
+  return `
+    <div class="line-item" data-line-index="${index}">
+      <label class="line-item-title">
+        Product Title
+        <input data-line-field="title" value="${escapeHtml(item.title)}" />
+      </label>
+      <label class="line-item-description">
+        Description
+        <textarea data-line-field="description" rows="2">${escapeHtml(item.description)}</textarea>
+      </label>
+      <label>
+        Qty
+        <input data-line-field="quantity" type="text" inputmode="decimal" autocomplete="off" value="${number(
+          item.quantity,
+        )}" />
+      </label>
+      <label>
+        Unit
+        <input data-line-field="unit" value="${escapeHtml(item.unit)}" />
+      </label>
+      <label>
+        Rate
+        <input data-line-field="rate" type="text" inputmode="decimal" autocomplete="off" value="${number(item.rate)}" />
+      </label>
+      <div class="remove-cell">
+        <button class="mini-button" type="button" title="Remove line item" aria-label="Remove line item" data-action="remove-line" data-line-index="${index}">
+          <span aria-hidden="true" data-icon="trash"></span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderEstimateLineItems(estimate) {
+  els.lineItems.innerHTML = estimate.items.map(estimateLineItemMarkup).join("");
+  hydrateIcons(els.lineItems);
+}
+
+function appendEstimateLineItem(estimate, index) {
+  els.lineItems.insertAdjacentHTML("beforeend", estimateLineItemMarkup(estimate.items[index], index));
+  const row = els.lineItems.lastElementChild;
+  hydrateIcons(row);
+  row?.querySelector('[data-line-field="title"]')?.focus();
+}
+
 function renderEstimateForm(estimate) {
   const disabled = !estimate;
   renderEstimateActiveSummary(estimate);
@@ -6855,42 +6930,7 @@ function renderEstimateForm(estimate) {
   els.deposit.value = estimate.deposit;
   els.estimateNotes.value = estimate.notes;
 
-  els.lineItems.innerHTML = estimate.items
-    .map(
-      (item, index) => `
-        <div class="line-item" data-line-index="${index}">
-          <label class="line-item-title">
-            Product Title
-            <input data-line-field="title" value="${escapeHtml(item.title)}" />
-          </label>
-          <label class="line-item-description">
-            Description
-            <textarea data-line-field="description" rows="2">${escapeHtml(item.description)}</textarea>
-          </label>
-          <label>
-            Qty
-            <input data-line-field="quantity" type="text" inputmode="decimal" autocomplete="off" value="${number(
-              item.quantity,
-            )}" />
-          </label>
-          <label>
-            Unit
-            <input data-line-field="unit" value="${escapeHtml(item.unit)}" />
-          </label>
-          <label>
-            Rate
-            <input data-line-field="rate" type="text" inputmode="decimal" autocomplete="off" value="${number(item.rate)}" />
-          </label>
-          <div class="remove-cell">
-            <button class="mini-button" type="button" title="Remove line item" aria-label="Remove line item" data-action="remove-line" data-line-index="${index}">
-              <span aria-hidden="true" data-icon="trash"></span>
-            </button>
-          </div>
-        </div>
-      `,
-    )
-    .join("");
-  hydrateIcons(els.lineItems);
+  renderEstimateLineItems(estimate);
 }
 
 function renderEstimatePreview(estimate) {
@@ -7540,7 +7580,7 @@ function updateSelectedEstimateFromField(fieldName, value) {
     estimate.projectNumber = numbered?.job?.projectNumber || "";
     estimate.projectTitle = numbered?.job?.name || estimate.projectTitle;
   }
-  saveState({ localOnly: true });
+  queueLocalStateSave();
   queueEstimateVerifiedSave(estimate.id);
   scheduleEstimateVisualRefresh(estimate.id);
 }
@@ -7555,7 +7595,7 @@ function updateLineItem(input) {
   if (!estimate.items[index] || !field) return;
 
   estimate.items[index][field] = ["quantity", "rate"].includes(field) ? number(input.value) : input.value;
-  saveState({ localOnly: true });
+  queueLocalStateSave();
   queueEstimateVerifiedSave(estimate.id);
   scheduleEstimateVisualRefresh(estimate.id);
 }
@@ -7634,53 +7674,72 @@ function estimateFileName(estimate = getSelectedEstimate()) {
     .concat(".pdf");
 }
 
-function dataUrlSize(dataUrl = "") {
-  const base64 = String(dataUrl).split(",")[1] || "";
-  return Math.round((base64.length * 3) / 4);
-}
-
-function saveEstimatePdfDocument(estimate, contact, doc) {
+async function saveEstimatePdfDocument(estimate, contact, doc) {
   if (!canAction("manageDocuments")) return null;
   const job = getEstimateJob(estimate);
-  const dataUrl = doc.output("datauristring");
+  const categories = state.company.documentCategories || defaultDocumentCategories;
+  const category = categories.find((item) => item.id === "doccat_estimates") || categoryForLegacyName("Estimates", categories);
+  if (!category) throw new Error("The Estimates document category is unavailable");
   const fileName = estimateFileName(estimate);
-  let savedDocument = null;
-  let createdDocument = false;
+  const documents = getContact(contact.id)?.documents || [];
+  const existing = documents.find((document) => document.source === "Estimate PDF" && document.estimateId === estimate.id);
+  const id = existing?.id || uid("doc");
+  const blob = doc.output("blob");
+  const file = new File([blob], fileName, { type: "application/pdf" });
+  const stored = await storeDocumentFile(file, {
+    documentId: id,
+    leadId: contact.id,
+    jobId: estimate.jobId || job?.id || "",
+    categoryId: category.id,
+  });
+  const savedDocument = normalizeDocument({
+    ...(existing || {}),
+    id,
+    name: fileName,
+    categoryId: category.id,
+    category: category.name,
+    type: "application/pdf",
+    size: file.size,
+    ...stored,
+    uploadedAt: new Date().toISOString(),
+    uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+    versionNumber: existing ? Math.max(1, number(existing.versionNumber)) + 1 : 1,
+    source: "Estimate PDF",
+    estimateId: estimate.id,
+    leadId: contact.id,
+    contactId: contact.id,
+    jobId: estimate.jobId || job?.id || "",
+  }, { leadId: contact.id, categoryId: category.id, categories });
 
   updateContact(contact.id, (current) => {
-    const documents = current.documents || [];
-    const existing = documents.find((document) => document.source === "Estimate PDF" && document.estimateId === estimate.id);
-    savedDocument = normalizeDocument({
-      ...(existing || {}),
-      id: existing?.id || uid("doc"),
-      name: fileName,
-      category: "Estimates",
-      type: "application/pdf",
-      size: dataUrlSize(dataUrl),
-      dataUrl,
-      uploadedAt: new Date().toISOString(),
-      uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
-      source: "Estimate PDF",
-      estimateId: estimate.id,
-      contactId: contact.id,
-      jobId: estimate.jobId || job?.id || "",
-    });
-    createdDocument = !existing;
+    const currentDocuments = current.documents || [];
     return {
       ...current,
       documents: existing
-        ? documents.map((document) => (document.id === existing.id ? savedDocument : document))
-        : [savedDocument, ...documents],
+        ? currentDocuments.map((document) => (document.id === existing.id ? savedDocument : document))
+        : [savedDocument, ...currentDocuments],
     };
   });
 
-  if (createdDocument) {
-    addContactUpdate(contact.id, {
+  const documentUpdateContact = !existing
+    ? addContactUpdate(contact.id, {
       author: state.currentUser.name || "CRM",
       jobId: estimate.jobId || job?.id || "",
       message: `Saved estimate PDF ${estimate.estimateNumber} to documents.`,
-    });
+    })
+    : null;
+  saveState({ localOnly: true });
+
+  let saved = !canUseCloudSync();
+  if (canUseCloudSync()) {
+    saved = await persistLeadDocumentRecords([savedDocument.id], documentUpdateContact?.updates?.[0]?.id || "");
   }
+  if (!saved) {
+    queueDurableRecordsSave();
+    queueCloudSave();
+    throw new Error("The estimate PDF record could not be confirmed in the shared CRM");
+  }
+  queueCloudSave();
 
   return savedDocument;
 }
@@ -8045,13 +8104,24 @@ async function downloadEstimatePdf(options = {}) {
   doc.text(footerLeft, left, PDF_PAGE_HEIGHT - 9);
   if (footerRight) doc.text(footerRight, right, PDF_PAGE_HEIGHT - 9, { align: "right" });
 
-  const savedDocument = saveEstimatePdfDocument(estimate, contact, doc);
-  saveState();
-  doc.save(estimateFileName(estimate));
-  if (!options.silent) {
+  let savedDocument = null;
+  if (options.saveToDocuments !== false) {
+    try {
+      savedDocument = await saveEstimatePdfDocument(estimate, contact, doc);
+    } catch (error) {
+      console.warn("Estimate PDF could not be saved to lead documents", error);
+      setEstimateSaveState(estimate.id, "The estimate was saved, but its PDF could not be attached to the lead. Please retry.", "error");
+      showToast("Estimate PDF was not saved to the lead documents. Please retry.");
+      if (options.download === false) return false;
+    }
+  }
+  if (options.download !== false) {
+    doc.save(estimateFileName(estimate));
+  }
+  if (!options.silent && options.download !== false) {
     showToast(savedDocument ? "Estimate PDF downloaded and saved to the lead" : "Estimate PDF downloaded");
   }
-  return true;
+  return options.saveToDocuments === false || Boolean(savedDocument);
 }
 
 async function copyEstimate() {
@@ -8121,6 +8191,26 @@ async function sendEstimate() {
 
 function printEstimate() {
   downloadEstimatePdf();
+}
+
+async function saveCurrentEstimateAndPdf() {
+  const estimate = getSelectedEstimate();
+  if (!estimate || estimateExplicitSaves.has(estimate.id)) return false;
+  estimateExplicitSaves.add(estimate.id);
+  flushQueuedLocalStateSave();
+  const revision = (estimateSaveRevisions.get(estimate.id) || 0) + 1;
+  estimateSaveRevisions.set(estimate.id, revision);
+
+  try {
+    const estimateSaved = await flushEstimateVerifiedSave(estimate.id, revision);
+    if (!estimateSaved) return false;
+    const pdfSaved = await downloadEstimatePdf({ silent: true, download: false });
+    if (!pdfSaved) return false;
+    setEstimateSaveState(estimate.id, "", "");
+    return true;
+  } finally {
+    estimateExplicitSaves.delete(estimate.id);
+  }
 }
 
 function saveCompany(event) {
@@ -8347,8 +8437,10 @@ function bindEvents() {
       const estimate = getSelectedEstimate();
       if (estimate && estimate.items.length > 1) {
         estimate.items.splice(Number(lineIndex), 1);
-        saveState();
-        renderEstimates();
+        queueLocalStateSave();
+        renderEstimateLineItems(estimate);
+        queueEstimateVerifiedSave(estimate.id);
+        scheduleEstimateVisualRefresh(estimate.id);
       }
     }
     if (action === "remove-document") {
@@ -8709,9 +8801,12 @@ function bindEvents() {
     if (!requireAction("manageEstimates")) return;
     const estimate = getSelectedEstimate();
     if (!estimate) return;
+    const index = estimate.items.length;
     estimate.items.push({ title: "", description: "", quantity: 1, unit: "ea", rate: 0 });
-    saveState();
-    renderEstimates();
+    queueLocalStateSave();
+    appendEstimateLineItem(estimate, index);
+    queueEstimateVerifiedSave(estimate.id);
+    scheduleEstimateVisualRefresh(estimate.id);
   });
 
   els.lineItemTemplatesButton?.addEventListener("click", () => {
@@ -8739,8 +8834,10 @@ function bindEvents() {
     const tpl = estimateTemplates[Number(btn.dataset.templateIndex)];
     if (!tpl) return;
     estimate.items = [...estimate.items, ...tpl.items.map((item) => ({ ...item }))];
-    saveState();
-    renderEstimates();
+    queueLocalStateSave();
+    renderEstimateLineItems(estimate);
+    queueEstimateVerifiedSave(estimate.id);
+    scheduleEstimateVisualRefresh(estimate.id);
     els.templatePicker.classList.add("hidden");
     showToast(`${tpl.name} template added`);
   });
@@ -8748,9 +8845,7 @@ function bindEvents() {
   els.estimateForm.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!requireAction("manageEstimates")) return;
-    const estimate = getSelectedEstimate();
-    if (!estimate) return;
-    queueEstimateVerifiedSave(estimate.id, { immediate: true });
+    void saveCurrentEstimateAndPdf();
   });
 
   els.estimateForm.addEventListener("input", (event) => {
@@ -8775,6 +8870,7 @@ function bindEvents() {
   els.copyEstimateButton.addEventListener("click", copyEstimate);
   els.printEstimateButton.addEventListener("click", printEstimate);
   els.sendEstimateButton.addEventListener("click", sendEstimate);
+  window.addEventListener("pagehide", flushQueuedLocalStateSave);
   els.companyForm.addEventListener("submit", saveCompany);
   els.documentCategoryCreateForm?.addEventListener("submit", createDocumentCategory);
   let draggedDocumentCategoryId = "";
