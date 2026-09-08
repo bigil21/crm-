@@ -764,6 +764,7 @@
     checklistSaveTimers.delete(currentSaveKey);
 
     let updatedContact;
+    const primaryJobAlreadyAtTarget = primaryJob(contact).id === job.id && contact.status === targetStatus;
     if (primaryJob(contact).id === job.id) {
       updatedContact = originalApplyStatusUpdate(contact.id, targetStatus, state.currentUser?.name || "CRM user");
     } else {
@@ -779,7 +780,9 @@
     const updateId = updatedContact?.updates?.[0]?.id || "";
     let saved = !canUseCloudSync();
     try {
-      if (canUseCloudSync()) saved = await persistLeadJobRecord(job.id, updateId);
+      if (canUseCloudSync()) {
+        saved = await persistLeadJobRecord(job.id, updateId, { skipContact: primaryJobAlreadyAtTarget });
+      }
     } catch {
       saved = false;
     }

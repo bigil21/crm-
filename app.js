@@ -1906,7 +1906,7 @@ async function persistManualPaymentRecord(jobId, paymentId, shouldExist, updateI
   }
 }
 
-async function persistLeadJobRecord(jobId, updateId) {
+async function persistLeadJobRecord(jobId, updateId, { skipContact = false } = {}) {
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
   const durableRows = durableRowsFromState();
@@ -1916,7 +1916,7 @@ async function persistLeadJobRecord(jobId, updateId) {
   const contactRow = durableRows.find(
     (row) => row.record_type === "contact" && row.id === jobRow.lead_id,
   );
-  const rowsToWrite = contactRow ? [contactRow, jobRow] : [jobRow];
+  const rowsToWrite = contactRow && !skipContact ? [contactRow, jobRow] : [jobRow];
 
   durableSaveInFlight = true;
   try {
