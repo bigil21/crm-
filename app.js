@@ -506,6 +506,8 @@ let liveSearchActiveIndex = -1;
 const estimateSaveTimers = new Map();
 const estimateSaveRevisions = new Map();
 const estimateSaveStates = new Map();
+const recentLocalDurableWrites = new Map();
+let estimateVisualRefreshTimer = null;
 const photoPreviewCache = new Map();
 
 function roleLabel(role = currentRole()) {
@@ -1555,6 +1557,35 @@ function durableFingerprint(row) {
   });
 }
 
+function markRecentLocalDurableWrite(row) {
+  if (!row) return;
+  recentLocalDurableWrites.set(durableRecordKey(row), {
+    fingerprint: durableFingerprint(row),
+    expiresAt: Date.now() + 10000,
+  });
+}
+
+function clearRecentLocalDurableWrite(row) {
+  if (!row) return;
+  const key = durableRecordKey(row);
+  const recent = recentLocalDurableWrites.get(key);
+  if (recent?.fingerprint === durableFingerprint(row)) recentLocalDurableWrites.delete(key);
+}
+
+function consumeRecentLocalDurableEcho(row) {
+  if (!row?.record_type || !row?.id) return false;
+  const key = durableRecordKey(row);
+  const recent = recentLocalDurableWrites.get(key);
+  if (!recent) return false;
+  if (recent.expiresAt < Date.now()) {
+    recentLocalDurableWrites.delete(key);
+    return false;
+  }
+  if (recent.fingerprint !== durableFingerprint(row)) return false;
+  recentLocalDurableWrites.delete(key);
+  return true;
+}
+
 function hasPendingDurableChanges() {
   if (!durableRecordsReady) return false;
   const rows = durableRowsFromState();
@@ -1676,8 +1707,12 @@ async function flushDurableRecordsSave() {
   durableSaveInFlight = true;
   try {
     if (changedRows.length) {
+      changedRows.forEach(markRecentLocalDurableWrite);
       const { error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).upsert(changedRows, { onConflict: "company_state_id,record_type,id" });
-      if (error) throw error;
+      if (error) {
+        changedRows.forEach(clearRecentLocalDurableWrite);
+        throw error;
+      }
     }
     for (const [recordType, ids] of removedByType) {
       const { error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).delete().eq("company_state_id", supabaseStateId()).eq("record_type", recordType).in("id", ids);
@@ -1705,8 +1740,9 @@ async function flushDurableRecordsSave() {
 
 function setSaveState(element, message, tone = "") {
   if (!element) return;
-  element.textContent = message;
-  element.dataset.tone = tone;
+  const visibleMessage = tone === "success" ? "" : message;
+  element.textContent = visibleMessage;
+  element.dataset.tone = visibleMessage ? tone : "";
 }
 
 async function waitForDurableSaveSlot() {
@@ -1891,7 +1927,7 @@ function durableRecordDataMatches(left, right) {
   return JSON.stringify(canonicalRecordValue(left)) === JSON.stringify(canonicalRecordValue(right));
 }
 
-async function persistDurableRecordNow(recordType, recordId, verify) {
+async function persistDurableRecordNow(recordType, recordId, verify, { syncLegacy = true } = {}) {
   if (!canUseCloudSync()) return true;
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
 
@@ -1904,10 +1940,14 @@ async function persistDurableRecordNow(recordType, recordId, verify) {
 
   durableSaveInFlight = true;
   try {
+    markRecentLocalDurableWrite(row);
     const { error: writeError } = await cloudClient
       .from(SUPABASE_RECORDS_TABLE)
       .upsert(row, { onConflict: "company_state_id,record_type,id" });
-    if (writeError) throw writeError;
+    if (writeError) {
+      clearRecentLocalDurableWrite(row);
+      throw writeError;
+    }
 
     const { data: confirmed, error: confirmError } = await cloudClient
       .from(SUPABASE_RECORDS_TABLE)
@@ -1920,7 +1960,7 @@ async function persistDurableRecordNow(recordType, recordId, verify) {
     if (!verify(confirmed?.data || {}, row.data)) return false;
 
     durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
-    queueCloudSave();
+    if (syncLegacy) queueCloudSave();
     return true;
   } catch (error) {
     console.warn(`${recordType} record could not be verified in the shared CRM`, error);
@@ -1949,6 +1989,7 @@ async function persistChecklistStageRecord(contactId, jobId, stage, expectedStag
 async function persistEstimateRecord(estimateId) {
   return persistDurableRecordNow("estimate", estimateId, (confirmedData, expectedData) =>
     durableRecordDataMatches(confirmedData, expectedData),
+    { syncLegacy: false },
   );
 }
 
@@ -2042,6 +2083,7 @@ async function initializeDurableRecords() {
     .channel(`crm-records-${supabaseStateId()}-${authSession.user.id}`)
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
+      if (consumeRecentLocalDurableEcho(row)) return;
       if (durableSaveInFlight || hasPendingDurableChanges()) {
         queueDurableRecordsSave();
         return;
@@ -7411,10 +7453,14 @@ function nextEstimateNumber() {
 function renderEstimateSaveState(estimateId = getSelectedEstimate()?.id) {
   if (!els.estimateSaveStatus) return;
   const stateForEstimate = estimateSaveStates.get(estimateId) || {
-    message: "All estimate values are saved automatically",
-    tone: "success",
+    message: "",
+    tone: "",
   };
-  setSaveState(els.estimateSaveStatus, stateForEstimate.message, stateForEstimate.tone);
+  setSaveState(
+    els.estimateSaveStatus,
+    stateForEstimate.tone === "error" ? stateForEstimate.message : "",
+    stateForEstimate.tone === "error" ? "error" : "",
+  );
 }
 
 function setEstimateSaveState(estimateId, message, tone = "") {
@@ -7426,19 +7472,15 @@ async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevi
   if (!estimateId || !state.estimates.some((estimate) => estimate.id === estimateId)) return false;
   window.clearTimeout(estimateSaveTimers.get(estimateId));
   estimateSaveTimers.delete(estimateId);
-  setEstimateSaveState(estimateId, "Saving every estimate value to the shared CRM...", "saving");
-  if (getSelectedEstimate()?.id === estimateId && els.saveEstimateButton) els.saveEstimateButton.disabled = true;
+  setEstimateSaveState(estimateId, "", "");
 
   const saved = await persistEstimateRecord(estimateId);
   const latestRevision = estimateSaveRevisions.get(estimateId) || 0;
   if (saved && revision === latestRevision) {
-    setEstimateSaveState(estimateId, "All estimate values saved to the shared CRM.", "success");
+    setEstimateSaveState(estimateId, "", "");
   } else if (!saved && revision === latestRevision) {
     setEstimateSaveState(estimateId, "Not saved to the shared CRM. Use Save Estimate to retry.", "error");
     showToast("Estimate save failed—your values are still on this page. Please retry.");
-  }
-  if (getSelectedEstimate()?.id === estimateId && els.saveEstimateButton) {
-    els.saveEstimateButton.disabled = !canAction("manageEstimates");
   }
   return saved;
 }
@@ -7448,12 +7490,23 @@ function queueEstimateVerifiedSave(estimateId, { immediate = false } = {}) {
   const revision = (estimateSaveRevisions.get(estimateId) || 0) + 1;
   estimateSaveRevisions.set(estimateId, revision);
   window.clearTimeout(estimateSaveTimers.get(estimateId));
-  setEstimateSaveState(estimateId, "Saving estimate values...", "saving");
+  setEstimateSaveState(estimateId, "", "");
   const timer = window.setTimeout(
     () => void flushEstimateVerifiedSave(estimateId, revision),
-    immediate ? 0 : 500,
+    immediate ? 0 : 2000,
   );
   estimateSaveTimers.set(estimateId, timer);
+}
+
+function scheduleEstimateVisualRefresh(estimateId) {
+  window.clearTimeout(estimateVisualRefreshTimer);
+  estimateVisualRefreshTimer = window.setTimeout(() => {
+    const estimate = state.estimates.find((item) => item.id === estimateId);
+    if (!estimate || getSelectedEstimate()?.id !== estimateId) return;
+    renderEstimatePreview(estimate);
+    renderSummary();
+    renderEstimateActiveSummary(estimate);
+  }, 80);
 }
 
 function updateSelectedEstimateFromField(fieldName, value) {
@@ -7487,11 +7540,9 @@ function updateSelectedEstimateFromField(fieldName, value) {
     estimate.projectNumber = numbered?.job?.projectNumber || "";
     estimate.projectTitle = numbered?.job?.name || estimate.projectTitle;
   }
-  saveState();
+  saveState({ localOnly: true });
   queueEstimateVerifiedSave(estimate.id);
-  renderEstimatePreview(estimate);
-  renderSummary();
-  renderEstimateActiveSummary(estimate);
+  scheduleEstimateVisualRefresh(estimate.id);
 }
 
 function updateLineItem(input) {
@@ -7504,10 +7555,9 @@ function updateLineItem(input) {
   if (!estimate.items[index] || !field) return;
 
   estimate.items[index][field] = ["quantity", "rate"].includes(field) ? number(input.value) : input.value;
-  saveState();
+  saveState({ localOnly: true });
   queueEstimateVerifiedSave(estimate.id);
-  renderEstimatePreview(estimate);
-  renderEstimateActiveSummary(estimate);
+  scheduleEstimateVisualRefresh(estimate.id);
 }
 
 function deleteEstimate() {
@@ -8103,8 +8153,12 @@ function saveCompany(event) {
 }
 
 function showToast(message) {
+  const text = String(message || "");
+  const isFailure = /\b(?:not saved|failed|failure|error|retry|unavailable|still retrying|cloud sync is off)\b/i.test(text);
+  const isRoutineSaveNotice = /\b(?:saved|uploaded|stored)\b/i.test(text) || /\bupdated from (?:the )?(?:cloud|supabase|crm)\b/i.test(text);
+  if (isRoutineSaveNotice && !isFailure && !/\bdownloaded\b/i.test(text)) return;
   window.clearTimeout(toastTimer);
-  els.toast.textContent = message;
+  els.toast.textContent = text;
   els.toast.classList.add("show");
   toastTimer = window.setTimeout(() => els.toast.classList.remove("show"), 2400);
 }
@@ -8701,6 +8755,7 @@ function bindEvents() {
 
   els.estimateForm.addEventListener("input", (event) => {
     if (!canAction("manageEstimates")) return;
+    if (event.target.matches("select")) return;
     if (event.target.matches("[data-line-field]")) {
       updateLineItem(event.target);
       return;
@@ -8710,16 +8765,8 @@ function bindEvents() {
 
   els.estimateForm.addEventListener("change", (event) => {
     if (!canAction("manageEstimates")) return;
-    if (event.target.matches("[data-line-field]")) {
-      updateLineItem(event.target);
-      const estimate = getSelectedEstimate();
-      if (estimate) queueEstimateVerifiedSave(estimate.id, { immediate: true });
-      return;
-    }
-    if (event.target.name) {
+    if (event.target.matches("select") && event.target.name) {
       updateSelectedEstimateFromField(event.target.name, event.target.value);
-      const estimate = getSelectedEstimate();
-      if (estimate) queueEstimateVerifiedSave(estimate.id, { immediate: true });
       renderEstimates();
     }
   });

@@ -363,7 +363,7 @@
     }
     if (saved) {
       checklistSaveRetries.delete(saveKey);
-      checklistSaveStates.set(saveKey, { message: "Checklist saved to the shared CRM.", tone: "success" });
+      checklistSaveStates.set(saveKey, { message: "", tone: "" });
       refreshChecklistSaveStatus(saveKey);
       return true;
     }
@@ -406,7 +406,7 @@
     });
     saveState({ localOnly: true });
     checklistSaveRevisions.set(saveKey, (checklistSaveRevisions.get(saveKey) || 0) + 1);
-    checklistSaveStates.set(saveKey, { message: "Checklist updated. Saving in the background...", tone: "saving" });
+    checklistSaveStates.set(saveKey, { message: "", tone: "" });
     refreshChecklistPanel(contactId, jobId, stage);
     scheduleChecklistSave(contactId, jobId, stage);
     return true;
@@ -751,7 +751,7 @@
     state.selectedProfitJobId = job.id;
     saveState({ localOnly: true });
     const nextSaveKey = checklistSaveKey(contact.id, job.id, targetStatus);
-    checklistSaveStates.set(nextSaveKey, { message: `Saving ${targetStatus} to the shared CRM...`, tone: "saving" });
+    checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
     render();
     const updateId = updatedContact?.updates?.[0]?.id || "";
     let saved = !canUseCloudSync();
@@ -773,7 +773,7 @@
       showToast("Stage change was not saved to the shared CRM");
       return;
     }
-    checklistSaveStates.set(nextSaveKey, { message: `${targetStatus} saved to the shared CRM.`, tone: "success" });
+    checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
     queueCloudSave();
     render();
     showToast(`${job.name} moved to ${targetStatus} and saved`);

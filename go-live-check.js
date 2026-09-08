@@ -46,8 +46,8 @@ const checks = [
   ["one-time sign-in unlock", login.includes("queueSignInUnlock") && index.includes('id="vaultUnlock"') && app.includes("playSignInUnlockTransition")],
   ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
   ["every authorized checklist box is actionable", workflowChecklists.includes('${!editable ? "disabled" : ""}') && workflowChecklists.includes("Can confirm manually")],
-  ["every signed-in role can edit CRM inputs", sharedInputRoles.every((role) => app.includes(`${role}: {\n    views: [...sharedCrmViews],\n    actions: [...sharedCrmActions]`)) && app.includes('office_manager: {\n    views: [...sharedCrmViews, "company"],\n    actions: [...sharedCrmActions, "manageCompany"]') && app.includes('return Boolean(rolePolicies[currentRole()]);') && app.includes('"manageEstimates"')],
-  ["checklists batch and verify shared database saves", app.includes("persistChecklistStageRecord") && workflowChecklists.includes("scheduleChecklistSave") && workflowChecklists.includes("Checklist updated. Saving in the background")],
+  ["every signed-in role can edit CRM inputs", sharedInputRoles.every((role) => new RegExp(`${role}: \\{\\r?\\n    views: \\[\\.\\.\\.sharedCrmViews\\],\\r?\\n    actions: \\[\\.\\.\\.sharedCrmActions\\]`).test(app)) && /office_manager: \{\r?\n    views: \[\.\.\.sharedCrmViews, "company"\],\r?\n    actions: \[\.\.\.sharedCrmActions, "manageCompany"\]/.test(app) && app.includes('return Boolean(rolePolicies[currentRole()]);') && app.includes('"manageEstimates"')],
+  ["checklists batch and verify shared database saves", app.includes("persistChecklistStageRecord") && workflowChecklists.includes("scheduleChecklistSave") && workflowChecklists.includes('checklistSaveStates.set(saveKey, { message: "", tone: "" })')],
   ["lead progression stays responsive during checklist sync", !workflowChecklists.includes("checklistSaveInProgress") && workflowChecklists.includes("checklistSaveTimers.get(currentSaveKey)") && workflowChecklists.includes("persistLeadJobRecord")],
   ["estimate values verify shared database saves", app.includes("persistEstimateRecord") && index.includes('id="estimateSaveStatus"') && index.includes('id="saveEstimateButton"')],
   ["estimate form cannot reload before saving", app.includes('els.estimateForm.addEventListener("submit"') && app.includes("queueEstimateVerifiedSave")],
@@ -83,6 +83,10 @@ const checks = [
   ["Square and manual payments do not overwrite each other", app.includes("squarePaidAmount + manualPaidAmount") && app.includes("squarePaidAmount,") && app.includes("manualPayments")],
   ["manual payments verify the exact durable job row", app.includes("persistManualPaymentRecord") && app.includes("confirmed?.data?.manualPayments") && app.includes("durableRecordDataMatches")],
   ["manual payment amounts accept cents", index.includes('name="amount" type="number" min="0.01" step="0.01" inputmode="decimal"')],
+  ["estimate typing uses quiet delayed autosave", app.includes("immediate ? 0 : 2000") && app.includes("scheduleEstimateVisualRefresh") && app.includes("saveState({ localOnly: true });\n  queueEstimateVerifiedSave(estimate.id)")],
+  ["estimate autosave never disables the editor", !app.includes('setEstimateSaveState(estimateId, "Saving every estimate value') && !app.includes('els.saveEstimateButton.disabled = true')],
+  ["local cloud echoes cannot redraw active estimates", app.includes("consumeRecentLocalDurableEcho(row)") && app.includes("markRecentLocalDurableWrite(row)")],
+  ["routine save notifications stay quiet", app.includes("isRoutineSaveNotice") && app.includes('tone === "success" ? "" : message') && workflowChecklists.includes('checklistSaveStates.set(saveKey, { message: "", tone: "" })')],
 ];
 
 let failed = 0;
