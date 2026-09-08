@@ -689,5 +689,12 @@
   const timer = window.setInterval(() => {
     if (installProductionFlow()) window.clearInterval(timer);
   }, 200);
-  window.setTimeout(() => window.clearInterval(timer), 15000);
+  window.addEventListener(
+    "jobcrest:app-ready",
+    () => {
+      if (installProductionFlow()) window.clearInterval(timer);
+    },
+    { once: true },
+  );
+  window.setTimeout(() => window.clearInterval(timer), 60000);
 })();

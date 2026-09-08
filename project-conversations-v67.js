@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "79";
+  const VERSION = "80";
   const CONVERSATION_TABLE = "crm_conversation_messages";
   const soldStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
   let selectedConversationJobId = "";
@@ -1514,5 +1514,12 @@
   const timer = window.setInterval(() => {
     if (installProjectConversations()) window.clearInterval(timer);
   }, 200);
-  window.setTimeout(() => window.clearInterval(timer), 20000);
+  window.addEventListener(
+    "jobcrest:app-ready",
+    () => {
+      if (installProjectConversations()) window.clearInterval(timer);
+    },
+    { once: true },
+  );
+  window.setTimeout(() => window.clearInterval(timer), 60000);
 })();

@@ -308,8 +308,11 @@
       );
       if (!checkbox) return;
       checkbox.checked = item.complete;
-      checkbox.closest(".workflow-check-item")?.classList.toggle("complete", item.complete);
-      checkbox.closest(".workflow-check-item")?.classList.toggle("missing", !item.complete);
+      const row = checkbox.closest(".workflow-check-item");
+      row?.classList.toggle("complete", item.complete);
+      row?.classList.toggle("missing", !item.complete);
+      const mode = row?.querySelector(".workflow-check-mode");
+      if (mode) mode.textContent = item.complete ? "Verified" : canAction("manageJobs") ? "Can confirm manually" : "Missing";
     });
     const summary = panel.querySelector(".workflow-checklist-summary > div:first-child span");
     if (summary) summary.textContent = `${checklist.completed} of ${checklist.total} required items complete`;
@@ -1218,6 +1221,13 @@
   const timer = window.setInterval(() => {
     if (installWorkflowChecklists()) window.clearInterval(timer);
   }, 200);
-  window.setTimeout(() => window.clearInterval(timer), 15000);
+  window.addEventListener(
+    "jobcrest:app-ready",
+    () => {
+      if (installWorkflowChecklists()) window.clearInterval(timer);
+    },
+    { once: true },
+  );
+  window.setTimeout(() => window.clearInterval(timer), 60000);
 })();
 

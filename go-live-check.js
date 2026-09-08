@@ -59,6 +59,9 @@ const checks = [
   ["authenticated startup rejects stale business cache", app.includes("state.contacts = []") && app.includes("hydrate these collections")],
   ["profit cost verifies its exact durable row", app.includes("persistProfitCostRecord") && app.includes("confirmed?.data?.costItems") && app.includes("durableWritesEnabled")],
   ["service worker never caches live APIs", read("sw.js").includes("url.origin !== self.location.origin") && read("sw.js").includes('url.pathname.startsWith("/api/")')],
+  ["service worker upgrades every stale workflow asset", /replace\(\/app\\\.js\\\?v=\\d\+\/g/.test(read("sw.js")) && /replace\(\/workflow-checklists-v65\\\.js\\\?v=\\d\+\/g/.test(read("sw.js"))],
+  ["local development cannot be trapped by stale app-shell caches", app.includes('["localhost", "127.0.0.1"].includes(location.hostname)') && app.includes("registration.unregister()") && app.includes("return version <= 103")],
+  ["workflow add-ons wait for authenticated CRM startup", app.includes('CustomEvent("jobcrest:app-ready")') && productionFlow.includes('"jobcrest:app-ready"') && workflowChecklists.includes('"jobcrest:app-ready"') && projectConversations.includes('"jobcrest:app-ready"')],
   ["legacy API caches are purged before hydration", app.includes("purgeLegacyJobCrestCaches") && auth.includes('cache: "no-store"')],
   ["each client job is independently selectable", app.includes('data-action="open-job"') && app.includes("selectedLeadJobId") && app.includes("openLeadJob")],
   ["jobs have independent production status", app.includes("soldJobStatuses") && index.includes('name="status"') && index.includes("Materials Ordered") && index.includes("In Progress") && index.includes("Completed")],
@@ -95,6 +98,7 @@ const checks = [
   ["large CRM edits batch local storage serialization", app.includes("function queueLocalStateSave") && app.includes('window.addEventListener("pagehide", flushQueuedLocalStateSave)') && workflowChecklists.includes("queueWorkflowLocalSave()")],
   ["workflow stage changes avoid full-page rendering", workflowChecklists.includes("renderActiveWorkflowLead();") && !workflowChecklists.includes("checklistSaveStates.set(nextSaveKey, { message: \"\", tone: \"\" });\n    render();")],
   ["workflow checkboxes have distinct native click targets", workflowChecklists.includes("position: static;") && workflowChecklists.includes("pointer-events: auto;") && workflowChecklists.includes("accent-color: #16a34a;") && workflowChecklists.includes("box-sizing: border-box;") && workflowChecklists.includes(".workflow-check-box {\n        display: none;")],
+  ["automatic checklist labels refresh with checkbox state", workflowChecklists.includes('mode.textContent = item.complete ? "Verified"')],
   ["blocked stage buttons respond with the exact missing requirement", workflowChecklists.includes("Complete before moving to ${targetStatus}") && workflowChecklists.includes('advanceButton.disabled = !canAction("manageJobs")') && workflowChecklists.includes('!editable ? "disabled" : ""') && app.includes("isWorkflowBlocker")],
 ];
 

@@ -9002,6 +9002,11 @@ function bindEvents() {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
   try {
+    if (["localhost", "127.0.0.1"].includes(location.hostname)) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+      return;
+    }
     await navigator.serviceWorker.register("sw.js");
   } catch {
     console.info("Service worker registration failed");
@@ -9014,7 +9019,12 @@ async function purgeLegacyJobCrestCaches() {
     const keys = await caches.keys();
     await Promise.all(
       keys
-        .filter((key) => key.startsWith("jobcrest-crm-") && key !== "jobcrest-crm-v103")
+        .filter((key) => {
+          if (!key.startsWith("jobcrest-crm-")) return false;
+          if (["localhost", "127.0.0.1"].includes(location.hostname)) return true;
+          const version = Number(key.match(/^jobcrest-crm-v(\d+)$/)?.[1] || Number.POSITIVE_INFINITY);
+          return version <= 103;
+        })
         .map((key) => caches.delete(key)),
     );
   } catch (error) {
@@ -9090,6 +9100,10 @@ async function startApp() {
   hydrateIcons();
   bindEvents();
   render();
+  // Add-on modules can finish downloading long before durable CRM records have
+  // hydrated. Give them a deterministic startup signal instead of making them
+  // guess when the core application is ready from a short polling window.
+  window.dispatchEvent(new CustomEvent("jobcrest:app-ready"));
   durableWritesEnabled = durableRecordsReady;
   if (durableWritesEnabled) queueDurableRecordsSave();
   await playSignInUnlockTransition();
