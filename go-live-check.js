@@ -83,10 +83,15 @@ const checks = [
   ["Square and manual payments do not overwrite each other", app.includes("squarePaidAmount + manualPaidAmount") && app.includes("squarePaidAmount,") && app.includes("manualPayments")],
   ["manual payments verify the exact durable job row", app.includes("persistManualPaymentRecord") && app.includes("confirmed?.data?.manualPayments") && app.includes("durableRecordDataMatches")],
   ["manual payment amounts accept cents", index.includes('name="amount" type="number" min="0.01" step="0.01" inputmode="decimal"')],
-  ["estimate typing uses quiet delayed autosave", app.includes("immediate ? 0 : 2000") && app.includes("scheduleEstimateVisualRefresh") && app.includes("saveState({ localOnly: true });\n  queueEstimateVerifiedSave(estimate.id)")],
+  ["estimate typing uses quiet delayed autosave", app.includes("immediate ? 0 : 2000") && app.includes("scheduleEstimateVisualRefresh") && app.includes("queueLocalStateSave();\n  queueEstimateVerifiedSave(estimate.id)")],
   ["estimate autosave never disables the editor", !app.includes('setEstimateSaveState(estimateId, "Saving every estimate value') && !app.includes('els.saveEstimateButton.disabled = true')],
   ["local cloud echoes cannot redraw active estimates", app.includes("consumeRecentLocalDurableEcho(row)") && app.includes("markRecentLocalDurableWrite(row)")],
   ["routine save notifications stay quiet", app.includes("isRoutineSaveNotice") && app.includes('tone === "success" ? "" : message') && workflowChecklists.includes('checklistSaveStates.set(saveKey, { message: "", tone: "" })')],
+  ["estimate line items append without a full editor rebuild", app.includes("appendEstimateLineItem(estimate, index)") && app.includes("renderEstimateLineItems(estimate)") && !app.includes("estimate.items.push({ title: \"\", description: \"\", quantity: 1, unit: \"ea\", rate: 0 });\n    saveState();\n    renderEstimates();")],
+  ["estimate save attaches a versioned PDF to its lead and job", app.includes("saveCurrentEstimateAndPdf") && app.includes("downloadEstimatePdf({ silent: true, download: false })") && app.includes('source: "Estimate PDF"') && app.includes("versionNumber: existing ? Math.max(1, number(existing.versionNumber)) + 1 : 1") && app.includes("persistLeadDocumentRecords([savedDocument.id]")],
+  ["large CRM edits batch local storage serialization", app.includes("function queueLocalStateSave") && app.includes('window.addEventListener("pagehide", flushQueuedLocalStateSave)') && workflowChecklists.includes("queueWorkflowLocalSave()")],
+  ["workflow stage changes avoid full-page rendering", workflowChecklists.includes("renderActiveWorkflowLead();") && !workflowChecklists.includes("checklistSaveStates.set(nextSaveKey, { message: \"\", tone: \"\" });\n    render();")],
+  ["workflow checkboxes have distinct native click targets", workflowChecklists.includes("position: static;") && workflowChecklists.includes("pointer-events: auto;") && workflowChecklists.includes("accent-color: #16a34a;") && workflowChecklists.includes("box-sizing: border-box;") && workflowChecklists.includes(".workflow-check-box {\n        display: none;")],
 ];
 
 let failed = 0;

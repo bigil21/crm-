@@ -279,6 +279,19 @@
     status.dataset.tone = nextState.tone || "";
   }
 
+  function queueWorkflowLocalSave() {
+    if (typeof queueLocalStateSave === "function") {
+      queueLocalStateSave();
+    } else {
+      saveState({ localOnly: true });
+    }
+  }
+
+  function renderActiveWorkflowLead() {
+    renderLeadDetail();
+    renderSummary();
+  }
+
   function refreshChecklistPanel(contactId, jobId, stage) {
     const saveKey = checklistSaveKey(contactId, jobId, stage);
     const panel = document.querySelector("#workflowChecklistPanel");
@@ -404,7 +417,7 @@
         },
       };
     });
-    saveState({ localOnly: true });
+    queueWorkflowLocalSave();
     checklistSaveRevisions.set(saveKey, (checklistSaveRevisions.get(saveKey) || 0) + 1);
     checklistSaveStates.set(saveKey, { message: "", tone: "" });
     refreshChecklistPanel(contactId, jobId, stage);
@@ -749,10 +762,10 @@
     selectedWorkflowJobId = job.id;
     state.selectedLeadJobId = job.id;
     state.selectedProfitJobId = job.id;
-    saveState({ localOnly: true });
+    queueWorkflowLocalSave();
     const nextSaveKey = checklistSaveKey(contact.id, job.id, targetStatus);
     checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
-    render();
+    renderActiveWorkflowLead();
     const updateId = updatedContact?.updates?.[0]?.id || "";
     let saved = !canUseCloudSync();
     try {
@@ -762,21 +775,19 @@
     }
     if (!saved) {
       updateContact(contact.id, () => contact);
-      saveState({ localOnly: true });
+      queueWorkflowLocalSave();
       selectedWorkflowJobId = job.id;
       const previousSaveKey = checklistSaveKey(contact.id, job.id, job.status);
       checklistSaveStates.set(previousSaveKey, {
         message: "Stage change was not saved. The job was restored—please try again.",
         tone: "error",
       });
-      render();
+      renderActiveWorkflowLead();
       showToast("Stage change was not saved to the shared CRM");
       return;
     }
     checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
     queueCloudSave();
-    render();
-    showToast(`${job.name} moved to ${targetStatus} and saved`);
   }
 
   function formTransitionContext(form) {
@@ -848,7 +859,7 @@
       selectedWorkflowJobId = jobSelect.value;
       state.selectedLeadJobId = jobSelect.value;
       state.selectedProfitJobId = jobSelect.value;
-      saveState({ localOnly: true });
+      queueWorkflowLocalSave();
       renderLeadDetail();
     }
   }
@@ -1050,18 +1061,20 @@
       }
       .workflow-check-item.automatic { cursor: pointer; }
       .workflow-check-item input {
-        position: absolute;
-        opacity: 0;
-        pointer-events: none;
-      }
-      .workflow-check-box {
+        position: static;
         width: 20px;
         height: 20px;
-        display: grid;
-        place-items: center;
-        border: 2px solid #94a3b8;
-        border-radius: 4px;
-        background: #fff;
+        min-height: 20px;
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        opacity: 1;
+        pointer-events: auto;
+        accent-color: #16a34a;
+        cursor: pointer;
+      }
+      .workflow-check-box {
+        display: none;
       }
       .workflow-check-item.complete .workflow-check-box {
         border-color: #16a34a;
