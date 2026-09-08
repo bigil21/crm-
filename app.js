@@ -29,6 +29,28 @@ const number = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+function formatPhoneNumber(value = "") {
+  let digits = String(value).replace(/\D/g, "");
+  let countryPrefix = "";
+  if (digits.length > 10 && digits.startsWith("1")) {
+    countryPrefix = "+1 ";
+    digits = digits.slice(1);
+  }
+  digits = digits.slice(0, 10);
+  if (!digits) return "";
+  if (digits.length <= 3) return `${countryPrefix}(${digits}`;
+  if (digits.length <= 6) return `${countryPrefix}(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `${countryPrefix}(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+function formatCurrencyInput(value = "") {
+  if (String(value).trim() === "") return "";
+  return number(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 const uid = (prefix) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -4854,7 +4876,7 @@ function fillJobForm(job = {}) {
   };
   Object.entries(data).forEach(([key, value]) => {
     const field = els.leadJobForm.elements[key];
-    if (field) field.value = value ?? "";
+    if (field) field.value = key === "value" ? formatCurrencyInput(value) : value ?? "";
   });
 }
 
@@ -5485,23 +5507,42 @@ async function downloadManagedDocument(documentId) {
   const leadDocument = state.contacts.flatMap((contact) => contact.documents || []).find((item) => item.id === documentId);
   const record = leadDocument || state.companyDocuments.find((item) => item.id === documentId);
   if (!record) return showToast("Document not found");
+  const previewWindow = window.open("about:blank", "_blank");
+  if (previewWindow) previewWindow.opener = null;
   let url = record.dataUrl || "";
   if (record.storagePath && cloudClient?.storage) {
     const { data, error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).createSignedUrl(record.storagePath, 300);
     if (error) {
       console.warn("Document download link failed", error);
+      previewWindow?.close();
       return showToast("The document download could not be opened");
     }
     url = data?.signedUrl || "";
   }
-  if (!url) return showToast("This document needs to be migrated to cloud storage");
+  if (!url) {
+    previewWindow?.close();
+    return showToast("This document needs to be migrated to cloud storage");
+  }
+  let objectUrl = "";
+  if (url.startsWith("data:")) {
+    const blob = await fetch(url).then((response) => response.blob());
+    objectUrl = URL.createObjectURL(blob);
+    url = objectUrl;
+  }
+  if (previewWindow) {
+    previewWindow.location.replace(url);
+    if (objectUrl) window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    return true;
+  }
   const link = window.document.createElement("a");
   link.href = url;
-  link.download = record.name || "document";
-  link.rel = "noopener";
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
   window.document.body.appendChild(link);
   link.click();
   link.remove();
+  if (objectUrl) window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  return true;
 }
 
 async function migrateInlineDocumentsToStorage() {
@@ -6824,7 +6865,10 @@ function renderEstimateActiveSummary(estimate) {
     <div>
       <p class="eyebrow">Editing ${escapeHtml(estimate.estimateNumber)}</p>
       <h3>${escapeHtml(estimate.projectTitle || "Untitled estimate")}</h3>
-      <span>${escapeHtml(contact?.name || "Unknown lead")} · Last changes save automatically</span>
+      <span>
+        ${contact ? `<button class="estimate-lead-link" type="button" data-action="open-estimate-lead" data-contact-id="${escapeHtml(contact.id)}">${escapeHtml(contact.name)}</button>` : "Unknown lead"}
+        · Select the lead to save and open its overview
+      </span>
     </div>
     <div class="estimate-active-meta">
       <span class="status-pill">${escapeHtml(estimate.status)}</span>
@@ -6922,7 +6966,7 @@ function renderEstimateForm(estimate) {
   els.projectManager.value = estimate.projectManager;
   const rep = estimateSalesRep(estimate);
   els.salesRepEmail.value = estimate.salesRepEmail || rep.email;
-  els.salesRepPhone.value = estimate.salesRepPhone || rep.phone;
+  els.salesRepPhone.value = formatPhoneNumber(estimate.salesRepPhone || rep.phone);
   els.issueDate.value = estimate.issueDate;
   els.validUntil.value = estimate.validUntil;
   els.scopeSummary.value = estimate.scopeSummary;
@@ -6982,7 +7026,9 @@ function renderEstimatePreview(estimate) {
         <div class="est-info-grid">
           <div class="est-info-box">
             <p class="est-info-label">Customer</p>
-            <p class="est-info-name">${escapeHtml(contact?.name || "No customer selected")}</p>
+            ${contact
+              ? `<button class="est-info-name estimate-lead-link estimate-lead-link-preview" type="button" data-action="open-estimate-lead" data-contact-id="${escapeHtml(contact.id)}">${escapeHtml(contact.name)}</button>`
+              : '<p class="est-info-name">No customer selected</p>'}
             ${contact?.address ? `<p class="est-info-sub">${nl2br(contact.address)}</p>` : ""}
             ${contact?.phone ? `<p class="est-info-sub">${escapeHtml(contact.phone)}</p>` : ""}
             ${contact?.email ? `<p class="est-info-sub">${escapeHtml(contact.email)}</p>` : ""}
@@ -7076,7 +7122,7 @@ function renderCompanyForm() {
   state.company = normalizeCompany(state.company);
   Object.entries(state.company).forEach(([key, value]) => {
     const field = form.elements[key];
-    if (field) field.value = value;
+    if (field) field.value = key === "phone" ? formatPhoneNumber(value) : value;
   });
   if (els.companyLogoPreview) {
     els.companyLogoPreview.src = state.company.logoDataUrl || "icon.svg";
@@ -7090,7 +7136,7 @@ function renderCompanyForm() {
   };
   Object.entries(userFields).forEach(([key, value]) => {
     const field = form.elements[key];
-    if (field) field.value = value || "";
+    if (field) field.value = key === "userPhone" ? formatPhoneNumber(value) : value || "";
   });
   renderDocumentCategoriesSettings();
 }
@@ -7324,7 +7370,9 @@ function openContactDialog(contactId, defaults = {}) {
 
   Object.entries(data).forEach(([key, value]) => {
     const field = els.contactForm.elements[key];
-    if (field) field.value = value ?? "";
+    if (field) {
+      field.value = key === "phone" ? formatPhoneNumber(value) : key === "value" ? formatCurrencyInput(value) : value ?? "";
+    }
   });
 
   els.contactDialog.showModal();
@@ -7344,7 +7392,7 @@ function saveContactFromForm(event) {
     name: formData.get("name").trim(),
     source: formData.get("source").trim(),
     email: formData.get("email").trim(),
-    phone: formData.get("phone").trim(),
+    phone: formatPhoneNumber(formData.get("phone")),
     address: formData.get("address").trim(),
     value: number(formData.get("value")),
     salesRep: formData.get("salesRep").trim() || "Unassigned",
@@ -8213,6 +8261,23 @@ async function saveCurrentEstimateAndPdf() {
   }
 }
 
+async function openEstimateLeadOverview(contactId) {
+  const estimate = getSelectedEstimate();
+  const contact = getContact(contactId || estimate?.contactId);
+  if (!estimate || !contact) return false;
+  const confirmed = window.confirm(
+    `Save the latest changes and estimate PDF before opening ${contact.name}? Select Cancel to stay on this estimate.`,
+  );
+  if (!confirmed) return false;
+  const saved = await saveCurrentEstimateAndPdf();
+  if (!saved) {
+    showToast("The estimate could not be saved. You are still on the estimate page.");
+    return false;
+  }
+  openLeadDetail(contact.id, "overview", estimate.jobId || "");
+  return true;
+}
+
 function saveCompany(event) {
   event.preventDefault();
   if (!requireAction("manageCompany")) return;
@@ -8220,14 +8285,14 @@ function saveCompany(event) {
   state.currentUser = {
     name: formData.get("userName").trim() || defaultCurrentUser.name,
     email: formData.get("userEmail").trim() || state.company.email || defaultCurrentUser.email,
-    phone: formData.get("userPhone").trim() || state.currentUser.phone || "",
+    phone: formatPhoneNumber(formData.get("userPhone")) || state.currentUser.phone || "",
     role: formData.get("userRole").trim() || defaultCurrentUser.role,
   };
   state.company = {
     ...state.company,
     name: formData.get("name").trim(),
     license: formData.get("license").trim(),
-    phone: formData.get("phone").trim(),
+    phone: formatPhoneNumber(formData.get("phone")),
     email: formData.get("email").trim(),
     address: formData.get("officeAddress").trim(),
     officeAddress: formData.get("officeAddress").trim(),
@@ -8246,7 +8311,8 @@ function showToast(message) {
   const text = String(message || "");
   const isFailure = /\b(?:not saved|failed|failure|error|retry|unavailable|still retrying|cloud sync is off)\b/i.test(text);
   const isRoutineSaveNotice = /\b(?:saved|uploaded|stored)\b/i.test(text) || /\bupdated from (?:the )?(?:cloud|supabase|crm)\b/i.test(text);
-  if (isRoutineSaveNotice && !isFailure && !/\bdownloaded\b/i.test(text)) return;
+  const isWorkflowBlocker = /^Complete before moving\b/i.test(text);
+  if (isRoutineSaveNotice && !isFailure && !isWorkflowBlocker && !/\bdownloaded\b/i.test(text)) return;
   window.clearTimeout(toastTimer);
   els.toast.textContent = text;
   els.toast.classList.add("show");
@@ -8330,6 +8396,17 @@ const icons = {
 };
 
 function bindEvents() {
+  document.addEventListener(
+    "blur",
+    (event) => {
+      if (event.target instanceof HTMLInputElement) {
+        if (event.target.matches("[data-phone-input]")) event.target.value = formatPhoneNumber(event.target.value);
+        if (event.target.matches("[data-currency-input]")) event.target.value = formatCurrencyInput(event.target.value);
+      }
+    },
+    true,
+  );
+
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".global-search")) hideLiveSearchResults();
 
@@ -8370,6 +8447,10 @@ function bindEvents() {
     const permission = actionPermissions[action];
     if (permission && !requireAction(permission)) return;
     if (action === "download-document") await downloadManagedDocument(actionButton.dataset.documentId);
+    if (action === "open-estimate-lead") {
+      await openEstimateLeadOverview(contactId);
+      return;
+    }
     if (action === "add-customer") openContactDialog(null, { type: "Customer" });
     if (action === "open-contact") openLeadDetail(contactId);
     if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview", actionButton.dataset.jobId || "");

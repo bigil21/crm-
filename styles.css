@@ -3162,6 +3162,31 @@ button:disabled {
   font-size: 12px;
 }
 
+.estimate-lead-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.estimate-lead-link:hover,
+.estimate-lead-link:focus-visible {
+  color: var(--accent-strong);
+}
+
+.estimate-lead-link-preview {
+  display: block;
+  width: fit-content;
+}
+
 .estimate-active-meta {
   display: grid;
   justify-items: end;

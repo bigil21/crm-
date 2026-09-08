@@ -256,9 +256,10 @@
 
     const checklist = stageChecklist(contact, job, currentStatus);
     if (!checklist.ready) {
+      const missingLabels = checklist.missing.map((item) => item.label);
       return {
         allowed: false,
-        reason: `${checklist.missing.length} required checklist item${checklist.missing.length === 1 ? "" : "s"} remaining.`,
+        reason: `Complete before moving to ${targetStatus}: ${missingLabels.join(", ")}.`,
         checklist,
       };
     }
@@ -324,12 +325,12 @@
           ? stage === "Lost" || !nextStage(stage)
             ? "Checklist complete"
             : `All requirements complete for ${escapeHtml(nextStage(stage))}`
-          : `${checklist.missing.length} required item${checklist.missing.length === 1 ? "" : "s"} remaining`
+          : `Next requirement: ${escapeHtml(checklist.missing[0]?.label || "Complete the checklist")}`
       }`;
       hydrateIcons(gate);
     }
     const advanceButton = panel.querySelector('[data-workflow-action="advance"]');
-    if (advanceButton) advanceButton.disabled = !checklist.ready || !canAction("manageJobs");
+    if (advanceButton) advanceButton.disabled = !canAction("manageJobs");
     refreshChecklistSaveStatus(saveKey);
   }
 
@@ -618,7 +619,7 @@
                 ? terminal
                   ? "Checklist complete"
                   : `All requirements complete for ${escapeHtml(next)}`
-                : `${checklist.missing.length} required item${checklist.missing.length === 1 ? "" : "s"} remaining`
+                : `Next requirement: ${escapeHtml(checklist.missing[0]?.label || "Complete the checklist")}`
             }
           </div>
           <div class="workflow-action-buttons">
@@ -633,7 +634,7 @@
             ${
               next
                 ? `<button class="primary-button" type="button" data-workflow-action="advance" data-contact-id="${contact.id}" data-job-id="${job.id}" ${
-                    !checklist.ready || !editable ? "disabled" : ""
+                    !editable ? "disabled" : ""
                   }>
                     <span aria-hidden="true" data-icon="check"></span>
                     Move to ${escapeHtml(next)}
@@ -683,14 +684,20 @@
   }
 
   function showBlockedTransition(contact, job, result) {
+    const alreadyViewingLead = state.view === "leadDetail" && state.selectedContactId === contact.id;
     selectedWorkflowJobId = job.id;
     state.selectedLeadJobId = job.id;
     state.selectedProfitJobId = job.id;
     state.selectedContactId = contact.id;
     state.leadDetailTab = "overview";
     state.view = "leadDetail";
-    saveState();
-    render();
+    if (alreadyViewingLead) {
+      queueWorkflowLocalSave();
+      renderActiveWorkflowLead();
+    } else {
+      saveState();
+      render();
+    }
     showToast(result.reason || "Complete the stage checklist before moving forward");
   }
 
