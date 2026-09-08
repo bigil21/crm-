@@ -3073,7 +3073,8 @@ function addContactUpdate(contactId, { author = "Local user", message, status = 
 
 function applyStatusUpdate(contactId, nextStatus, author = "Local user", message = "") {
   let contact = getContact(contactId);
-  if (!contact || !nextStatus || contact.status === nextStatus) return contact;
+  const currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status : "";
+  if (!contact || !nextStatus || currentJobStatus === nextStatus) return contact;
   if (["Estimate Sent", "Won"].includes(nextStatus)) {
     contact = ensureLeadProjectNumbers(contactId)?.contact || contact;
   }

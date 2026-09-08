@@ -188,7 +188,8 @@
 
   function patchedApplyStatusUpdate(contactId, nextStatus, author = "Local user", message = "") {
     const contact = getContact(contactId);
-    if (!contact || !nextStatus || contact.status === nextStatus) return contact;
+    const currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status : "";
+    if (!contact || !nextStatus || currentJobStatus === nextStatus) return contact;
     return updateContact(contactId, (current) => {
       const wasStatus = current.status;
       const nextJobs = contactJobs(current).map((job, index) => {

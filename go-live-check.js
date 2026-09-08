@@ -100,6 +100,7 @@ const checks = [
   ["workflow checkboxes have distinct native click targets", workflowChecklists.includes("position: static;") && workflowChecklists.includes("pointer-events: auto;") && workflowChecklists.includes("accent-color: #16a34a;") && workflowChecklists.includes("box-sizing: border-box;") && workflowChecklists.includes(".workflow-check-box {\n        display: none;")],
   ["automatic checklist labels refresh with checkbox state", workflowChecklists.includes('mode.textContent = item.complete ? "Verified"')],
   ["blocked stage buttons respond with the exact missing requirement", workflowChecklists.includes("Complete before moving to ${targetStatus}") && workflowChecklists.includes('advanceButton.disabled = !canAction("manageJobs")') && workflowChecklists.includes('!editable ? "disabled" : ""') && app.includes("isWorkflowBlocker")],
+  ["stage actions repair stale lead-level status", app.includes("currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status") && productionFlow.includes("currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status")],
 ];
 
 let failed = 0;
