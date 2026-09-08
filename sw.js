@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v119";
+const CACHE_NAME = "jobcrest-crm-v125";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -19,6 +19,7 @@ const APP_SHELL = [
   "./system-check-v62.js",
   "./production-flow-launch.html",
   "./production-flow-v64.js",
+  "./production-flow-v64.js?v=67",
   "./workflow-checklists-v65.js",
   "./workflow-checklists-v65.js?v=75",
   "./workflow-checklists-v65.js?v=76",
@@ -28,8 +29,13 @@ const APP_SHELL = [
   "./workflow-checklists-v65.js?v=80",
   "./workflow-checklists-v65.js?v=81",
   "./workflow-checklists-v65.js?v=82",
+  "./workflow-checklists-v65.js?v=83",
+  "./workflow-checklists-v65.js?v=84",
+  "./workflow-checklists-v65.js?v=85",
+  "./workflow-checklists-v65.js?v=86",
   "./project-conversations-v67.js",
   "./project-conversations-v67.js?v=79",
+  "./project-conversations-v67.js?v=80",
   "./production-flow-check-v64.js",
   "./profit-role-test.html",
   "./auth-config.js",
@@ -60,6 +66,7 @@ const APP_SHELL = [
   "./styles.css?v=55",
   "./styles.css?v=56",
   "./styles.css?v=57",
+  "./styles.css?v=58",
   "./app.js?v=37",
   "./app.js?v=40",
   "./app.js?v=41",
@@ -101,6 +108,12 @@ const APP_SHELL = [
   "./app.js?v=111",
   "./app.js?v=112",
   "./app.js?v=113",
+  "./app.js?v=114",
+  "./app.js?v=115",
+  "./app.js?v=116",
+  "./app.js?v=117",
+  "./app.js?v=118",
+  "./app.js?v=119",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -186,6 +199,7 @@ function patchIndexHtml(html, url) {
     .replaceAll('styles.css?v=54', 'styles.css?v=57')
     .replaceAll('styles.css?v=55', 'styles.css?v=57')
     .replaceAll('styles.css?v=56', 'styles.css?v=57')
+    .replaceAll('styles.css?v=57', 'styles.css?v=58')
     .replaceAll('app.js?v=106', 'app.js?v=113')
     .replaceAll('app.js?v=107', 'app.js?v=113')
     .replaceAll('app.js?v=108', 'app.js?v=113')
@@ -193,31 +207,44 @@ function patchIndexHtml(html, url) {
     .replaceAll('app.js?v=110', 'app.js?v=113')
     .replaceAll('app.js?v=111', 'app.js?v=113')
     .replaceAll('app.js?v=112', 'app.js?v=113')
+    .replaceAll('app.js?v=113', 'app.js?v=114')
+    .replaceAll('app.js?v=114', 'app.js?v=115')
+    .replaceAll('app.js?v=115', 'app.js?v=116')
+    .replaceAll('app.js?v=116', 'app.js?v=117')
+    .replaceAll('app.js?v=117', 'app.js?v=118')
     .replaceAll('workflow-checklists-v65.js?v=77', 'workflow-checklists-v65.js?v=82')
     .replaceAll('workflow-checklists-v65.js?v=78', 'workflow-checklists-v65.js?v=82')
     .replaceAll('workflow-checklists-v65.js?v=79', 'workflow-checklists-v65.js?v=82')
     .replaceAll('workflow-checklists-v65.js?v=80', 'workflow-checklists-v65.js?v=82')
     .replaceAll('workflow-checklists-v65.js?v=81', 'workflow-checklists-v65.js?v=82')
-    .replaceAll('project-conversations-v67.js?v=78', 'project-conversations-v67.js?v=79');
+    .replaceAll('workflow-checklists-v65.js?v=82', 'workflow-checklists-v65.js?v=83')
+    .replaceAll('workflow-checklists-v65.js?v=83', 'workflow-checklists-v65.js?v=84')
+    .replaceAll('workflow-checklists-v65.js?v=84', 'workflow-checklists-v65.js?v=85')
+    .replaceAll('project-conversations-v67.js?v=78', 'project-conversations-v67.js?v=79')
+    .replace(/app\.js\?v=\d+/g, 'app.js?v=119')
+    .replace(/production-flow-v64\.js\?v=\d+/g, 'production-flow-v64.js?v=67')
+    .replace(/workflow-checklists-v65\.js\?v=\d+/g, 'workflow-checklists-v65.js?v=86')
+    .replace(/project-conversations-v67\.js\?v=\d+/g, 'project-conversations-v67.js?v=80')
+    .replace(/styles\.css\?v=\d+/g, 'styles.css?v=58');
 
   if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="production-flow-v64.js?v=66" defer></script>\n  </body>',
+      '    <script src="production-flow-v64.js?v=67" defer></script>\n  </body>',
     );
   }
 
   if (isCrmIndexPath(url) && !patched.includes("workflow-checklists-v65.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="workflow-checklists-v65.js?v=82" defer></script>\n  </body>',
+      '    <script src="workflow-checklists-v65.js?v=86" defer></script>\n  </body>',
     );
   }
 
   if (isCrmIndexPath(url) && !patched.includes("project-conversations-v67.js")) {
     patched = patched.replace(
       "</body>",
-      '    <script src="project-conversations-v67.js?v=79" defer></script>\n  </body>',
+      '    <script src="project-conversations-v67.js?v=80" defer></script>\n  </body>',
     );
   }
 

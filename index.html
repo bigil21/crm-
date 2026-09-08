@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=57" />
+    <link rel="stylesheet" href="styles.css?v=58" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -465,7 +465,7 @@
                     </label>
                     <label>
                       Job Value
-                      <input name="value" type="number" min="0" step="0.01" inputmode="decimal" />
+                      <input name="value" type="text" inputmode="decimal" autocomplete="off" data-currency-input placeholder="0.00" />
                     </label>
                     <label>
                       Sales Representative
@@ -893,7 +893,7 @@
                     </label>
                     <label>
                       Sales Rep Phone
-                      <input id="salesRepPhone" name="salesRepPhone" autocomplete="off" />
+                      <input id="salesRepPhone" name="salesRepPhone" type="text" inputmode="tel" autocomplete="tel" data-phone-input placeholder="(555) 555-1234" maxlength="18" />
                     </label>
                     <label>
                       Issue Date
@@ -1209,7 +1209,7 @@
               </label>
               <label>
                 Direct Phone
-                <input name="userPhone" type="tel" autocomplete="tel" placeholder="Your cell or direct line" />
+                <input name="userPhone" type="text" inputmode="tel" autocomplete="tel" data-phone-input placeholder="(555) 555-1234" maxlength="18" />
               </label>
               <label>
                 Role
@@ -1228,7 +1228,7 @@
               </label>
               <label>
                 Phone
-                <input name="phone" autocomplete="tel" />
+                <input name="phone" type="text" inputmode="tel" autocomplete="tel" data-phone-input placeholder="(555) 555-1234" maxlength="18" />
               </label>
               <label>
                 Email
@@ -1344,11 +1344,11 @@
           </label>
           <label>
             Phone
-            <input name="phone" autocomplete="tel" />
+            <input name="phone" type="text" inputmode="tel" autocomplete="tel" data-phone-input placeholder="(555) 555-1234" maxlength="18" />
           </label>
           <label>
             Project Value
-            <input name="value" type="number" min="0" step="0.01" inputmode="decimal" />
+            <input name="value" type="text" inputmode="decimal" autocomplete="off" data-currency-input placeholder="0.00" />
           </label>
           <label>
             Last Contact
@@ -1393,9 +1393,9 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="auth.js?v=80" defer></script>
-    <script src="app.js?v=113" defer></script>
-    <script src="production-flow-v64.js?v=66" defer></script>
-    <script src="workflow-checklists-v65.js?v=82" defer></script>
-    <script src="project-conversations-v67.js?v=79" defer></script>
+    <script src="app.js?v=119" defer></script>
+    <script src="production-flow-v64.js?v=67" defer></script>
+    <script src="workflow-checklists-v65.js?v=86" defer></script>
+    <script src="project-conversations-v67.js?v=80" defer></script>
   </body>
 </html>
