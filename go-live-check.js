@@ -104,6 +104,8 @@ const checks = [
   ["stale lead stage saves the job row directly", app.includes("skipContact = false") && workflowChecklists.includes("primaryJobAlreadyAtTarget") && workflowChecklists.includes("skipContact: primaryJobAlreadyAtTarget")],
   ["workflow stage changes stay immediate while cloud saves retry", workflowChecklists.includes("Keep the optimistic stage change in place") && workflowChecklists.includes("Shared CRM sync is retrying in the background")],
   ["realtime CRM updates are batched before a full redraw", app.includes("function queueDurableRecordsReload") && app.includes("queueDurableRecordsReload();")],
+  ["workflow checks do not trigger legacy full-CRM saves", app.includes("syncLegacy: false") && workflowChecklists.includes("queueDurableRecordsSave();") && !workflowChecklists.includes("queueCloudSave();")],
+  ["local cloud echoes do not redraw the active workflow", app.includes("function consumeRecentCloudEcho") && app.includes("consumeRecentCloudEcho(row)")],
   ["lead intake is ordered by creation time", app.includes("function sortLeadIntakeChronologically") && app.includes("sortLeadIntakeChronologically(filteredContacts()") && app.includes("Date.parse(left.contact.createdAt")],
 ];
 

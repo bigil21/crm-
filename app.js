@@ -511,6 +511,7 @@ let cloudClient = null;
 let cloudReady = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
+const recentCloudWrites = new Map();
 let localStateSaveTimer = null;
 let lastCloudSnapshot = "";
 let cloudSubscription = null;
@@ -1333,6 +1334,37 @@ function isRelevantCloudRow(row = {}) {
   return row.id === cloudCompanyStateId() || row.id === cloudUserStateId();
 }
 
+function cloudRowFingerprint(row = {}) {
+  return JSON.stringify(canonicalRecordValue({ id: row.id || "", data: row.data || {} }));
+}
+
+function markRecentCloudWrite(row) {
+  if (!row?.id) return;
+  recentCloudWrites.set(row.id, {
+    fingerprint: cloudRowFingerprint(row),
+    expiresAt: Date.now() + 10000,
+  });
+}
+
+function clearRecentCloudWrite(row) {
+  if (!row?.id) return;
+  const recent = recentCloudWrites.get(row.id);
+  if (recent?.fingerprint === cloudRowFingerprint(row)) recentCloudWrites.delete(row.id);
+}
+
+function consumeRecentCloudEcho(row) {
+  if (!row?.id) return false;
+  const recent = recentCloudWrites.get(row.id);
+  if (!recent) return false;
+  if (recent.expiresAt < Date.now()) {
+    recentCloudWrites.delete(row.id);
+    return false;
+  }
+  if (recent.fingerprint !== cloudRowFingerprint(row)) return false;
+  recentCloudWrites.delete(row.id);
+  return true;
+}
+
 function mergeCloudRows(rows = []) {
   const companyRow = rows.find(isCompanyCloudRow);
   const fallbackCompanyRow = rows.find((row) => row.data?.company || row.data?.companyDocuments);
@@ -1421,13 +1453,17 @@ async function flushCloudSave() {
   if (snapshot === lastCloudSnapshot) return true;
 
   cloudSaveInFlight = true;
-  const { error } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(rows, { onConflict: "id" });
-  cloudSaveInFlight = false;
-
-  if (error) {
+  rows.forEach(markRecentCloudWrite);
+  try {
+    const { error } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(rows, { onConflict: "id" });
+    if (error) throw error;
+  } catch (error) {
+    rows.forEach(clearRecentCloudWrite);
     console.warn("Supabase CRM sync failed", error);
     showToast("Supabase sync failed. Local changes are still saved.");
     return false;
+  } finally {
+    cloudSaveInFlight = false;
   }
 
   lastCloudSnapshot = snapshot;
@@ -1478,7 +1514,11 @@ function subscribeToCloudState() {
       },
       async (payload) => {
         const row = payload.new || payload.old;
-        if (!isRelevantCloudRow(row) || cloudSaveInFlight) return;
+        if (!isRelevantCloudRow(row) || cloudSaveInFlight || consumeRecentCloudEcho(row)) return;
+        if (hasPendingDurableChanges()) {
+          queueDurableRecordsSave();
+          return;
+        }
         applyingCloudState = true;
         await reloadCloudState({ showUpdateToast: true });
         applyingCloudState = false;
@@ -2053,6 +2093,7 @@ async function persistDurableRecordNow(recordType, recordId, verify, { syncLegac
 async function persistChecklistRecord(contactId, jobId, stage, itemId, expectedValue) {
   return persistDurableRecordNow("contact", contactId, (confirmedData) =>
     confirmedData?.workflowChecklists?.[jobId]?.[stage]?.[itemId] === Boolean(expectedValue),
+    { syncLegacy: false },
   );
 }
 
@@ -2062,7 +2103,7 @@ async function persistChecklistStageRecord(contactId, jobId, stage, expectedStag
     return Object.entries(expectedStageData).every(
       ([itemId, expectedValue]) => confirmedStage[itemId] === Boolean(expectedValue),
     );
-  });
+  }, { syncLegacy: false });
 }
 
 async function persistEstimateRecord(estimateId) {

@@ -791,7 +791,6 @@
       // Keep the optimistic stage change in place and let the durable queue retry
       // it instead of snapping the lead back to the previous stage.
       queueDurableRecordsSave();
-      queueCloudSave();
       checklistSaveStates.set(nextSaveKey, {
         message: "Stage updated. Shared CRM sync is retrying in the background.",
         tone: "saving",
@@ -800,7 +799,6 @@
       return;
     }
     checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
-    queueCloudSave();
   }
 
   function formTransitionContext(form) {
