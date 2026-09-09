@@ -519,6 +519,9 @@ let cloudKnownOwners = new Map();
 let durableRecordsReady = false;
 let durableSaveTimer = null;
 let durableSaveInFlight = false;
+let durableReloadTimer = null;
+let durableReloadInFlight = false;
+let durableReloadQueued = false;
 let durableRecordFingerprints = new Map();
 let durableAuditIds = new Set();
 let durableRecordsSubscription = null;
@@ -1727,6 +1730,37 @@ function queueDurableRecordsSave() {
   durableSaveTimer = window.setTimeout(flushDurableRecordsSave, CLOUD_SAVE_DELAY);
 }
 
+function queueDurableRecordsReload({ showUpdateToast = true } = {}) {
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return;
+  if (durableSaveInFlight || hasPendingDurableChanges()) {
+    queueDurableRecordsSave();
+    return;
+  }
+  window.clearTimeout(durableReloadTimer);
+  durableReloadTimer = window.setTimeout(async () => {
+    durableReloadTimer = null;
+    if (durableSaveInFlight || hasPendingDurableChanges()) {
+      queueDurableRecordsSave();
+      return;
+    }
+    if (durableReloadInFlight) {
+      durableReloadQueued = true;
+      return;
+    }
+    durableReloadInFlight = true;
+    try {
+      await reloadDurableRecords({ showUpdateToast });
+      render();
+    } finally {
+      durableReloadInFlight = false;
+      if (durableReloadQueued) {
+        durableReloadQueued = false;
+        queueDurableRecordsReload({ showUpdateToast: false });
+      }
+    }
+  }, 500);
+}
+
 async function flushDurableRecordsSave() {
   if (!durableRecordsReady || durableSaveInFlight || !authSession?.user?.id) return false;
   const rows = durableRowsFromState();
@@ -1920,6 +1954,7 @@ async function persistLeadJobRecord(jobId, updateId, { skipContact = false } = {
 
   durableSaveInFlight = true;
   try {
+    rowsToWrite.forEach(markRecentLocalDurableWrite);
     const { error: writeError } = await cloudClient
       .from(SUPABASE_RECORDS_TABLE)
       .upsert(rowsToWrite, { onConflict: "company_state_id,record_type,id" });
@@ -1945,6 +1980,9 @@ async function persistLeadJobRecord(jobId, updateId, { skipContact = false } = {
       durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
     });
     return true;
+  } catch (error) {
+    rowsToWrite.forEach(clearRecentLocalDurableWrite);
+    throw error;
   } finally {
     durableSaveInFlight = false;
     queueDurableRecordsSave();
@@ -2139,16 +2177,14 @@ async function initializeDurableRecords() {
         queueDurableRecordsSave();
         return;
       }
-      await reloadDurableRecords({ showUpdateToast: true });
-      render();
+      queueDurableRecordsReload();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       if (durableSaveInFlight || hasPendingDurableChanges()) {
         queueDurableRecordsSave();
         return;
       }
-      await reloadDurableRecords({ showUpdateToast: true });
-      render();
+      queueDurableRecordsReload();
     })
     .subscribe();
 }

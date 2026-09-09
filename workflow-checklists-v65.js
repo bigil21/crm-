@@ -337,7 +337,7 @@
     refreshChecklistSaveStatus(saveKey);
   }
 
-  function scheduleChecklistSave(contactId, jobId, stage, delay = 800) {
+  function scheduleChecklistSave(contactId, jobId, stage, delay = 1400) {
     const saveKey = checklistSaveKey(contactId, jobId, stage);
     window.clearTimeout(checklistSaveTimers.get(saveKey));
     checklistSaveTimers.set(
@@ -787,16 +787,16 @@
       saved = false;
     }
     if (!saved) {
-      updateContact(contact.id, () => contact);
-      queueWorkflowLocalSave();
-      selectedWorkflowJobId = job.id;
-      const previousSaveKey = checklistSaveKey(contact.id, job.id, job.status);
-      checklistSaveStates.set(previousSaveKey, {
-        message: "Stage change was not saved. The job was restored—please try again.",
-        tone: "error",
+      // A checklist sync can still be finishing when a rep advances the job.
+      // Keep the optimistic stage change in place and let the durable queue retry
+      // it instead of snapping the lead back to the previous stage.
+      queueDurableRecordsSave();
+      queueCloudSave();
+      checklistSaveStates.set(nextSaveKey, {
+        message: "Stage updated. Shared CRM sync is retrying in the background.",
+        tone: "saving",
       });
-      renderActiveWorkflowLead();
-      showToast("Stage change was not saved to the shared CRM");
+      refreshChecklistSaveStatus(nextSaveKey);
       return;
     }
     checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
