@@ -2465,6 +2465,19 @@ function filteredContacts() {
   );
 }
 
+function sortLeadIntakeChronologically(contacts = []) {
+  return contacts
+    .map((contact, index) => ({ contact, index }))
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.contact.createdAt || "");
+      const rightTime = Date.parse(right.contact.createdAt || "");
+      const safeLeft = Number.isFinite(leftTime) ? leftTime : Number.POSITIVE_INFINITY;
+      const safeRight = Number.isFinite(rightTime) ? rightTime : Number.POSITIVE_INFINITY;
+      return safeLeft - safeRight || left.index - right.index;
+    })
+    .map(({ contact }) => contact);
+}
+
 function liveLeadSearchMatches(query = state.search, limit = 8) {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   if (!normalizedQuery) return { matches: [], total: 0 };
@@ -4008,9 +4021,9 @@ function renderLeadsView() {
     ].join("");
     els.leadStageFilter.value = stage;
   }
-  const leads = filteredContacts().filter((contact) =>
+  const leads = sortLeadIntakeChronologically(filteredContacts().filter((contact) =>
     stage ? contactJobs(contact).some((job) => job.status === stage) : contact.type === "Lead",
-  );
+  ));
   const filterSummary = stage
     ? `
       <div class="lead-stage-filter-banner">

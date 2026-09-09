@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v127";
+const CACHE_NAME = "jobcrest-crm-v128";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -118,6 +118,7 @@ const APP_SHELL = [
   "./app.js?v=119",
   "./app.js?v=120",
   "./app.js?v=121",
+  "./app.js?v=122",
   "./auth.js?v=24",
   "./auth.js?v=25",
   "./auth.js?v=43",
@@ -225,7 +226,7 @@ function patchIndexHtml(html, url) {
     .replaceAll('workflow-checklists-v65.js?v=83', 'workflow-checklists-v65.js?v=84')
     .replaceAll('workflow-checklists-v65.js?v=84', 'workflow-checklists-v65.js?v=85')
     .replaceAll('project-conversations-v67.js?v=78', 'project-conversations-v67.js?v=79')
-    .replace(/app\.js\?v=\d+/g, 'app.js?v=121')
+    .replace(/app\.js\?v=\d+/g, 'app.js?v=122')
     .replace(/production-flow-v64\.js\?v=\d+/g, 'production-flow-v64.js?v=68')
     .replace(/workflow-checklists-v65\.js\?v=\d+/g, 'workflow-checklists-v65.js?v=87')
     .replace(/project-conversations-v67\.js\?v=\d+/g, 'project-conversations-v67.js?v=80')

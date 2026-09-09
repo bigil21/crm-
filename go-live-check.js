@@ -102,6 +102,7 @@ const checks = [
   ["blocked stage buttons respond with the exact missing requirement", workflowChecklists.includes("Complete before moving to ${targetStatus}") && workflowChecklists.includes('advanceButton.disabled = !canAction("manageJobs")') && workflowChecklists.includes('!editable ? "disabled" : ""') && app.includes("isWorkflowBlocker")],
   ["stage actions repair stale lead-level status", app.includes("currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status") && productionFlow.includes("currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status")],
   ["stale lead stage saves the job row directly", app.includes("skipContact = false") && workflowChecklists.includes("primaryJobAlreadyAtTarget") && workflowChecklists.includes("skipContact: primaryJobAlreadyAtTarget")],
+  ["lead intake is ordered by creation time", app.includes("function sortLeadIntakeChronologically") && app.includes("sortLeadIntakeChronologically(filteredContacts()") && app.includes("Date.parse(left.contact.createdAt")],
 ];
 
 let failed = 0;
