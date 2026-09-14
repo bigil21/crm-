@@ -171,7 +171,17 @@ button:disabled {
 .workspace.dashboard-watermark .surface,
 .workspace.dashboard-watermark .summary-card {
   background-color: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(3px);
+}
+
+/* Keep long CRM workspaces on the compositor's fast scrolling path.  The
+   dashboard background already has enough contrast, so the live blur added
+   paint work without improving readability. */
+.dashboard-layout > .dashboard-panel,
+.dashboard-layout > .leaderboard-panel,
+.leads-list > .record-card,
+.payment-ledger-list > .payment-ledger-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
 }
 
 .topbar,

@@ -3238,24 +3238,32 @@ function render() {
   els.workspace?.classList.toggle("dashboard-watermark", state.view === "dashboard");
   renderTopbarProfile();
 
-  renderSummary();
-  renderDashboard();
-  renderLeadsView();
-  renderPipeline();
-  renderContacts();
-  renderJobsView();
-  renderProjectsView();
-  renderLeadDetail();
-  renderEstimates();
-  renderCompanyDocuments();
-  renderCalendar();
-  renderTasksView();
-  if (state.view === "invoices") {
-    renderInvoicesView();
-  }
-  renderReviewsView();
-  renderReportsView();
-  renderCompanyForm();
+  // Each workspace previously rendered every screen on every state change.
+  // With a full CRM this left thousands of hidden rows/cards in the DOM and
+  // made ordinary mouse-wheel scrolling compete with needless layout work.
+  // Render the current workspace only; it is rebuilt from state whenever the
+  // user opens it, so its data is always current without the background cost.
+  const activeRenderer = {
+    dashboard: () => {
+      renderSummary();
+      renderDashboard();
+    },
+    leads: renderLeadsView,
+    pipeline: renderPipeline,
+    contacts: renderContacts,
+    jobs: renderJobsView,
+    projects: renderProjectsView,
+    leadDetail: renderLeadDetail,
+    estimates: renderEstimates,
+    companyDocuments: renderCompanyDocuments,
+    calendar: renderCalendar,
+    tasks: renderTasksView,
+    invoices: renderInvoicesView,
+    reviews: renderReviewsView,
+    reports: renderReportsView,
+    company: renderCompanyForm,
+  };
+  activeRenderer[state.view]?.();
   renderLiveSearchResults();
   applyPermissionsToDom();
 }
