@@ -1,342 +1,39 @@
-const CACHE_NAME = "jobcrest-crm-v131";
-const APP_SHELL = [
-  "./",
-  "./index.html",
-  "./login.html",
-  "./logout.html",
-  "./reset-session.html",
-  "./hard-reset-v60.html",
-  "./diagnostics.html",
-  "./role-diagnostics.html",
-  "./role-security-check.html",
-  "./role-direct-launch.html",
-  "./role-direct-check.js",
-  "./role-direct-check-v56.js",
-  "./role-direct-check-v57.js",
-  "./sales-workflow-launch.html",
-  "./sales-workflow-check-v61.js",
-  "./system-check-launch.html",
-  "./system-check-v62.js",
-  "./production-flow-launch.html",
-  "./production-flow-v64.js",
-  "./production-flow-v64.js?v=67",
-  "./production-flow-v64.js?v=68",
-  "./workflow-checklists-v65.js",
-  "./workflow-checklists-v65.js?v=75",
-  "./workflow-checklists-v65.js?v=76",
-  "./workflow-checklists-v65.js?v=77",
-  "./workflow-checklists-v65.js?v=78",
-  "./workflow-checklists-v65.js?v=79",
-  "./workflow-checklists-v65.js?v=80",
-  "./workflow-checklists-v65.js?v=81",
-  "./workflow-checklists-v65.js?v=82",
-  "./workflow-checklists-v65.js?v=83",
-  "./workflow-checklists-v65.js?v=84",
-  "./workflow-checklists-v65.js?v=85",
-  "./workflow-checklists-v65.js?v=86",
-  "./workflow-checklists-v65.js?v=87",
-  "./workflow-checklists-v65.js?v=88",
-  "./workflow-checklists-v65.js?v=89",
-  "./project-conversations-v67.js",
-  "./project-conversations-v67.js?v=79",
-  "./project-conversations-v67.js?v=80",
-  "./production-flow-check-v64.js",
-  "./profit-role-test.html",
-  "./auth-config.js",
-  "./auth-config.js?v=43",
-  "./auth-config.js?v=46",
-  "./styles.css?v=32",
-  "./styles.css?v=34",
-  "./styles.css?v=35",
-  "./styles.css?v=36",
-  "./styles.css?v=37",
-  "./styles.css?v=38",
-  "./styles.css?v=39",
-  "./styles.css?v=40",
-  "./styles.css?v=41",
-  "./styles.css?v=42",
-  "./styles.css?v=43",
-  "./styles.css?v=44",
-  "./styles.css?v=45",
-  "./styles.css?v=46",
-  "./styles.css?v=47",
-  "./styles.css?v=48",
-  "./styles.css?v=49",
-  "./styles.css?v=50",
-  "./styles.css?v=51",
-  "./styles.css?v=52",
-  "./styles.css?v=53",
-  "./styles.css?v=54",
-  "./styles.css?v=55",
-  "./styles.css?v=56",
-  "./styles.css?v=57",
-  "./styles.css?v=58",
-  "./styles.css?v=59",
-  "./app.js?v=37",
-  "./app.js?v=40",
-  "./app.js?v=41",
-  "./app.js?v=42",
-  "./app.js?v=43",
-  "./app.js?v=44",
-  "./app.js?v=45",
-  "./app.js?v=78",
-  "./app.js?v=80",
-  "./app.js?v=82",
-  "./app.js?v=83",
-  "./app.js?v=84",
-  "./app.js?v=85",
-  "./app.js?v=86",
-  "./app.js?v=87",
-  "./app.js?v=88",
-  "./app.js?v=89",
-  "./app.js?v=90",
-  "./app.js?v=91",
-  "./app.js?v=92",
-  "./app.js?v=93",
-  "./app.js?v=94",
-  "./app.js?v=95",
-  "./app.js?v=96",
-  "./app.js?v=97",
-  "./app.js?v=98",
-  "./app.js?v=99",
-  "./app.js?v=100",
-  "./app.js?v=101",
-  "./app.js?v=102",
-  "./app.js?v=103",
-  "./app.js?v=104",
-  "./app.js?v=105",
-  "./app.js?v=106",
-  "./app.js?v=107",
-  "./app.js?v=108",
-  "./app.js?v=109",
-  "./app.js?v=110",
-  "./app.js?v=111",
-  "./app.js?v=112",
-  "./app.js?v=113",
-  "./app.js?v=114",
-  "./app.js?v=115",
-  "./app.js?v=116",
-  "./app.js?v=117",
-  "./app.js?v=118",
-  "./app.js?v=119",
-  "./app.js?v=120",
-  "./app.js?v=121",
-  "./app.js?v=122",
-  "./app.js?v=123",
-  "./app.js?v=124",
-  "./auth.js?v=24",
-  "./auth.js?v=25",
-  "./auth.js?v=43",
-  "./auth.js?v=79",
-  "./auth.js?v=80",
-  "./login.js",
-  "./login.js?v=44",
-  "./login.js?v=46",
-  "./login.js?v=58",
-  "./login.js?v=79",
-  "./login.js?v=80",
-  "./login.js?v=81",
-  "./login.js?v=82",
-  "./login.js?v=83",
-  "./login.js?v=84",
-  "./login.js?v=85",
-  "./login.js?v=86",
-  "./login.js?v=87",
-  "./login.js?v=88",
-  "./login.js?v=89",
-  "./login.js?v=90",
-  "./login.js?v=91",
-  "./logout.js",
-  "./logout.js?v=44",
-  "./logout.js?v=46",
-  "./logout.js?v=79",
-  "./vendor/jspdf.umd.min.js",
-  "./manifest.webmanifest",
-  "./icon.svg",
-  "./icon-192.png",
-  "./icon-512.png",
-];
+const CACHE_NAME = "jobcrest-crm-server-protection-20260915";
+const PUBLIC_ASSET_PATHS = new Set([
+  "/app.js", "/auth.js", "/login.js", "/logout.js", "/styles.css",
+  "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js",
+  "/vendor/jspdf.umd.min.js", "/icon.svg", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest",
+]);
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting()),
-  );
-});
-
+self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
-      )
-      .then(() => self.clients.claim()),
-  );
+  event.waitUntil(caches.keys().then((keys) => Promise.all(
+    keys.filter((key) => /^(jobcrest-crm-|roofline-crm-)/.test(key) && key !== CACHE_NAME)
+      .map((key) => caches.delete(key)),
+  )).then(() => self.clients.claim()));
 });
 
-function isCrmIndexPath(url) {
-  return url.pathname === "/" || url.pathname.endsWith("/index.html");
-}
-
-function isHtmlShellPath(url) {
-  return url.pathname === "/" || url.pathname === "/login" || url.pathname.endsWith("/index.html") || url.pathname.endsWith("/login.html");
-}
-
-function patchIndexHtml(html, url) {
-  let patched = html
-    .replaceAll('auth-config.js?v=24', 'auth-config.js?v=46')
-    .replaceAll('auth.js?v=24', 'auth.js?v=80')
-    .replaceAll('auth.js?v=43', 'auth.js?v=80')
-    .replaceAll('auth.js?v=79', 'auth.js?v=80')
-    .replaceAll('login.js?v=44', 'login.js?v=81')
-    .replaceAll('login.js?v=46', 'login.js?v=81')
-    .replaceAll('login.js?v=58', 'login.js?v=81')
-    .replaceAll('login.js?v=79', 'login.js?v=81')
-    .replaceAll('login.js?v=80', 'login.js?v=88')
-    .replaceAll('login.js?v=81', 'login.js?v=88')
-    .replaceAll('login.js?v=82', 'login.js?v=88')
-    .replaceAll('login.js?v=83', 'login.js?v=88')
-    .replaceAll('login.js?v=84', 'login.js?v=88')
-    .replaceAll('login.js?v=85', 'login.js?v=88')
-    .replaceAll('login.js?v=86', 'login.js?v=88')
-    .replaceAll('login.js?v=87', 'login.js?v=91')
-    .replaceAll('login.js?v=88', 'login.js?v=91')
-    .replaceAll('login.js?v=89', 'login.js?v=91')
-    .replaceAll('login.js?v=90', 'login.js?v=91')
-    .replaceAll('styles.css?v=54', 'styles.css?v=57')
-    .replaceAll('styles.css?v=55', 'styles.css?v=57')
-    .replaceAll('styles.css?v=56', 'styles.css?v=57')
-    .replaceAll('styles.css?v=57', 'styles.css?v=58')
-    .replaceAll('app.js?v=106', 'app.js?v=113')
-    .replaceAll('app.js?v=107', 'app.js?v=113')
-    .replaceAll('app.js?v=108', 'app.js?v=113')
-    .replaceAll('app.js?v=109', 'app.js?v=113')
-    .replaceAll('app.js?v=110', 'app.js?v=113')
-    .replaceAll('app.js?v=111', 'app.js?v=113')
-    .replaceAll('app.js?v=112', 'app.js?v=113')
-    .replaceAll('app.js?v=113', 'app.js?v=114')
-    .replaceAll('app.js?v=114', 'app.js?v=115')
-    .replaceAll('app.js?v=115', 'app.js?v=116')
-    .replaceAll('app.js?v=116', 'app.js?v=117')
-    .replaceAll('app.js?v=117', 'app.js?v=118')
-    .replaceAll('workflow-checklists-v65.js?v=77', 'workflow-checklists-v65.js?v=82')
-    .replaceAll('workflow-checklists-v65.js?v=78', 'workflow-checklists-v65.js?v=82')
-    .replaceAll('workflow-checklists-v65.js?v=79', 'workflow-checklists-v65.js?v=82')
-    .replaceAll('workflow-checklists-v65.js?v=80', 'workflow-checklists-v65.js?v=82')
-    .replaceAll('workflow-checklists-v65.js?v=81', 'workflow-checklists-v65.js?v=82')
-    .replaceAll('workflow-checklists-v65.js?v=82', 'workflow-checklists-v65.js?v=83')
-    .replaceAll('workflow-checklists-v65.js?v=83', 'workflow-checklists-v65.js?v=84')
-    .replaceAll('workflow-checklists-v65.js?v=84', 'workflow-checklists-v65.js?v=85')
-    .replaceAll('project-conversations-v67.js?v=78', 'project-conversations-v67.js?v=79')
-    .replace(/app\.js\?v=\d+/g, 'app.js?v=124')
-    .replace(/production-flow-v64\.js\?v=\d+/g, 'production-flow-v64.js?v=68')
-    .replace(/workflow-checklists-v65\.js\?v=\d+/g, 'workflow-checklists-v65.js?v=89')
-    .replace(/project-conversations-v67\.js\?v=\d+/g, 'project-conversations-v67.js?v=80')
-    .replace(/styles\.css\?v=\d+/g, 'styles.css?v=59');
-
-  if (isCrmIndexPath(url) && !patched.includes("production-flow-v64.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script src="production-flow-v64.js?v=68" defer></script>\n  </body>',
-    );
-  }
-
-  if (isCrmIndexPath(url) && !patched.includes("workflow-checklists-v65.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script src="workflow-checklists-v65.js?v=89" defer></script>\n  </body>',
-    );
-  }
-
-  if (isCrmIndexPath(url) && !patched.includes("project-conversations-v67.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script src="project-conversations-v67.js?v=80" defer></script>\n  </body>',
-    );
-  }
-
-  if (url.searchParams.has("role-direct-check") && !patched.includes("role-direct-check-v57.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script>window.__ROOFLINE_DIRECT_ROLE_CHECK = true;</script>\n    <script src="role-direct-check-v57.js?v=57" defer></script>\n  </body>',
-    );
-  }
-
-  if (url.searchParams.has("sales-workflow-check") && !patched.includes("sales-workflow-check-v61.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script>window.__ROOFLINE_SALES_WORKFLOW_CHECK = true;</script>\n    <script src="sales-workflow-check-v61.js?v=61" defer></script>\n  </body>',
-    );
-  }
-
-  if (url.searchParams.has("system-check") && !patched.includes("system-check-v62.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script>window.__ROOFLINE_SYSTEM_CHECK = true;</script>\n    <script src="system-check-v62.js?v=62" defer></script>\n  </body>',
-    );
-  }
-
-  if (url.searchParams.has("production-flow-check") && !patched.includes("production-flow-check-v64.js")) {
-    patched = patched.replace(
-      "</body>",
-      '    <script>window.__ROOFLINE_PRODUCTION_FLOW_CHECK = true;</script>\n    <script src="production-flow-check-v64.js?v=64" defer></script>\n  </body>',
-    );
-  }
-
-  return patched;
-}
-
-async function freshHtmlResponse(request) {
-  const response = await fetch(request);
-  const url = new URL(request.url);
-  if (!isHtmlShellPath(url)) return response;
-
-  const headers = new Headers(response.headers);
-  headers.set("content-type", "text/html; charset=utf-8");
-  headers.set("cache-control", "no-store");
-
-  const html = await response.text();
-  return new Response(patchIndexHtml(html, url), {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
+// Preserve server HTML and asset versions. Never intercept authenticated pages,
+// customer data, configuration, API responses, diagnostics or private files.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
-  // Supabase and other API responses are live business data, never app-shell
-  // assets. Caching them can resurrect old jobs, costs, and conversations even
-  // after the database has accepted a newer record.
-  if (event.request.cache === "no-store" || url.origin !== self.location.origin || url.pathname.startsWith("/api/")) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
-  if (
-    url.pathname === "/auth-config.js" ||
-    url.pathname === "/logout" ||
-    url.pathname === "/reset-session.html"
-  ) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
-  // Always fetch HTML fresh so new deploys and diagnostics are not blocked by stale cache.
-  if (isHtmlShellPath(url) || url.pathname.endsWith(".html")) {
-    event.respondWith(freshHtmlResponse(event.request));
-    return;
-  }
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
+  if (url.origin !== self.location.origin || !PUBLIC_ASSET_PATHS.has(url.pathname) || event.request.cache === "no-store") return;
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(event.request);
+      if (response.ok && response.type !== "opaque") {
+        // Cache quota/availability failure must not discard a fresh response.
+        try {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, response.clone());
+        } catch { /* Public assets are optional offline acceleration. */ }
+      }
+      return response;
+    } catch (error) {
+      const cached = await caches.match(event.request);
       if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        return response;
-      });
-    }),
-  );
+      throw error;
+    }
+  })());
 });

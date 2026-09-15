@@ -22,6 +22,18 @@ envPaths.forEach((envPath) => {
 const port = Number(process.env.PORT || 4173);
 const allowedEmailDomain = process.env.ALLOWED_EMAIL_DOMAIN || "coastalcrestroofing.com";
 
+// Serve the application, never arbitrary repository files or runtime data.
+const publicAssets = new Set([
+  "/index.html", "/login.html", "/logout.html", "/reset-session.html",
+  "/styles.css", "/app.js", "/auth.js", "/login.js", "/logout.js", "/sw.js",
+  "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js",
+  "/vendor/jspdf.umd.min.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png",
+]);
+
+function authenticationRequired() {
+  return !(process.env.NODE_ENV === "development" && process.env.ALLOW_LOCAL_DEMO === "true" && process.env.AUTH_REQUIRED === "false");
+}
+
 const types = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -71,7 +83,7 @@ function authConfigScript() {
     allowedEmailDomain,
     adminEmails: process.env.ADMIN_EMAILS || process.env.OWNER_EMAIL || process.env.ADMIN_EMAIL || "",
     defaultRole: process.env.DEFAULT_AUTH_ROLE || "viewer",
-    authRequired: process.env.AUTH_REQUIRED === "true",
+    authRequired: authenticationRequired(),
     syncEnabled: process.env.SUPABASE_SYNC_ENABLED === "true",
     stateId: process.env.SUPABASE_STATE_ID || "coastal-crest",
   };
@@ -108,7 +120,7 @@ function readRequestBody(req) {
 }
 
 async function verifyApiUser(req) {
-  if (process.env.AUTH_REQUIRED !== "true") {
+  if (!authenticationRequired()) {
     return { email: `local@${allowedEmailDomain}`, app_metadata: { role: "admin" }, local: true };
   }
   const config = supabaseConfig();
@@ -458,14 +470,26 @@ async function handleSquarePollPayments(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  let url;
+  let decodedPath;
+  try {
+    url = new URL(req.url, "http://localhost");
+    decodedPath = decodeURIComponent(url.pathname);
+  } catch {
+    send(res, 400, "Invalid request URL");
+    return;
+  }
   if (url.pathname === "/api/health" && req.method === "GET") {
     const config = supabaseConfig();
     sendJson(res, 200, {
       ok: true,
       service: "jobcrest-crm",
+      release: process.env.RENDER_GIT_COMMIT || "server-protection-20260915",
       timestamp: new Date().toISOString(),
-      authRequired: process.env.AUTH_REQUIRED === "true",
+      authRequired: authenticationRequired(),
       cloudSyncConfigured: Boolean(config.url && config.anonKey && process.env.SUPABASE_SYNC_ENABLED === "true"),
       storageMode: config.url ? "supabase" : "local",
       squareConfigured: Boolean(squareToken() && squareWebhookKey()),
@@ -513,7 +537,15 @@ const server = http.createServer((req, res) => {
     "/logout": "/logout.html",
   };
 
-  const requested = routes[url.pathname] || decodeURIComponent(url.pathname);
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    send(res, 405, "Method not allowed");
+    return;
+  }
+  const requested = routes[decodedPath] || decodedPath;
+  if (!publicAssets.has(requested)) {
+    send(res, 404, "Not found");
+    return;
+  }
   const filePath = path.normalize(path.join(root, requested));
   const relativePath = path.relative(root, filePath);
 
@@ -524,16 +556,6 @@ const server = http.createServer((req, res) => {
 
   fs.readFile(filePath, (error, content) => {
     if (error) {
-      if (!path.extname(requested)) {
-        fs.readFile(path.join(root, "index.html"), (indexError, indexContent) => {
-          if (indexError) {
-            send(res, 404, "Not found");
-            return;
-          }
-          send(res, 200, indexContent, types[".html"]);
-        });
-        return;
-      }
       send(res, 404, "Not found");
       return;
     }
@@ -548,9 +570,9 @@ const server = http.createServer((req, res) => {
         "Expires": "0",
         "Surrogate-Control": "no-store",
       });
-      res.end(content);
+      res.end(req.method === "HEAD" ? undefined : content);
     } else {
-      send(res, 200, content, mimeType);
+      send(res, 200, req.method === "HEAD" ? undefined : content, mimeType);
     }
   });
 });
