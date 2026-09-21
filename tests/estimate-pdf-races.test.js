@@ -17,7 +17,8 @@ function load(names, globals = {}) {
   const state = { estimates: [estimate('A'), estimate('B')], selectedEstimateId: 'A', view: 'estimates', company: {} };
   const statuses = [];
   const context = vm.createContext({ console, state, statuses, estimateExplicitSaves: new Set(),
-    estimateSaveRevisions: new Map(), flushQueuedLocalStateSave() {},
+    estimateSaveRevisions: new Map(), estimateCompletedSaveRevisions: new Map(), estimateSaveStates: new Map(), flushQueuedLocalStateSave() {},
+    els: { saveEstimateButton: { disabled: false } }, canAction: () => true,
     getSelectedEstimate: () => state.estimates.find(item => item.id === state.selectedEstimateId),
     getContact: id => ({ id, name: id }),
     durableRecordDataMatches: (left, right) => JSON.stringify(left) === JSON.stringify(right),
@@ -134,6 +135,21 @@ test('lead navigation requires a fully saved original estimate and its actual le
   c.saveCurrentEstimateAndPdf = async () => false;
   assert.equal(await c.openEstimateLeadOverview(), false);
   assert.equal(opened.length, 1);
+});
+
+test('a completed estimate save opens its lead without asking to save again', async () => {
+  const opened = [];
+  let confirmations = 0;
+  const c = load(['openEstimateLeadOverview'], {
+    window: { confirm: () => { confirmations++; return true; } },
+    saveCurrentEstimateAndPdf: async () => { throw Error('Already-saved estimate must not be saved twice'); },
+    openLeadDetail: (...args) => opened.push(args),
+  });
+  c.estimateSaveRevisions.set('A', 4);
+  c.estimateCompletedSaveRevisions.set('A', 4);
+  assert.equal(await c.openEstimateLeadOverview(), true);
+  assert.equal(confirmations, 0);
+  assert.deepEqual(opened, [['lead-A', 'overview', 'job-A']]);
 });
 
 test('PDF renderer uses a detached explicit snapshot without changing the drawing layout', async () => {

@@ -372,6 +372,65 @@ test('estimate totals sum line cents consistently with Square',()=>{
   assert.equal(contract.balance,17625.37);
 });
 
+test('shared-data redraw waits until the active text editor loses focus', () => {
+  const input = { type: 'text', matches: selector => selector === 'input' };
+  let rendered = 0;
+  const c = functions('app.js', ['activeTextEditor', 'renderDurableUpdateWhenIdle'], {
+    document: { activeElement: input }, pendingDurableRender: false, render: () => rendered++,
+  });
+  assert.equal(c.renderDurableUpdateWhenIdle(), false);
+  assert.equal(c.pendingDurableRender, true);
+  assert.equal(rendered, 0);
+  c.document.activeElement = { matches: () => false };
+  assert.equal(c.renderDurableUpdateWhenIdle(), true);
+  assert.equal(c.pendingDurableRender, false);
+  assert.equal(rendered, 1);
+});
+
+test('the production render wrapper does not draw the active page twice', () => {
+  const source = fs.readFileSync(path.join(root, 'production-flow-v64.js'), 'utf8');
+  const wrapper = source.match(/assignGlobal\("render", function productionRenderWrapper\(\) \{([^]*?)\n\s*\}\);/);
+  assert.ok(wrapper, 'production render wrapper exists');
+  assert.match(wrapper[1], /previousRender\(\)/);
+  assert.doesNotMatch(wrapper[1], /refreshCurrentView\(\)/);
+});
+
+test('Save Estimate has a direct click path in addition to keyboard form submit', () => {
+  const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.match(source, /els\.saveEstimateButton\?\.addEventListener\("click", \(event\) => \{\s*event\.preventDefault\(\);[^]*?saveCurrentEstimateAndPdf\(\)/);
+});
+
+test('explicit saves can show success without restoring noisy autosave notices', () => {
+  const c = functions('app.js', ['setSaveState']);
+  const element = { textContent: '', dataset: {} };
+  c.setSaveState(element, 'Saved', 'success');
+  assert.equal(element.textContent, '');
+  c.setSaveState(element, 'Saved with PDF', 'success', { showSuccess: true });
+  assert.equal(element.textContent, 'Saved with PDF');
+  assert.equal(element.dataset.tone, 'success');
+});
+
+test('local saves report cache quota failures instead of claiming persistence', () => {
+  const c = functions('app.js', ['writeStateToLocalStorage', 'saveState'], {
+    state: { contacts: [] }, activeStorageKey: () => 'crm-test',
+    localStorage: { setItem: () => { throw Error('Quota exceeded'); } },
+    window: { clearTimeout() {} }, localStateSaveTimer: null,
+    localEditRevision: 0, applyingCloudState: false,
+    queueCloudSave() {}, queueDurableRecordsSave() {},
+  });
+  assert.equal(c.saveState({ localOnly: true }), false);
+});
+
+test('local file uploads roll back their in-memory cards when offline storage is full', () => {
+  const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  for (const name of ['uploadLeadDocuments', 'uploadLeadPhotos']) {
+    const match = source.match(new RegExp(`async function ${name}\\([^]*?^}`, 'm'));
+    assert.ok(match, `${name} exists`);
+    assert.match(match[0], /!canUseCloudSync\(\) && !localSaved/);
+    assert.match(match[0], /state\.contacts = state\.contacts\.map/);
+  }
+});
+
 test('failed authoritative startup does not load business data from legacy snapshots', async () => {
   let legacyReads = 0;
   const c = functions('app.js', ['initializeDurableRecords'], {
