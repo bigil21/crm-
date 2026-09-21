@@ -542,8 +542,10 @@ const estimateSaveTimers = new Map();
 const estimateSaveRevisions = new Map();
 const estimateSaveStates = new Map();
 const estimateExplicitSaves = new Set();
+const estimateCompletedSaveRevisions = new Map();
 const recentLocalDurableWrites = new Map();
 let estimateVisualRefreshTimer = null;
+let pendingDurableRender = false;
 const photoPreviewCache = new Map();
 
 function roleLabel(role = currentRole()) {
@@ -1205,11 +1207,12 @@ function saveState(options = {}) {
   if (!options.localOnly && !applyingCloudState) localEditRevision += 1;
   window.clearTimeout(localStateSaveTimer);
   localStateSaveTimer = null;
-  writeStateToLocalStorage();
+  const localSaved = writeStateToLocalStorage();
   if (!options.localOnly && !applyingCloudState) {
     queueCloudSave();
     queueDurableRecordsSave();
   }
+  return localSaved;
 }
 
 function supabaseConfig() {
@@ -2051,7 +2054,7 @@ function queueDurableRecordsReload({ showUpdateToast = true } = {}) {
     durableReloadInFlight = true;
     try {
       const appliedRows = await reloadDurableRecords({ showUpdateToast });
-      if (appliedRows !== null) render();
+      if (appliedRows !== null) renderDurableUpdateWhenIdle();
     } finally {
       durableReloadInFlight = false;
       if (durableReloadQueued) {
@@ -2060,6 +2063,26 @@ function queueDurableRecordsReload({ showUpdateToast = true } = {}) {
       }
     }
   }, 500);
+}
+
+function activeTextEditor() {
+  const element = document.activeElement;
+  if (!element) return null;
+  if (element.matches?.("textarea, select, [contenteditable='true']")) return element;
+  if (!element.matches?.("input")) return null;
+  return ["button", "checkbox", "file", "hidden", "radio", "reset", "submit"].includes(element.type)
+    ? null
+    : element;
+}
+
+function renderDurableUpdateWhenIdle() {
+  if (activeTextEditor()) {
+    pendingDurableRender = true;
+    return false;
+  }
+  pendingDurableRender = false;
+  render();
+  return true;
 }
 
 async function flushDurableRecordsSave() {
@@ -2098,9 +2121,9 @@ async function flushDurableRecordsSave() {
   }
 }
 
-function setSaveState(element, message, tone = "") {
+function setSaveState(element, message, tone = "", options = {}) {
   if (!element) return;
-  const visibleMessage = tone === "success" ? "" : message;
+  const visibleMessage = tone === "success" && !options.showSuccess ? "" : message;
   element.textContent = visibleMessage;
   element.dataset.tone = visibleMessage ? tone : "";
 }
@@ -2373,6 +2396,11 @@ async function initializeDurableRecords() {
       queueDurableRecordsReload();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
+      const row = payload.new || payload.old;
+      if (row?.actor_user_id && row.actor_user_id === authSession?.user?.id) {
+        if (row.id) durableAuditIds.add(row.id);
+        return;
+      }
       if (durableSaveInFlight || hasPendingDurableChanges()) {
         queueDurableRecordsSave();
         return;
@@ -6024,7 +6052,14 @@ async function uploadLeadDocuments(files) {
       jobId: job.id,
       message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${job.name} / ${category.name}.`,
     });
-    saveState({ localOnly: true });
+    const localSaved = saveState({ localOnly: true });
+    if (!canUseCloudSync() && !localSaved) {
+      state.contacts = state.contacts.map((item) => (item.id === contact.id ? contact : item));
+      render();
+      setSaveState(els.leadDocumentUploadStatus, "Upload was not saved because this device is out of offline storage. Connect shared storage and retry.", "error");
+      showToast("Upload was not saved. This device is out of offline storage.");
+      return false;
+    }
     window.clearTimeout(durableSaveTimer);
     render();
     setSaveState(els.leadDocumentUploadStatus, "File stored. Confirming the shared CRM record...", "saving");
@@ -6117,7 +6152,14 @@ async function uploadLeadPhotos(files) {
       message: `Uploaded ${photos.length} job photo${photos.length === 1 ? "" : "s"} to ${job.name}.`,
     });
     state.leadDetailTab = "photos";
-    saveState({ localOnly: true });
+    const localSaved = saveState({ localOnly: true });
+    if (!canUseCloudSync() && !localSaved) {
+      state.contacts = state.contacts.map((item) => (item.id === contact.id ? contact : item));
+      render();
+      setSaveState(els.leadPhotoUploadStatus, "Photos were not saved because this device is out of offline storage. Connect shared storage and retry.", "error");
+      showToast("Photos were not saved. This device is out of offline storage.");
+      return false;
+    }
     window.clearTimeout(durableSaveTimer);
     render();
     setSaveState(els.leadPhotoUploadStatus, "Photos stored. Confirming their shared CRM records...", "saving");
@@ -6292,6 +6334,7 @@ async function uploadCompanyDocuments(files) {
     "saving",
   );
 
+  const previousDocuments = state.companyDocuments;
   try {
     const { documents, failures } = await uploadDocumentBatch(
       selectedFiles, async (file) => {
@@ -6312,7 +6355,14 @@ async function uploadCompanyDocuments(files) {
       },
     );
     state.companyDocuments = [...documents, ...state.companyDocuments];
-    saveState({ localOnly: true });
+    const localSaved = saveState({ localOnly: true });
+    if (!canUseCloudSync() && !localSaved) {
+      state.companyDocuments = previousDocuments;
+      renderCompanyDocuments();
+      setSaveState(els.companyDocumentUploadStatus, "Upload was not saved because this device is out of offline storage. Connect shared storage and retry.", "error");
+      showToast("Company document was not saved. This device is out of offline storage.");
+      return false;
+    }
     window.clearTimeout(durableSaveTimer);
     renderCompanyDocuments();
     setSaveState(els.companyDocumentUploadStatus, "File stored. Confirming the shared company library...", "saving");
@@ -8096,8 +8146,9 @@ function renderEstimateSaveState(estimateId = getSelectedEstimate()?.id) {
   };
   setSaveState(
     els.estimateSaveStatus,
-    stateForEstimate.tone === "error" ? stateForEstimate.message : "",
-    stateForEstimate.tone === "error" ? "error" : "",
+    stateForEstimate.message,
+    stateForEstimate.tone,
+    { showSuccess: true },
   );
 }
 
@@ -8114,12 +8165,13 @@ async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevi
   if (!estimateId || !state.estimates.some((estimate) => estimate.id === estimateId)) return false;
   window.clearTimeout(estimateSaveTimers.get(estimateId));
   estimateSaveTimers.delete(estimateId);
-  setEstimateSaveState(estimateId, "", "");
+  const isExplicitSave = estimateExplicitSaves.has(estimateId);
+  if (!isExplicitSave) setEstimateSaveState(estimateId, "", "");
 
   const saved = await persistEstimateRecord(estimateId);
   const latestRevision = estimateSaveRevisions.get(estimateId) || 0;
   if (saved && revision === latestRevision) {
-    setEstimateSaveState(estimateId, "", "");
+    if (!isExplicitSave) setEstimateSaveState(estimateId, "", "");
   } else if (!saved && revision === latestRevision) {
     setEstimateSaveState(estimateId, "Not saved to the shared CRM. Use Save Estimate to retry.", "error");
     showToast("Estimate save failed—your values are still on this page. Please retry.");
@@ -8132,6 +8184,7 @@ function queueEstimateVerifiedSave(estimateId, { immediate = false } = {}) {
   if (!estimateId) return;
   const revision = (estimateSaveRevisions.get(estimateId) || 0) + 1;
   estimateSaveRevisions.set(estimateId, revision);
+  estimateCompletedSaveRevisions.delete(estimateId);
   window.clearTimeout(estimateSaveTimers.get(estimateId));
   setEstimateSaveState(estimateId, "", "");
   const timer = window.setTimeout(
@@ -8849,6 +8902,9 @@ async function saveCurrentEstimateAndPdf() {
   flushQueuedLocalStateSave();
   const revision = (estimateSaveRevisions.get(estimate.id) || 0) + 1;
   estimateSaveRevisions.set(estimate.id, revision);
+  estimateCompletedSaveRevisions.delete(estimate.id);
+  setEstimateSaveState(estimate.id, "Saving estimate and PDF...", "saving");
+  if (els.saveEstimateButton) els.saveEstimateButton.disabled = true;
   const snapshotIsCurrent = () => {
     const current = state.estimates.find((item) => item.id === snapshot.id);
     return current && estimateSaveRevisions.get(snapshot.id) === revision
@@ -8861,17 +8917,31 @@ async function saveCurrentEstimateAndPdf() {
 
   try {
     const estimateSaved = await flushEstimateVerifiedSave(estimate.id, revision);
-    if (!estimateSaved) return false;
+    if (!estimateSaved) {
+      if (!estimateSaveStates.get(estimate.id)?.message) {
+        setEstimateSaveState(estimate.id, "The estimate could not be confirmed. Your entries remain on this page; select Save Estimate to retry.", "error");
+      }
+      return false;
+    }
     // Do not generate a newer unsaved draft, or mark edits made during either
     // network request as fully saved. The rep can keep typing without a lock.
     if (!snapshotIsCurrent()) return keepNewerChanges();
     const pdfSaved = await downloadEstimatePdf({ silent: true, download: false, estimateSnapshot: snapshot });
-    if (!pdfSaved) return false;
+    if (!pdfSaved) {
+      setEstimateSaveState(estimate.id, "The estimate was saved, but its PDF was not attached. Select Save Estimate to retry.", "error");
+      return false;
+    }
     if (!snapshotIsCurrent()) return keepNewerChanges();
-    setEstimateSaveState(estimate.id, "", "");
+    estimateCompletedSaveRevisions.set(estimate.id, revision);
+    setEstimateSaveState(estimate.id, "Saved with PDF in this lead's documents.", "success");
     return true;
+  } catch (error) {
+    console.warn("Estimate and PDF save failed", error);
+    setEstimateSaveState(estimate.id, "The estimate and PDF could not be saved. Your entries remain on this page; select Save Estimate to retry.", "error");
+    return false;
   } finally {
     estimateExplicitSaves.delete(estimate.id);
+    if (els.saveEstimateButton) els.saveEstimateButton.disabled = !canAction("manageEstimates");
   }
 }
 
@@ -8882,6 +8952,11 @@ async function openEstimateLeadOverview(contactId) {
   const estimateId = estimate.id;
   const jobId = estimate.jobId || "";
   const initialView = state.view;
+  const revision = estimateSaveRevisions.get(estimateId) || 0;
+  if (estimateCompletedSaveRevisions.get(estimateId) === revision) {
+    openLeadDetail(contact.id, "overview", jobId);
+    return true;
+  }
   const confirmed = window.confirm(
     `Save the latest changes and estimate PDF before opening ${contact.name}? Select Cancel to stay on this estimate.`,
   );
@@ -9018,6 +9093,13 @@ const icons = {
 };
 
 function bindEvents() {
+  document.addEventListener("focusout", () => {
+    if (!pendingDurableRender) return;
+    window.setTimeout(() => {
+      if (pendingDurableRender) renderDurableUpdateWhenIdle();
+    }, 0);
+  });
+
   document.addEventListener(
     "blur",
     (event) => {
@@ -9550,6 +9632,14 @@ function bindEvents() {
     if (!requireAction("manageEstimates")) return;
     void saveCurrentEstimateAndPdf();
   });
+  // Keep the primary save action deterministic even when another enhancement
+  // intercepts the form's native submit event. Keyboard submits still use the
+  // form handler above; button clicks use this direct path exactly once.
+  els.saveEstimateButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (!requireAction("manageEstimates")) return;
+    void saveCurrentEstimateAndPdf();
+  });
 
   els.estimateForm.addEventListener("input", (event) => {
     if (!canAction("manageEstimates")) return;
@@ -9565,7 +9655,14 @@ function bindEvents() {
     if (!canAction("manageEstimates")) return;
     if (event.target.matches("select") && event.target.name) {
       updateSelectedEstimateFromField(event.target.name, event.target.value);
-      renderEstimates();
+      if (["contactId", "jobId"].includes(event.target.name)) {
+        renderEstimates();
+      } else {
+        const estimate = getSelectedEstimate();
+        renderEstimateActiveSummary(estimate);
+        renderEstimatePreview(estimate);
+        renderSummary();
+      }
     }
   });
 

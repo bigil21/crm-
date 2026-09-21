@@ -674,7 +674,7 @@
       assignGlobal("render", function productionRenderWrapper() {
         syncStatuses();
         previousRender();
-        refreshCurrentView();
+        applyPermissionsToDom();
       });
     }
 
