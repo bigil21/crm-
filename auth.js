@@ -24,6 +24,22 @@
   );
   const config = { ...fallbackConfig, ...cleanRuntimeConfig };
   const CRM_STORAGE_KEY = "roofline-crm-v1";
+  let editorSessionGuard = null;
+
+  function bindEditorSession(user) {
+    if (editorSessionGuard || !isAuthRequired() || !user?.id) return;
+    editorSessionGuard = window.CrmSessionGuard.create({ user, onInvalidated() {
+      window.dispatchEvent(new CustomEvent("jobcrest:session-invalidated"));
+    } });
+    createClient().auth.onAuthStateChange((event, session) => {
+      // Do not await another auth operation inside Supabase's auth callback.
+      editorSessionGuard.observe(event, session);
+    });
+  }
+
+  function isEditorSessionCurrent(user) {
+    return !editorSessionGuard || (user ? editorSessionGuard.allows(user) : editorSessionGuard.isCurrent());
+  }
 
   function hasConfig() {
     return Boolean(config.supabaseUrl && config.supabaseAnonKey);
@@ -46,7 +62,23 @@
   }
 
   function isAllowedEmail(email = "") {
-    return emailDomain(email) === String(config.allowedEmailDomain || "").toLowerCase();
+    return emailDomain(email) === String(config.allowedEmailDomain || "").toLowerCase() ||
+      String(email).trim().toLowerCase() === stagingTestIdentity()?.email;
+  }
+
+  function stagingTestIdentity() {
+    const test = config.stagingTestIdentity;
+    if (!["127.0.0.1", "localhost"].includes(window.location?.hostname) ||
+        test?.projectOrigin !== "https://ixksmfiektzsunmmwejz.supabase.co" ||
+        String(config.supabaseUrl || "").replace(/\/$/, "") !== test.projectOrigin ||
+        !test.userId || !test.email) return null;
+    return test;
+  }
+
+  function isAllowedUser(user) {
+    if (emailDomain(user?.email) === String(config.allowedEmailDomain || "").toLowerCase()) return true;
+    const test = stagingTestIdentity();
+    return Boolean(test && user?.id === test.userId && String(user.email || "").toLowerCase() === test.email && user.app_metadata?.role === "sales");
   }
 
   function adminEmails() {
@@ -83,7 +115,13 @@
           detectSessionInUrl: true,
         },
         global: {
-          fetch: (url, options = {}) => fetch(url, { ...options, cache: "no-store" }),
+          fetch: (url, options = {}) => {
+            const pathname = new URL(typeof url === "string" ? url : url.url || String(url), config.supabaseUrl).pathname;
+            if (!isEditorSessionCurrent() && !pathname.startsWith("/auth/v1/")) {
+              return Promise.reject(new Error("This editor's login changed. Reopen the CRM before saving."));
+            }
+            return fetch(url, { ...options, cache: "no-store" });
+          },
         },
       });
     }
@@ -138,7 +176,7 @@
       return null;
     }
 
-    if (!isAllowedEmail(auth.user.email)) {
+    if (!isAllowedUser(auth.user)) {
       await createClient()?.auth.signOut();
       location.replace(loginUrl("domain"));
       return null;
@@ -363,6 +401,8 @@
   }
 
   window.RooflineAuth = {
+    bindEditorSession,
+    isEditorSessionCurrent,
     config,
     createClient,
     emailDomain,
@@ -370,6 +410,8 @@
     hasConfig,
     isAdminEmail,
     isAllowedEmail,
+    isAllowedUser,
+    stagingTestIdentity,
     isAuthRequired,
     normalizeRole,
     requireAuth,

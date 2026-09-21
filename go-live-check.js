@@ -14,9 +14,27 @@ const projectConversations = read("project-conversations-v67.js");
 const productionFlow = read("production-flow-v64.js");
 const workflowChecklists = read("workflow-checklists-v65.js");
 const sharedRecordMigration = read("supabase/migrations/20260817_all_users_edit_shared_records.sql");
-const sharedInputRoles = ["sales_manager", "operations_manager", "sales", "production", "viewer"];
+const safeWrites = read("supabase/migrations/20260914_conflict_safe_record_writes.sql");
+const squareWorkflow = read("square-invoice-workflow.js");
+const squareIntents = read("supabase/migrations/20260915_durable_square_invoice_sends.sql");
+const salesNumbers = read("supabase/migrations/20260916_atomic_sales_numbers.sql");
+const sharedInputRoles = ["office_manager", "sales_manager", "operations_manager", "sales", "production", "viewer"];
 
 const checks = [
+  ["unmapped child records are retained rather than implicitly deleted", app.includes('durableUnmappedRows.map(row => JSON.parse(JSON.stringify(row)))') && app.includes('showUnmappedRecordNotice(durableUnmappedRows.length)')],
+  ["company settings use versioned saves", app.includes('getCompanySettingsWriter().commit(rows[0].data)') && read('company-settings-writes.js').includes('crm_commit_company_settings')],
+  ["settings writes cannot bypass version checks", read('supabase/migrations/20260914_versioned_company_settings.sql').includes('previous.version <> p_expected_version') && read('supabase/migrations/20260914_versioned_company_settings.sql').includes('Company settings require versioned update')],
+  ["settings save helper is shipped", index.includes('company-settings-writes.js?v=1') && server.includes('"/company-settings-writes.js"')],
+  ["record writes require expected versions", safeWrites.includes("previous.version <> expected") && read("record-writes.js").includes("expected_version")],
+  ["direct record writes are revoked", safeWrites.includes("revoke insert, update, delete, truncate, references, trigger on public.crm_records")],
+  ["database enforces admin payment changes", safeWrites.includes("admin_required_for_payments")],
+  ["record commits have idempotency receipts", safeWrites.includes("crm_write_receipts") && safeWrites.includes("request_id_reused")],
+  ["sales numbers reserve atomically", salesNumbers.includes("pg_advisory_xact_lock") && salesNumbers.includes("crm_reserve_sales_numbers") && read("sales-numbering.js").includes("crm_reserve_sales_numbers")],
+  ["sales numbers are company-unique and immutable", salesNumbers.includes("unique(company_state_id,number_kind,number_value)") && salesNumbers.includes("sales_number_is_immutable")],
+  ["numbered estimates keep exact lead and job relationships", salesNumbers.includes("estimate_sales_numbers_do_not_match") && app.includes("A numbered estimate stays with its original lead and job" )],
+  ["sales numbering helper is shipped", index.includes('sales-numbering.js?v=1') && server.includes('"/sales-numbering.js"') && read("sw.js").includes('"/sales-numbering.js"')],
+  ["unsaved conflicts have a recovery path", app.includes("preserveBlockedDurableWrite") && app.includes("Download unsaved work")],
+  ["document archive retains bytes", app.includes("archiveDocumentRecord") && !app.includes("deleteStoredDocument")],
   ["durable per-record table", schema.includes("create table if not exists public.crm_records")],
   ["append-only audit events", schema.includes("create table if not exists public.crm_audit_events")],
   ["conversation message table", schema.includes("create table if not exists public.crm_conversation_messages")],
@@ -37,7 +55,13 @@ const checks = [
   ["AI feature removed", !index.includes("ai-assistant") && !app.includes("/api/assistant") && !server.includes("/api/assistant")],
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],
-  ["Square publish failure is handled", server.includes("Square created the invoice but could not publish it")],
+  ["Square send acknowledges durable completion only", server.includes('result?.durable !== true') && squareWorkflow.includes('store.complete(intent, immutable(clone(result)))')],
+  ["Square send uses trusted saved estimates", server.includes('Object.keys(body).some(key => !["estimateId", "expectedVersion"].includes(key))') && squareIntents.includes('estimate_changed_before_invoice') && squareIntents.includes('won_estimate_required')],
+  ["Square stages have durable recovery receipts", squareWorkflow.includes('store.checkpoint(intent, stage, confirmed)') && squareIntents.includes('crm_square_invoice_intents') && squareWorkflow.includes('idempotencyKey(intent, "publish")')],
+  ["legacy invoice retries require review", squareIntents.includes('legacy_invoice_review_required') && squareIntents.includes('crm_square_invoice_reviews')],
+  ["webhooks acknowledge durable intake", server.includes('crm_square_enqueue_webhook') && server.includes('receipt?.durable !== true || receipt.eventId !== event.event_id') && !server.includes('square-payments.json')],
+  ["payment worker resumes outside browser sessions", server.includes('startSquarePaymentWorker()') && server.includes('crm_square_apply_payment') && read('square-payment-worker.js').includes('store.apply(claim, snapshot)')],
+  ["Square refunds use actual refunded payment totals", read('square-payment-worker.js').includes('money(payment.refunded_money, true)') && read('square-payment-worker.js').includes('first.grossCents - refundedCents')],
   ["bare root serves CRM directly", !server.includes('Location: "/?v=101"')],
   ["JobCrest product branding", index.includes("JobCrest CRM") && !index.includes("Roofline CRM")],
   ["dashboard stages open filtered leads", app.includes('data-dashboard-stage=') && app.includes("leadStageFilter") && app.includes("clear-lead-stage-filter")],
@@ -46,7 +70,7 @@ const checks = [
   ["one-time sign-in unlock", login.includes("queueSignInUnlock") && index.includes('id="vaultUnlock"') && app.includes("playSignInUnlockTransition")],
   ["critical lead edits confirm cloud save", app.includes("persistCriticalLeadChange") && app.includes("Not saved to the shared CRM")],
   ["every authorized checklist box is actionable", workflowChecklists.includes('${!editable ? "disabled" : ""}') && workflowChecklists.includes("Can confirm manually")],
-  ["every signed-in role can edit CRM inputs", sharedInputRoles.every((role) => new RegExp(`${role}: \\{\\r?\\n    views: \\[\\.\\.\\.sharedCrmViews\\],\\r?\\n    actions: \\[\\.\\.\\.sharedCrmActions\\]`).test(app)) && /office_manager: \{\r?\n    views: \[\.\.\.sharedCrmViews, "company"\],\r?\n    actions: \[\.\.\.sharedCrmActions, "manageCompany"\]/.test(app) && app.includes('return Boolean(rolePolicies[currentRole()]);') && app.includes('"manageEstimates"')],
+  ["every signed-in role can edit CRM inputs", sharedInputRoles.every((role) => new RegExp(`${role}: \\{\\r?\\n    views: \\[\\.\\.\\.sharedCrmViews\\],\\r?\\n    actions: \\[\\.\\.\\.sharedCrmActions\\]`).test(app)) && app.includes('return Boolean(rolePolicies[currentRole()]);') && app.includes('"manageEstimates"')],
   ["checklists batch and verify shared database saves", app.includes("persistChecklistStageRecord") && workflowChecklists.includes("scheduleChecklistSave") && workflowChecklists.includes('checklistSaveStates.set(saveKey, { message: "", tone: "" })')],
   ["lead progression stays responsive during checklist sync", !workflowChecklists.includes("checklistSaveInProgress") && workflowChecklists.includes("checklistSaveTimers.get(currentSaveKey)") && workflowChecklists.includes("persistLeadJobRecord")],
   ["estimate values verify shared database saves", app.includes("persistEstimateRecord") && index.includes('id="estimateSaveStatus"') && index.includes('id="saveEstimateButton"')],
@@ -58,8 +82,8 @@ const checks = [
   ["durable records cannot be rolled back by legacy snapshots", app.includes("durableBusinessStateAuthoritative") && app.includes("Durable per-record rows are authoritative")],
   ["authenticated startup rejects stale business cache", app.includes("state.contacts = []") && app.includes("hydrate these collections")],
   ["profit cost verifies its exact durable row", app.includes("persistProfitCostRecord") && app.includes("confirmed?.data?.costItems") && app.includes("durableWritesEnabled")],
-  ["service worker never caches live APIs", read("sw.js").includes("url.origin !== self.location.origin") && read("sw.js").includes('url.pathname.startsWith("/api/")')],
-  ["service worker upgrades every stale workflow asset", /replace\(\/app\\\.js\\\?v=\\d\+\/g/.test(read("sw.js")) && /replace\(\/workflow-checklists-v65\\\.js\\\?v=\\d\+\/g/.test(read("sw.js"))],
+  ["service worker only caches explicit public assets", read("sw.js").includes("url.origin !== self.location.origin") && read("sw.js").includes("!PUBLIC_ASSET_PATHS.has(url.pathname)")],
+  ["service worker preserves server asset versions", !read("sw.js").includes("patchIndexHtml") && read("sw.js").includes("await fetch(event.request)")],
   ["local development cannot be trapped by stale app-shell caches", app.includes('["localhost", "127.0.0.1"].includes(location.hostname)') && app.includes("registration.unregister()") && app.includes("return version <= 103")],
   ["workflow add-ons wait for authenticated CRM startup", app.includes('CustomEvent("jobcrest:app-ready")') && productionFlow.includes('"jobcrest:app-ready"') && workflowChecklists.includes('"jobcrest:app-ready"') && projectConversations.includes('"jobcrest:app-ready"')],
   ["legacy API caches are purged before hydration", app.includes("purgeLegacyJobCrestCaches") && auth.includes('cache: "no-store"')],
@@ -76,7 +100,7 @@ const checks = [
   ["photos are isolated by job", app.includes('document.kind === "photo" && document.jobId === jobId') && app.includes('jobId: job.id') && app.includes('`${leadId}/jobs/${jobId}`')],
   ["photo records verify shared database saves", app.includes("JOB_PHOTO_CATEGORY_ID") && app.includes("persistLeadDocumentRecords") && app.includes("Photos stored. Confirming their shared CRM records")],
   ["company documents verify durable records", app.includes("persistCompanyDocumentRecords") && app.includes("COMPANY_DOCUMENT_LEAD_ID")],
-  ["document upload retries are idempotent", app.includes("upsert: true") && app.includes("resource already exists")],
+  ["document uploads preserve previous bytes", app.includes('uid("version")') && app.includes("upsert: false") && app.includes("previousVersions:")],
   ["document upload progress is visible", index.includes('id="leadDocumentUploadStatus"') && index.includes('id="companyDocumentUploadStatus"') && app.includes("documentUploadErrorMessage")],
   ["file pickers allow retrying the same file", (app.match(/event\.target\.value = "";/g) || []).length >= 2],
   ["document uploads allow 250 MB", app.includes("MAX_DOCUMENT_FILE_SIZE = 250 * 1024 * 1024") && schema.includes("file_size_limit = 262144000")],
@@ -93,7 +117,7 @@ const checks = [
   ["local cloud echoes cannot redraw active estimates", app.includes("consumeRecentLocalDurableEcho(row)") && app.includes("markRecentLocalDurableWrite(row)")],
   ["routine save notifications stay quiet", app.includes("isRoutineSaveNotice") && app.includes('tone === "success" ? "" : message') && workflowChecklists.includes('checklistSaveStates.set(saveKey, { message: "", tone: "" })')],
   ["estimate line items append without a full editor rebuild", app.includes("appendEstimateLineItem(estimate, index)") && app.includes("renderEstimateLineItems(estimate)") && !app.includes("estimate.items.push({ title: \"\", description: \"\", quantity: 1, unit: \"ea\", rate: 0 });\n    saveState();\n    renderEstimates();")],
-  ["estimate save attaches a versioned PDF to its lead and job", app.includes("saveCurrentEstimateAndPdf") && app.includes("downloadEstimatePdf({ silent: true, download: false })") && app.includes('source: "Estimate PDF"') && app.includes("versionNumber: existing ? Math.max(1, number(existing.versionNumber)) + 1 : 1") && app.includes("persistLeadDocumentRecords([savedDocument.id]")],
+  ["estimate save attaches a versioned PDF to its original lead and job", app.includes("saveCurrentEstimateAndPdf") && app.includes("downloadEstimatePdf({ silent: true, download: false, estimateSnapshot: snapshot })") && app.includes("if (!snapshotIsCurrent()) return keepNewerChanges()") && app.includes('source: "Estimate PDF"') && app.includes("versionNumber: existing ? Math.max(1, number(existing.versionNumber)) + 1 : 1") && app.includes("persistLeadDocumentRecords([savedDocument.id]")],
   ["estimate lead links confirm save before navigation", app.includes('data-action="open-estimate-lead"') && app.includes("async function openEstimateLeadOverview") && app.includes("await saveCurrentEstimateAndPdf()") && app.includes('openLeadDetail(contact.id, "overview"')],
   ["large CRM edits batch local storage serialization", app.includes("function queueLocalStateSave") && app.includes('window.addEventListener("pagehide", flushQueuedLocalStateSave)') && workflowChecklists.includes("queueWorkflowLocalSave()")],
   ["workflow stage changes avoid full-page rendering", workflowChecklists.includes("renderActiveWorkflowLead();") && !workflowChecklists.includes("checklistSaveStates.set(nextSaveKey, { message: \"\", tone: \"\" });\n    render();")],

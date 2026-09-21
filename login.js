@@ -48,8 +48,14 @@
   }
 
   function sanitizeRedirect(value) {
-    if (!value.startsWith("/") || value.startsWith("//")) return CRM_ENTRY_URL;
-    return value === "/" ? CRM_ENTRY_URL : value;
+    try {
+      if (typeof value !== "string" || !value.startsWith("/") || /[\\\x00-\x20]/.test(decodeURIComponent(value))) return CRM_ENTRY_URL;
+      const target = new URL(value, location.origin);
+      if (target.origin !== location.origin || !["/", "/index.html"].includes(target.pathname)) return CRM_ENTRY_URL;
+      return value === "/" ? CRM_ENTRY_URL : target.pathname + target.search + target.hash;
+    } catch {
+      return CRM_ENTRY_URL;
+    }
   }
 
   function queueSignInUnlock() {
@@ -70,7 +76,7 @@
 
   function validateEmailDomain(email) {
     if (window.RooflineAuth.isAllowedEmail(email)) return true;
-    setStatus(`Use your @${config.allowedEmailDomain} email address.`, "error");
+    setStatus(window.RooflineAuth.stagingTestIdentity() ? "Use a company account or the approved staging test account." : `Use your @${config.allowedEmailDomain} email address.`, "error");
     return false;
   }
 
@@ -106,7 +112,7 @@
   async function verifySignedInEmail(expectedEmail) {
     const { data, error } = await client.auth.getUser();
     const signedInEmail = String(data?.user?.email || "").toLowerCase();
-    if (error || signedInEmail !== expectedEmail) {
+    if (error || signedInEmail !== expectedEmail || !window.RooflineAuth.isAllowedUser(data?.user)) {
       await signOutCurrentSession();
       setStatus(
         signedInEmail
@@ -119,7 +125,9 @@
     return true;
   }
 
-  if (domainHint) domainHint.textContent = `Only @${config.allowedEmailDomain} accounts can sign in.`;
+  if (domainHint) domainHint.textContent = window.RooflineAuth.stagingTestIdentity()
+    ? "ISOLATED TEST CRM — company accounts and the approved sales-test account only. No live customer data."
+    : `Only @${config.allowedEmailDomain} accounts can sign in.`;
 
   if (!window.RooflineAuth.hasConfig()) {
     setStatus("Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to your environment.", "error");
@@ -143,7 +151,7 @@
     passwordField.autocomplete = "new-password";
     form.querySelector('button[type="submit"]').textContent = "Save New Password";
     [createAccountButton, magicLinkButton, resetPasswordButton, clearSessionButton].forEach((button) => button?.classList.add("hidden"));
-  } else if (existing.user && window.RooflineAuth.isAllowedEmail(existing.user.email)) {
+  } else if (existing.user && window.RooflineAuth.isAllowedUser(existing.user)) {
     setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts, or click Clear Saved Session first.`);
   } else if (forceAccountSwitch) {
     setStatus("Prior CRM session cleared. Sign in with the account you want to use.", "success");
@@ -189,7 +197,7 @@
       setStatus(authErrorMessage(error, "sign-in"), "error");
       return;
     }
-    if (!window.RooflineAuth.isAllowedEmail(data.user?.email)) {
+    if (!window.RooflineAuth.isAllowedUser(data.user)) {
       await signOutCurrentSession();
       setStatus(`This CRM only allows @${config.allowedEmailDomain} users.`, "error");
       return;

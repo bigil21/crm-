@@ -4,11 +4,15 @@
   "private": true,
   "description": "JobCrest CRM for contractor leads, jobs, estimates, documents, and sales workflows.",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js && node --check login.js && node --check logout.js && node --check production-flow-v64.js && node --check project-conversations-v67.js && node --check workflow-checklists-v65.js && node --check sw.js",
+    "check": "node --check server.js && node --check square-invoice-workflow.js && node --check square-payment-worker.js && node --check app.js && node --check auth.js && node --check record-writes.js && node --check company-settings-writes.js && node --check sales-numbering.js && node --check payment-refresh.js && node --check draft-recovery.js && node --check session-guard.js && node --check login.js && node --check logout.js && node --check production-flow-v64.js && node --check project-conversations-v67.js && node --check workflow-checklists-v65.js && node --check sw.js",
     "check:go-live": "npm run check && node go-live-check.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
   }
 }

@@ -264,7 +264,6 @@
     const activeContacts = Array.isArray(storage.active.contacts) ? storage.active.contacts : (Array.isArray(getState()?.contacts) ? getState().contacts : []);
     add("pass", "Active User Storage", `${storage.activeKey}; ${activeContacts.length} contact(s). CRM keys in this browser: ${storage.crmKeys.length}.`);
 
-    const role = roleValue();
     const shouldCompany = expectedCompanyView(role);
     const shouldTeam = expectedTeamData(role);
     const shouldFinancials = expectedFinancials(role, email);

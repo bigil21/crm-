@@ -338,6 +338,7 @@
   }
 
   function scheduleChecklistSave(contactId, jobId, stage, delay = 1400) {
+    if (typeof durableWriteBlocked !== "undefined" && durableWriteBlocked) return;
     const saveKey = checklistSaveKey(contactId, jobId, stage);
     window.clearTimeout(checklistSaveTimers.get(saveKey));
     checklistSaveTimers.set(
@@ -383,6 +384,12 @@
       checklistSaveStates.set(saveKey, { message: "", tone: "" });
       refreshChecklistSaveStatus(saveKey);
       return true;
+    }
+
+    if (typeof durableWriteBlocked !== "undefined" && durableWriteBlocked) {
+      checklistSaveStates.set(saveKey, { message: "Not saved. Shared saving is paused; review the recovery notice.", tone: "error" });
+      refreshChecklistSaveStatus(saveKey);
+      return false;
     }
 
     const retryCount = (checklistSaveRetries.get(saveKey) || 0) + 1;
@@ -792,8 +799,10 @@
       // it instead of snapping the lead back to the previous stage.
       queueDurableRecordsSave();
       checklistSaveStates.set(nextSaveKey, {
-        message: "Stage updated. Shared CRM sync is retrying in the background.",
-        tone: "saving",
+        message: typeof durableWriteBlocked !== "undefined" && durableWriteBlocked
+          ? "Stage changed on this screen only. Review the recovery notice before continuing."
+          : "Stage updated. Shared CRM sync is retrying in the background.",
+        tone: typeof durableWriteBlocked !== "undefined" && durableWriteBlocked ? "error" : "saving",
       });
       refreshChecklistSaveStatus(nextSaveKey);
       return;
