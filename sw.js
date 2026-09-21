@@ -1,6 +1,6 @@
-const CACHE_NAME = "jobcrest-crm-server-protection-20260915";
+const CACHE_NAME = "jobcrest-crm-v140";
 const PUBLIC_ASSET_PATHS = new Set([
-  "/app.js", "/auth.js", "/login.js", "/logout.js", "/styles.css",
+  "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/styles.css",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js",
   "/vendor/jspdf.umd.min.js", "/icon.svg", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest",
 ]);
@@ -13,8 +13,9 @@ self.addEventListener("activate", (event) => {
   )).then(() => self.clients.claim()));
 });
 
-// Preserve server HTML and asset versions. Never intercept authenticated pages,
-// customer data, configuration, API responses, diagnostics or private files.
+// Server HTML is authoritative: never rewrite or downgrade its asset versions.
+// Only public static assets are eligible for offline fallback, never customer
+// data, configuration, API responses, diagnostics or authenticated pages.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
@@ -23,7 +24,7 @@ self.addEventListener("fetch", (event) => {
     try {
       const response = await fetch(event.request);
       if (response.ok && response.type !== "opaque") {
-        // Cache quota/availability failure must not discard a fresh response.
+        // A failed cache write must never discard a fresh public asset response.
         try {
           const cache = await caches.open(CACHE_NAME);
           await cache.put(event.request, response.clone());

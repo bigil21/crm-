@@ -387,16 +387,15 @@
   async function initializeConversationPersistence() {
     if (!cloudConversationAvailable() || conversationCloudLoading) return false;
     conversationCloudLoading = true;
-    const { data, error } = await cloudClient
-      .from(CONVERSATION_TABLE)
-      .select("*")
-      .eq("company_state_id", supabaseStateId())
-      .order("created_at", { ascending: true });
-    conversationCloudLoading = false;
-    if (error) {
+    let data;
+    try {
+      data = await fetchAllCompanyRows(CONVERSATION_TABLE, ["created_at", "id"]);
+    } catch (error) {
       conversationCloudReady = false;
       console.warn("Durable conversation storage is not ready. Run the latest Supabase schema.", error);
       return false;
+    } finally {
+      conversationCloudLoading = false;
     }
     conversationCloudReady = true;
     mergeCloudConversationRows(data || []);

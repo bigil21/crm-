@@ -205,8 +205,8 @@ const rolePolicies = {
     actions: "all",
   },
   office_manager: {
-    views: [...sharedCrmViews, "company"],
-    actions: [...sharedCrmActions, "manageCompany"],
+    views: [...sharedCrmViews],
+    actions: [...sharedCrmActions],
   },
   sales_manager: {
     views: [...sharedCrmViews],
@@ -511,8 +511,12 @@ let cloudClient = null;
 let cloudReady = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
+let companySettingsWriter = null;
+let salesNumbering = null;
+let durableUnmappedRows = [];
 const recentCloudWrites = new Map();
 let localStateSaveTimer = null;
+let localEditRevision = 0;
 let lastCloudSnapshot = "";
 let cloudSubscription = null;
 let applyingCloudState = false;
@@ -524,6 +528,10 @@ let durableReloadTimer = null;
 let durableReloadInFlight = false;
 let durableReloadQueued = false;
 let durableRecordFingerprints = new Map();
+let durableCommitWriter = null;
+let durableWriteBlocked = false;
+const durableFinancialBaseline = new Map();
+const protectedPaymentFields = ["manualPayments", "paidAmount", "squarePaidAmount", "square_paid_amount", "squareInvoiceId", "squareOrderId", "paidAt", "lastPaymentAt", "squareLastPaymentAt", "square_last_payment_at", "squareStatus", "paymentRequests", "paymentUpdatedAt"];
 let durableAuditIds = new Set();
 let durableRecordsSubscription = null;
 let criticalSaveInFlight = false;
@@ -805,7 +813,7 @@ function normalizeDocumentCategory(category = {}, index = 0) {
 }
 
 function normalizeDocumentCategories(categories) {
-  const source = Array.isArray(categories) && categories.length ? categories : defaultDocumentCategories;
+  const source = Array.isArray(categories) ? categories : defaultDocumentCategories;
   return source
     .map(normalizeDocumentCategory)
     .sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name))
@@ -924,6 +932,7 @@ function normalizeJob(job, contact = {}) {
     .sort()
     .at(-1) || "";
   return {
+    ...job,
     id: job.id || uid("job"),
     projectNumber: job.projectNumber || "",
     name: job.name || job.title || `${contact.name || "Client"} Job`,
@@ -984,6 +993,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     size: number(document.size),
     dataUrl: document.dataUrl || "",
     storagePath: document.storagePath || document.storage_path || "",
+    previousVersions: Array.isArray(document.previousVersions) ? document.previousVersions : [],
     uploadedAt: document.uploadedAt || new Date().toISOString(),
     uploadedBy: document.uploadedBy || "Local user",
     versionNumber: Math.max(1, number(document.versionNumber || document.version) || 1),
@@ -1090,6 +1100,7 @@ function normalizeEstimate(estimate, contacts = []) {
     normalized.paidAmount = normalized.contractValue;
     normalized.paymentPercent = normalized.contractValue ? 100 : 0;
   }
+  normalized.paymentPercent = normalized.contractValue ? Math.min(100, normalized.paidAmount / normalized.contractValue * 100) : 0;
   return normalized;
 }
 
@@ -1105,8 +1116,77 @@ function normalizeLineItem(item) {
   };
 }
 
+let draftRecoveryStore = null;
+
+function hasPendingCompanyChanges() {
+  return canAction("manageCompany") && (Boolean(state.companyFormDraft) ||
+    (cloudReady && durableBusinessStateAuthoritative && sharedStateSnapshot() !== lastCloudSnapshot));
+}
+
+function checkpointPendingDraft(serializedState) {
+  if (!draftRecoveryStore || !durableRecordsReady || applyingCloudState) return;
+  if (durableWriteBlocked || hasPendingDurableChanges() || hasPendingCompanyChanges()) {
+    const stored = typeof serializedState === "string" ? draftRecoveryStore.captureSerialized(serializedState) : draftRecoveryStore.capture(state);
+    if (!stored) showDraftStorageWarning();
+  } else if (!durableSaveInFlight && !cloudSaveInFlight) draftRecoveryStore.settle();
+}
+
+function showDraftStorageWarning() {
+  if (document.getElementById("crmDraftStorageWarning")) return;
+  const notice = document.createElement("aside");
+  notice.id = "crmDraftStorageWarning";
+  notice.setAttribute("role", "alert");
+  notice.style.cssText = "position:fixed;top:12px;left:16px;right:16px;z-index:100001;background:#fff4de;color:#34250b;padding:16px;border:2px solid #b87912;border-radius:12px";
+  notice.textContent = "This browser cannot keep a recovery copy. Shared saving will still be attempted. Keep this tab open until your changes are saved; closing it during a connection problem could lose unsaved work.";
+  document.body.appendChild(notice);
+}
+
+function showPreviousDraftRecovery(entries) {
+  if (!entries.length) return;
+  const panel = document.createElement("aside");
+  panel.id = "crmPreviousDraftRecovery";
+  panel.setAttribute("role", "alert");
+  panel.style.cssText = "position:fixed;top:16px;left:16px;right:16px;z-index:100002;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px";
+  const message = document.createElement("p");
+  message.textContent = "Unfinished work from an earlier session is available. The shared CRM has not been overwritten. Download the recovery copy and compare it with the current records before reapplying missing edits. The file contains private customer data.";
+  const download = document.createElement("button");
+  download.type = "button";
+  download.textContent = "Download earlier work";
+  let downloaded = false;
+  download.addEventListener("click", () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ format: 1, entries }, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "jobcrest-earlier-unsaved-work.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    downloaded = true;
+  });
+  const reviewed = document.createElement("button");
+  reviewed.type = "button";
+  reviewed.textContent = "I have kept the recovery file";
+  reviewed.addEventListener("click", () => {
+    if (!downloaded) { message.textContent = "Download the recovery file first, then confirm it is safely saved. No earlier edits will be reapplied automatically."; return; }
+    if (!window.confirm("Has the recovery file finished downloading and been saved securely? Remove only these exported device copies?")) return;
+    if (draftRecoveryStore.acknowledge(entries)) panel.remove();
+    else message.textContent = "The browser could not remove the device copies. Keep your downloaded file secure.";
+  });
+  panel.append(message, download, reviewed);
+  document.body.appendChild(panel);
+}
+
 function writeStateToLocalStorage() {
-  localStorage.setItem(activeStorageKey(), JSON.stringify(state));
+  try {
+    const serializedState = JSON.stringify(state);
+    checkpointPendingDraft(serializedState);
+    localStorage.setItem(activeStorageKey(), serializedState);
+    return true;
+  } catch {
+    console.warn("Local recovery cache is unavailable. Cloud saving will still be attempted; keep this tab open until saving completes.");
+    return false;
+  }
 }
 
 function flushQueuedLocalStateSave() {
@@ -1116,11 +1196,13 @@ function flushQueuedLocalStateSave() {
 }
 
 function queueLocalStateSave(delay = 200) {
+  localEditRevision += 1;
   window.clearTimeout(localStateSaveTimer);
   localStateSaveTimer = window.setTimeout(flushQueuedLocalStateSave, delay);
 }
 
 function saveState(options = {}) {
+  if (!options.localOnly && !applyingCloudState) localEditRevision += 1;
   window.clearTimeout(localStateSaveTimer);
   localStateSaveTimer = null;
   writeStateToLocalStorage();
@@ -1244,7 +1326,7 @@ function ownerIdsInState() {
 function companyStatePayload() {
   return {
     company: state.company,
-    companyDocuments: state.companyDocuments,
+    ...(durableBusinessStateAuthoritative ? {} : { companyDocuments: state.companyDocuments }),
   };
 }
 
@@ -1259,6 +1341,13 @@ function privateStatePayload(ownerId = currentOwner().userId) {
 }
 
 function cloudRowsForSave() {
+  if (durableBusinessStateAuthoritative) {
+    // Business objects already use versioned record transactions. Never send a
+    // second, unversioned copy of every lead/job when one field changes.
+    if (!canAction("manageCompany")) return [];
+    return [{ id: cloudCompanyStateId(), data: companyStatePayload(), owner_id: null,
+      owner_email: "", updated_by: authSession.user.id, updated_at: new Date().toISOString() }];
+  }
   ensureStateOwnership();
   const now = new Date().toISOString();
   const ownerIds = canManageTeamData() ? ownerIdsInState() : [currentOwner().userId];
@@ -1288,6 +1377,7 @@ function cloudRowsForSave() {
 }
 
 function cloudSnapshotPayload() {
+  if (durableBusinessStateAuthoritative) return canAction("manageCompany") ? { company: companyStatePayload() } : {};
   ensureStateOwnership();
   const ownerIds = canManageTeamData() ? ownerIdsInState() : [currentOwner().userId];
   return {
@@ -1368,7 +1458,7 @@ function consumeRecentCloudEcho(row) {
 function mergeCloudRows(rows = []) {
   const companyRow = rows.find(isCompanyCloudRow);
   const fallbackCompanyRow = rows.find((row) => row.data?.company || row.data?.companyDocuments);
-  const companyData = companyRow?.data || fallbackCompanyRow?.data || {};
+  const companyData = companyRow?.data || (durableBusinessStateAuthoritative ? {} : fallbackCompanyRow?.data) || {};
   const contactMap = new Map();
   const estimateMap = new Map();
   const taskMap = new Map();
@@ -1395,16 +1485,17 @@ function mergeCloudRows(rows = []) {
         contacts: state.contacts,
         estimates: state.estimates,
         calendarTasks: state.calendarTasks,
+        companyDocuments: state.companyDocuments,
       }
     : {
         contacts: [...contactMap.values()],
         estimates: [...estimateMap.values()],
         calendarTasks: [...taskMap.values()],
+        companyDocuments: companyData.companyDocuments || state.companyDocuments,
       };
 
   applySharedState({
     company: companyData.company || state.company,
-    companyDocuments: companyData.companyDocuments || state.companyDocuments,
     ...durableBusinessState,
   });
   ensureStateOwnership();
@@ -1412,6 +1503,7 @@ function mergeCloudRows(rows = []) {
 
 async function fetchCloudRows() {
   const selectColumns = "*";
+  if (durableBusinessStateAuthoritative) return cloudClient.from(SUPABASE_CRM_TABLE).select(selectColumns).eq("id", cloudCompanyStateId());
   const query =
     canManageTeamData()
       ? cloudClient.from(SUPABASE_CRM_TABLE).select(selectColumns).order("updated_at", { ascending: true })
@@ -1424,21 +1516,34 @@ async function fetchCloudRows() {
 }
 
 async function reloadCloudState({ showUpdateToast = false } = {}) {
+  if (durableWriteBlocked) return false;
+  if (cloudSaveInFlight || hasPendingCompanyChanges()) return false;
+  const revision = localEditRevision;
   const { data, error } = await fetchCloudRows();
   if (error) {
     console.warn("Supabase CRM state could not be loaded", error);
     showToast("Supabase is connected, but the CRM table needs the latest setup.");
     return false;
   }
-
+  if (durableWriteBlocked || revision !== localEditRevision || cloudSaveInFlight || hasPendingCompanyChanges() || durableSaveInFlight || hasPendingDurableChanges()) return false;
+  if (durableBusinessStateAuthoritative) {
+    try { getCompanySettingsWriter().remember((data || []).find(isCompanyCloudRow)); }
+    catch (error) {
+      preserveBlockedDurableWrite({ error, payload: { p_request_id: crypto.randomUUID(), rpc: 'crm_commit_company_settings' } });
+      return false;
+    }
+  }
+  applyingCloudState = true;
   mergeCloudRows(data || []);
+  applyingCloudState = false;
   lastCloudSnapshot = sharedStateSnapshot();
   saveState({ localOnly: true });
-  if (showUpdateToast) showToast("CRM updated from Supabase");
   return true;
 }
 
 function queueCloudSave() {
+  if (durableWriteBlocked) return;
+  if (canUseCloudSync() && !durableRecordsReady) return;
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return;
   const snapshot = sharedStateSnapshot();
   if (snapshot === lastCloudSnapshot) return;
@@ -1446,27 +1551,43 @@ function queueCloudSave() {
   cloudSaveTimer = window.setTimeout(flushCloudSave, CLOUD_SAVE_DELAY);
 }
 
+function getCompanySettingsWriter() {
+  if (!companySettingsWriter) companySettingsWriter = window.CrmCompanySettingsWrites.create({
+    companyId: supabaseStateId(), requestId: () => crypto.randomUUID(),
+    rpc: (name, payload) => cloudClient.rpc(name, payload),
+    onBlocked: preserveBlockedDurableWrite,
+  });
+  return companySettingsWriter;
+}
+
 async function flushCloudSave() {
+  if (durableWriteBlocked) return false;
+  if (canUseCloudSync() && !durableRecordsReady) return false;
   if (!cloudReady || !cloudClient || !authSession?.user?.id || cloudSaveInFlight) return false;
   const rows = cloudRowsForSave();
   const snapshot = sharedStateSnapshot();
   if (snapshot === lastCloudSnapshot) return true;
+  if (!rows.length) { lastCloudSnapshot = snapshot; return true; }
 
   cloudSaveInFlight = true;
+  checkpointPendingDraft();
   rows.forEach(markRecentCloudWrite);
   try {
-    const { error } = await cloudClient.from(SUPABASE_CRM_TABLE).upsert(rows, { onConflict: "id" });
+    const { error } = durableBusinessStateAuthoritative
+      ? await getCompanySettingsWriter().commit(rows[0].data)
+      : await cloudClient.from(SUPABASE_CRM_TABLE).upsert(rows, { onConflict: "id" });
     if (error) throw error;
   } catch (error) {
     rows.forEach(clearRecentCloudWrite);
     console.warn("Supabase CRM sync failed", error);
-    showToast("Supabase sync failed. Local changes are still saved.");
+    if (!durableWriteBlocked) showToast("Company settings could not be saved. Keep this page open and try again.");
     return false;
   } finally {
     cloudSaveInFlight = false;
   }
 
   lastCloudSnapshot = snapshot;
+  checkpointPendingDraft();
   if (sharedStateSnapshot() !== lastCloudSnapshot) queueCloudSave();
   return true;
 }
@@ -1474,7 +1595,7 @@ async function flushCloudSave() {
 async function promoteSignedInSession() {
   if (!window.RooflineAuth?.hasConfig()) return authSession;
   const trusted = await window.RooflineAuth.getTrustedUser();
-  if (!trusted.user || !window.RooflineAuth.isAllowedEmail(trusted.user.email)) return authSession;
+  if (!trusted.user || !window.RooflineAuth.isAllowedUser(trusted.user)) return authSession;
   return trusted;
 }
 
@@ -1484,7 +1605,7 @@ async function initializeCloudSync() {
   if (!cloudClient) return;
 
   const trusted = await window.RooflineAuth.getTrustedUser();
-  if (!trusted.user || !window.RooflineAuth.isAllowedEmail(trusted.user.email)) {
+  if (!trusted.user || !window.RooflineAuth.isAllowedUser(trusted.user)) {
     console.info("Supabase sync is waiting for a signed-in company user.");
     return;
   }
@@ -1519,10 +1640,8 @@ function subscribeToCloudState() {
           queueDurableRecordsSave();
           return;
         }
-        applyingCloudState = true;
-        await reloadCloudState({ showUpdateToast: true });
-        applyingCloudState = false;
-        render();
+        const applied = await reloadCloudState({ showUpdateToast: false });
+        if (applied) render();
       },
     )
     .subscribe();
@@ -1611,7 +1730,14 @@ function durableRowsFromState() {
     updated_by: updatedBy,
     deleted_at: null,
   }));
-  return rows;
+  // A missing parent is a data-review issue, never an implicit request to delete
+  // the saved child. Keep unmapped rows untouched until a reviewed relationship
+  // repair is loaded from the server, even if a local import reuses their IDs.
+  const unmappedKeys = new Set(durableUnmappedRows.map(durableRecordKey));
+  return preserveReadOnlyPaymentFields([
+    ...rows.filter(row => !unmappedKeys.has(durableRecordKey(row))),
+    ...durableUnmappedRows.map(row => JSON.parse(JSON.stringify(row))),
+  ]);
 }
 
 function durableAuditRowsFromState() {
@@ -1682,13 +1808,107 @@ function hasPendingDurableChanges() {
 }
 
 function rememberDurableRows(rows = [], auditRows = []) {
-  durableRecordFingerprints = new Map(rows.map((row) => [durableRecordKey(row), durableFingerprint(row)]));
+  durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => [durableRecordKey(row), durableFingerprint(row)]));
   durableAuditIds = new Set(auditRows.map((row) => row.id));
+  getDurableCommitWriter().remember(rows);
+  rows.forEach(row => durableFinancialBaseline.set(durableRecordKey(row), row.data));
+}
+
+function getDurableCommitWriter() {
+  if (!durableCommitWriter) durableCommitWriter = window.CrmRecordWrites.create({
+    rpc: (name, payload) => cloudClient.rpc(name, payload),
+    requestId: () => crypto.randomUUID(),
+    onAcknowledged: (changes, auditIds) => {
+      changes.forEach(row => {
+        if (row.data) durableFinancialBaseline.set(durableRecordKey(row), row.data);
+        if (row.operation === "delete") durableRecordFingerprints.delete(durableRecordKey(row));
+        else durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+      });
+      auditIds.forEach(id => durableAuditIds.add(id));
+    },
+    onBlocked: preserveBlockedDurableWrite,
+  });
+  return durableCommitWriter;
+}
+
+function preserveBlockedDurableWrite({ error, payload }) {
+  durableWriteBlocked = true;
+  window.clearTimeout(durableSaveTimer);
+  window.clearTimeout(cloudSaveTimer);
+  const recoveryKey = `jobcrest-unsaved-recovery:${authSession?.user?.id || "local"}:${payload.p_request_id}`;
+  const recovery = { createdAt: new Date().toISOString(), request: payload, state: JSON.parse(JSON.stringify(state)) };
+  try { localStorage.setItem(recoveryKey, JSON.stringify(recovery)); } catch { /* Keep the in-memory download available. */ }
+  if (document.getElementById("crmSaveRecovery")) return;
+  const panel = document.createElement("aside");
+  panel.id = "crmSaveRecovery";
+  panel.setAttribute("role", "alert");
+  panel.style.cssText = "position:fixed;bottom:16px;left:16px;right:16px;z-index:100000;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px;box-shadow:0 5px 25px #0003";
+  const message = document.createElement("p");
+  message.textContent = error?.code === "40001"
+    ? "Someone else saved a newer version. Your changes have not overwritten theirs. Shared saving is paused; download your unsaved work, then reload and review it."
+    : "Shared saving could not be confirmed and is paused. Keep this page open. Download your unsaved work before reloading; an administrator may need to check the connection or database update.";
+  const download = document.createElement("button");
+  download.type = "button";
+  download.textContent = "Download unsaved work";
+  let downloaded = false;
+  download.addEventListener("click", () => {
+    // Include edits made after the failed request as well as the original intent.
+    const contents = JSON.stringify({ ...recovery, currentState: state }, null, 2);
+    const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `jobcrest-unsaved-${payload.p_request_id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    downloaded = true;
+  });
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.textContent = "Reload shared data";
+  reload.addEventListener("click", () => {
+    if (!downloaded) { message.textContent = "Download your unsaved work first. It contains customer data: keep it secure. Then reload shared data and review which edits need to be reapplied."; return; }
+    if (window.confirm("Confirm the recovery file finished downloading. Reload shared data now? Unsaved edits will need to be reviewed and reapplied from that file.")) location.reload();
+  });
+  panel.append(message, download, reload);
+  document.body.appendChild(panel);
+}
+
+async function commitDurableChanges(rows, auditRows = [], removals = []) {
+  if (durableWriteBlocked) return { data: null, error: new Error("Shared saving is paused. Review the recovery notice.") };
+  checkpointPendingDraft();
+  const result = await getDurableCommitWriter().commit(rows, auditRows, removals);
+  // Callers may still hold the in-flight flag; defer cleanup until their
+  // completion handlers run, and check CURRENT edits rather than sent data.
+  window.setTimeout(checkpointPendingDraft, 0);
+  return result;
+}
+
+function preserveReadOnlyPaymentFields(rows) {
+  if (currentRole() === "admin") return rows;
+  // Normalizers add display defaults to old data. Sales edits must retain the
+  // original payment fields verbatim, not inadvertently rewrite that history.
+  for (const row of rows) {
+    if (!["job", "estimate"].includes(row.record_type)) continue;
+    const baseline = durableFinancialBaseline.get(durableRecordKey(row)) || {};
+    for (const field of protectedPaymentFields) {
+      if (Object.prototype.hasOwnProperty.call(baseline, field)) row.data[field] = JSON.parse(JSON.stringify(baseline[field]));
+      else delete row.data[field];
+    }
+  }
+  return rows;
 }
 
 function applyDurableRows(rows = [], auditRows = []) {
   const activeRows = rows.filter((row) => !row.deleted_at);
   const byType = (type) => activeRows.filter((row) => row.record_type === type);
+  const activeLeadIds = new Set(byType('contact').map(row => row.id));
+  durableUnmappedRows = activeRows.filter(row =>
+    (row.record_type === 'job' || (row.record_type === 'document' && row.lead_id !== COMPANY_DOCUMENT_LEAD_ID))
+    && !activeLeadIds.has(row.lead_id)
+  ).map(row => JSON.parse(JSON.stringify(row)));
+  showUnmappedRecordNotice(durableUnmappedRows.length);
   const jobsByLead = new Map();
   const documentsByLead = new Map();
   const updatesByLead = new Map();
@@ -1700,7 +1920,7 @@ function applyDurableRows(rows = [], auditRows = []) {
     if (!documentsByLead.has(row.lead_id)) documentsByLead.set(row.lead_id, []);
     documentsByLead.get(row.lead_id).push({ ...row.data, id: row.id, leadId: row.lead_id, jobId: row.job_id || row.data?.jobId || "" });
   });
-  auditRows.forEach((row) => {
+  auditRows.filter(row => row.event_type !== "record_commit").forEach((row) => {
     if (!updatesByLead.has(row.lead_id)) updatesByLead.set(row.lead_id, []);
     updatesByLead.get(row.lead_id).push({
       id: row.id,
@@ -1731,31 +1951,71 @@ function applyDurableRows(rows = [], auditRows = []) {
     contacts,
     estimates,
     calendarTasks,
-    ...(companyDocumentRows.length ? { companyDocuments } : {}),
+    companyDocuments,
   });
 }
 
+function showUnmappedRecordNotice(count) {
+  const existing = document.getElementById('crmUnmappedRecords');
+  if (!count) { existing?.remove(); return; }
+  if (existing) return;
+  const notice = document.createElement('aside');
+  notice.id = 'crmUnmappedRecords';
+  notice.setAttribute('role', 'alert');
+  notice.style.cssText = 'background:#fff4de;color:#34250b;padding:12px;border-bottom:2px solid #b87912';
+  notice.textContent = 'Some saved jobs or documents have a missing lead link. They have been retained without changes. An administrator needs to review the links; no files were deleted or assigned to another lead.';
+  document.body.prepend(notice);
+}
+
 async function fetchDurableRows() {
-  const [recordsResult, auditResult] = await Promise.all([
-    cloudClient.from(SUPABASE_RECORDS_TABLE).select("*").eq("company_state_id", supabaseStateId()),
-    cloudClient.from(SUPABASE_AUDIT_TABLE).select("*").eq("company_state_id", supabaseStateId()).order("created_at", { ascending: false }),
+  const [rows, auditRows] = await Promise.all([
+    fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"]),
+    fetchAllCompanyRows(SUPABASE_AUDIT_TABLE, ["created_at", "id"]),
   ]);
-  if (recordsResult.error) throw recordsResult.error;
-  if (auditResult.error) throw auditResult.error;
-  return { rows: recordsResult.data || [], auditRows: auditResult.data || [] };
+  return { rows, auditRows };
+}
+
+async function fetchAllCompanyRows(table, orderColumns = ["id"]) {
+  const rows = [];
+  const seen = new Set();
+  let expectedCount = null;
+  do {
+    let query = cloudClient.from(table).select("*", { count: "exact" }).eq("company_state_id", supabaseStateId());
+    for (const column of orderColumns) query = query.order(column, { ascending: true });
+    const { data, error, count } = await query.range(rows.length, rows.length + 499);
+    if (error) throw error;
+    if (!Number.isSafeInteger(count) || count < 0 || (expectedCount !== null && count !== expectedCount)) {
+      throw new Error("CRM records changed during loading. Retrying is required before applying this snapshot.");
+    }
+    expectedCount = count;
+    if (!Array.isArray(data) || (!data.length && rows.length < count)) throw new Error("Incomplete CRM response; existing data was preserved.");
+    for (const row of data) {
+      const key = JSON.stringify(orderColumns.map((column) => row[column]));
+      if (seen.has(key)) throw new Error("CRM page overlap detected; existing data was preserved.");
+      seen.add(key);
+      rows.push(row);
+    }
+    if (rows.length > expectedCount) throw new Error("CRM response count mismatch; existing data was preserved.");
+  } while (rows.length < expectedCount);
+  return rows;
 }
 
 async function reloadDurableRecords({ showUpdateToast = false } = {}) {
+  if (durableWriteBlocked) return null;
   try {
+    const revision = localEditRevision;
+    if (durableSaveInFlight || hasPendingDurableChanges()) return null;
     const { rows, auditRows } = await fetchDurableRows();
-    if (rows.some((row) => row.record_type === "contact")) {
-      applyingCloudState = true;
-      applyDurableRows(rows, auditRows);
-      applyingCloudState = false;
-      saveState({ localOnly: true });
+    if (durableWriteBlocked || revision !== localEditRevision || durableSaveInFlight || hasPendingDurableChanges()) {
+      // Do not advance fingerprints for a response we did not apply.
+      queueDurableRecordsReload({ showUpdateToast: false });
+      return null;
     }
+    applyingCloudState = true;
+    applyDurableRows(rows, auditRows);
     rememberDurableRows(rows, auditRows);
-    if (showUpdateToast) showToast("CRM records updated from the cloud");
+    applyingCloudState = false;
+    saveState({ localOnly: true });
     return rows;
   } catch (error) {
     applyingCloudState = false;
@@ -1765,6 +2025,7 @@ async function reloadDurableRecords({ showUpdateToast = false } = {}) {
 }
 
 function queueDurableRecordsSave() {
+  if (durableWriteBlocked) return;
   if (!durableWritesEnabled || !durableRecordsReady || !cloudClient || !authSession?.user?.id) return;
   window.clearTimeout(durableSaveTimer);
   durableSaveTimer = window.setTimeout(flushDurableRecordsSave, CLOUD_SAVE_DELAY);
@@ -1789,8 +2050,8 @@ function queueDurableRecordsReload({ showUpdateToast = true } = {}) {
     }
     durableReloadInFlight = true;
     try {
-      await reloadDurableRecords({ showUpdateToast });
-      render();
+      const appliedRows = await reloadDurableRecords({ showUpdateToast });
+      if (appliedRows !== null) render();
     } finally {
       durableReloadInFlight = false;
       if (durableReloadQueued) {
@@ -1802,6 +2063,7 @@ function queueDurableRecordsReload({ showUpdateToast = true } = {}) {
 }
 
 async function flushDurableRecordsSave() {
+  if (durableWriteBlocked) return false;
   if (!durableRecordsReady || durableSaveInFlight || !authSession?.user?.id) return false;
   const rows = durableRowsFromState();
   const currentKeys = new Set(rows.map(durableRecordKey));
@@ -1821,35 +2083,18 @@ async function flushDurableRecordsSave() {
 
   durableSaveInFlight = true;
   try {
-    if (changedRows.length) {
-      changedRows.forEach(markRecentLocalDurableWrite);
-      const { error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).upsert(changedRows, { onConflict: "company_state_id,record_type,id" });
-      if (error) {
-        changedRows.forEach(clearRecentLocalDurableWrite);
-        throw error;
-      }
-    }
-    for (const [recordType, ids] of removedByType) {
-      const { error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).delete().eq("company_state_id", supabaseStateId()).eq("record_type", recordType).in("id", ids);
-      if (error) throw error;
-    }
-    if (newAuditRows.length) {
-      const { error } = await cloudClient
-        .from(SUPABASE_AUDIT_TABLE)
-        .upsert(newAuditRows, { onConflict: "id", ignoreDuplicates: true });
-      if (error) throw error;
-    }
-    rememberDurableRows(rows, auditRows);
+    const removals = [...removedByType].flatMap(([record_type, ids]) => ids.map(id => ({ company_state_id: supabaseStateId(), record_type, id })));
+    changedRows.forEach(markRecentLocalDurableWrite);
+    const { error } = await commitDurableChanges(changedRows, newAuditRows, removals);
+    if (error) { changedRows.forEach(clearRecentLocalDurableWrite); throw error; }
     return true;
   } catch (error) {
     console.warn("Durable CRM record sync failed", error);
     return false;
   } finally {
     durableSaveInFlight = false;
-    const latest = durableRowsFromState();
-    const hasUnsavedRecords = latest.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row));
-    const hasUnsavedAudit = durableAuditRowsFromState().some((row) => !durableAuditIds.has(row.id));
-    if (hasUnsavedRecords || hasUnsavedAudit) queueDurableRecordsSave();
+    // Includes removals made while this request was in flight, not only updates.
+    if (hasPendingDurableChanges()) queueDurableRecordsSave();
   }
 }
 
@@ -1913,28 +2158,12 @@ async function persistProfitCostRecord(jobId, costId, updateId) {
   const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
   if (!jobRow) return false;
 
-  const { error: writeError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .upsert(jobRow, { onConflict: "company_state_id,record_type,id" });
+  const { data: commitResult, error: writeError } = await commitDurableChanges([jobRow], auditRow ? [auditRow] : []);
   if (writeError) throw writeError;
-  if (auditRow) {
-    const { error: auditError } = await cloudClient
-      .from(SUPABASE_AUDIT_TABLE)
-      .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
-    if (auditError) throw auditError;
-    durableAuditIds.add(auditRow.id);
-  }
 
-  const { data: confirmed, error: confirmError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .select("data")
-    .eq("company_state_id", supabaseStateId())
-    .eq("record_type", "job")
-    .eq("id", jobId)
-    .single();
-  if (confirmError) throw confirmError;
+  const confirmed = commitResult.rows.find(saved => saved.record_type === "job" && saved.id === jobId);
   if (!(confirmed?.data?.costItems || []).some((item) => item.id === costId)) return false;
-  durableRecordFingerprints.set(durableRecordKey(jobRow), durableFingerprint(jobRow));
+  // The writer acknowledged its detached request, never this still-editable row.
   return true;
 }
 
@@ -1946,32 +2175,16 @@ async function persistManualPaymentRecord(jobId, paymentId, shouldExist, updateI
   const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
   if (!jobRow) return false;
 
+  const expectedData = JSON.parse(JSON.stringify(jobRow.data));
   durableSaveInFlight = true;
   try {
-    const { error: writeError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .upsert(jobRow, { onConflict: "company_state_id,record_type,id" });
+    const { data: commitResult, error: writeError } = await commitDurableChanges([jobRow], auditRow ? [auditRow] : []);
     if (writeError) throw writeError;
-    if (auditRow) {
-      const { error: auditError } = await cloudClient
-        .from(SUPABASE_AUDIT_TABLE)
-        .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
-      if (auditError) throw auditError;
-      durableAuditIds.add(auditRow.id);
-    }
 
-    const { data: confirmed, error: confirmError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .select("data")
-      .eq("company_state_id", supabaseStateId())
-      .eq("record_type", "job")
-      .eq("id", jobId)
-      .single();
-    if (confirmError) throw confirmError;
+    const confirmed = commitResult.rows.find(saved => saved.record_type === "job" && saved.id === jobId);
     const exists = (confirmed?.data?.manualPayments || []).some((payment) => payment.id === paymentId);
     if (exists !== shouldExist) return false;
-    if (!durableRecordDataMatches(confirmed?.data || {}, jobRow.data)) return false;
-    durableRecordFingerprints.set(durableRecordKey(jobRow), durableFingerprint(jobRow));
+    if (!durableRecordDataMatches(confirmed?.data || {}, expectedData)) return false;
     queueCloudSave();
     return true;
   } finally {
@@ -1995,30 +2208,12 @@ async function persistLeadJobRecord(jobId, updateId, { skipContact = false } = {
   durableSaveInFlight = true;
   try {
     rowsToWrite.forEach(markRecentLocalDurableWrite);
-    const { error: writeError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .upsert(rowsToWrite, { onConflict: "company_state_id,record_type,id" });
+    const { data: commitResult, error: writeError } = await commitDurableChanges(rowsToWrite, auditRow ? [auditRow] : []);
     if (writeError) throw writeError;
-    if (auditRow) {
-      const { error: auditError } = await cloudClient
-        .from(SUPABASE_AUDIT_TABLE)
-        .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
-      if (auditError) throw auditError;
-      durableAuditIds.add(auditRow.id);
-    }
 
-    const { data: confirmed, error: confirmError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .select("data")
-      .eq("company_state_id", supabaseStateId())
-      .eq("record_type", "job")
-      .eq("id", jobId)
-      .single();
-    if (confirmError) throw confirmError;
+    const confirmed = commitResult.rows.find(saved => saved.record_type === "job" && saved.id === jobId);
     if (confirmed?.data?.status !== jobRow.data.status) return false;
-    rowsToWrite.forEach((row) => {
-      durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
-    });
+    // Only getDurableCommitWriter.onAcknowledged advances confirmed fingerprints.
     return true;
   } catch (error) {
     rowsToWrite.forEach(clearRecentLocalDurableWrite);
@@ -2057,28 +2252,20 @@ async function persistDurableRecordNow(recordType, recordId, verify, { syncLegac
   );
   if (!row) return false;
 
+  const expectedData = JSON.parse(JSON.stringify(row.data));
   durableSaveInFlight = true;
   try {
     markRecentLocalDurableWrite(row);
-    const { error: writeError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .upsert(row, { onConflict: "company_state_id,record_type,id" });
+    const { data: commitResult, error: writeError } = await commitDurableChanges([row]);
     if (writeError) {
       clearRecentLocalDurableWrite(row);
       throw writeError;
     }
 
-    const { data: confirmed, error: confirmError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .select("data")
-      .eq("company_state_id", supabaseStateId())
-      .eq("record_type", recordType)
-      .eq("id", recordId)
-      .single();
-    if (confirmError) throw confirmError;
-    if (!verify(confirmed?.data || {}, row.data)) return false;
+    const confirmed = commitResult.rows.find(saved => saved.record_type === recordType && saved.id === recordId);
+    if (!verify(confirmed?.data || {}, expectedData)) return false;
 
-    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
+    // Later nested edits must remain dirty until a subsequent acknowledgement.
     if (syncLegacy) queueCloudSave();
     return true;
   } catch (error) {
@@ -2126,32 +2313,15 @@ async function persistLeadDocumentRecords(documentIds, updateId) {
   durableSaveInFlight = true;
   documentRows.forEach(markRecentLocalDurableWrite);
   try {
-    const { error: writeError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .upsert(documentRows, { onConflict: "company_state_id,record_type,id" });
+    const { data: commitResult, error: writeError } = await commitDurableChanges(documentRows, auditRow ? [auditRow] : []);
     if (writeError) {
       documentRows.forEach(clearRecentLocalDurableWrite);
       throw writeError;
     }
-    if (auditRow) {
-      const { error: auditError } = await cloudClient
-        .from(SUPABASE_AUDIT_TABLE)
-        .upsert(auditRow, { onConflict: "id", ignoreDuplicates: true });
-      if (auditError) throw auditError;
-      durableAuditIds.add(auditRow.id);
-    }
 
-    const { data: confirmed, error: confirmError } = await cloudClient
-      .from(SUPABASE_RECORDS_TABLE)
-      .select("id")
-      .eq("company_state_id", supabaseStateId())
-      .eq("record_type", "document")
-      .in("id", documentIds);
-    if (confirmError) throw confirmError;
+    const confirmed = commitResult.rows;
     if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
-    documentRows.forEach((row) => {
-      durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
-    });
+    // Preserve the writer's immutable acknowledgement when uploads overlap edits.
     return true;
   } finally {
     durableSaveInFlight = false;
@@ -2168,23 +2338,12 @@ async function persistCompanyDocumentRecords(documentIds) {
   );
   if (documentRows.length !== wantedIds.size) return false;
 
-  const { error: writeError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .upsert(documentRows, { onConflict: "company_state_id,record_type,id" });
+  const { data: commitResult, error: writeError } = await commitDurableChanges(documentRows);
   if (writeError) throw writeError;
 
-  const { data: confirmed, error: confirmError } = await cloudClient
-    .from(SUPABASE_RECORDS_TABLE)
-    .select("id")
-    .eq("company_state_id", supabaseStateId())
-    .eq("record_type", "document")
-    .eq("lead_id", COMPANY_DOCUMENT_LEAD_ID)
-    .in("id", documentIds);
-  if (confirmError) throw confirmError;
+  const confirmed = commitResult.rows;
   if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
-  documentRows.forEach((row) => {
-    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
-  });
+  // Preserve the writer's immutable acknowledgement when uploads overlap edits.
   return true;
 }
 
@@ -2192,21 +2351,14 @@ async function initializeDurableRecords() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return;
   const rows = await reloadDurableRecords();
   if (rows === null) {
-    durableBusinessStateAuthoritative = false;
-    await reloadCloudState();
+    // A failed authoritative read is not permission to display an old snapshot.
+    durableBusinessStateAuthoritative = true;
     return;
   }
-  const hasDurableContacts = rows.some((row) => row.record_type === "contact");
-  if (!hasDurableContacts) {
-    durableBusinessStateAuthoritative = false;
-    await reloadCloudState();
-  }
+  // An empty authoritative table is not permission to resurrect old snapshots.
+  // Legacy import must be an explicit, separately reviewed maintenance operation.
   durableRecordsReady = true;
   durableBusinessStateAuthoritative = true;
-  if (!hasDurableContacts && state.contacts.length) {
-    rememberDurableRows([], []);
-    await flushDurableRecordsSave();
-  }
   void createDailyRecoveryBackup();
   if (!cloudClient.channel || durableRecordsSubscription) return;
   durableRecordsSubscription = cloudClient
@@ -2234,12 +2386,18 @@ async function createDailyRecoveryBackup() {
   if (!canManageTeamData() || !durableRecordsReady || !authSession?.user?.id) return;
   try {
     const { rows, auditRows } = await fetchDurableRows();
+    const conversationMessages = await fetchAllCompanyRows("crm_conversation_messages", ["created_at", "id"]);
     const payload = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       createdAt: new Date().toISOString(),
       company: companyStatePayload(),
       records: rows,
       auditEvents: auditRows,
+      conversationMessages,
+      // File bytes still require a separately scheduled storage backup.
+      storagePaths: [...new Set(rows.filter((row) => row.record_type === "document")
+        .flatMap((row) => [row.data?.storagePath, ...(row.data?.previousVersions || []).map((version) => version.storagePath)])
+        .filter(Boolean))],
     };
     const { error } = await cloudClient.from("crm_backups").insert({
       company_state_id: supabaseStateId(),
@@ -2424,13 +2582,14 @@ function updateContact(contactId, updater) {
 }
 
 function getEstimateContact(estimate) {
-  return getContact(estimate?.contactId) || state.contacts[0];
+  return getContact(estimate?.contactId) || null;
 }
 
 function getEstimateJob(estimate) {
   const contact = getEstimateContact(estimate);
+  if (!contact) return null;
   const jobs = contactJobs(contact);
-  return jobs.find((job) => job.id === estimate?.jobId) || jobs[0];
+  return jobs.find((job) => job.id === estimate?.jobId) || null;
 }
 
 function numericHash(value = "") {
@@ -2540,6 +2699,46 @@ function filteredContacts() {
       .toLowerCase()
       .includes(query),
   );
+}
+
+async function ensureExistingSharedSalesNumbers() {
+  for (const estimate of state.estimates) {
+    const contact = getEstimateContact(estimate);
+    const job = getEstimateJob(estimate);
+    if (!contact || !job) continue;
+    if (contact.leadNumber && job.projectNumber && estimate.leadNumber === contact.leadNumber &&
+        estimate.projectNumber === job.projectNumber && estimate.estimateNumber) continue;
+    await reserveSharedSalesNumbers(contact.id, job.id, estimate.id);
+  }
+}
+
+function getSalesNumbering() {
+  if (!salesNumbering) salesNumbering = window.CrmSalesNumbering.create({
+    companyId: supabaseStateId(), rpc: (name, payload) => cloudClient.rpc(name, payload),
+  });
+  return salesNumbering;
+}
+
+async function reserveSharedSalesNumbers(leadId, jobId = "", estimateId = "") {
+  if (!canUseCloudSync()) return null;
+  if (!cloudReady || !cloudClient || !durableRecordsReady || durableWriteBlocked || !window.RooflineAuth.isEditorSessionCurrent()) {
+    throw new Error("Shared numbering is not ready. Keep this page open and try again.");
+  }
+  const identity = squareSendIdentity();
+  const result = await getSalesNumbering().reserve({ leadId, jobId, estimateId });
+  if (identity !== squareSendIdentity() || !window.RooflineAuth.isEditorSessionCurrent()) throw new Error("The signed-in account changed.");
+  state.contacts = state.contacts.map(contact => contact.id !== leadId ? contact : {
+    ...contact, leadNumber: result.leadNumber,
+    jobs: contactJobs(contact).map(job => job.id === jobId ? { ...job, projectNumber: result.projectNumber } : job),
+  });
+  const estimate = estimateId && state.estimates.find(item => item.id === estimateId);
+  if (estimate) {
+    estimate.leadNumber = result.leadNumber;
+    estimate.projectNumber = result.projectNumber;
+    estimate.estimateNumber = result.estimateNumber;
+  }
+  saveState({ localOnly: true });
+  return result;
 }
 
 function sortLeadIntakeChronologically(contacts = []) {
@@ -2693,13 +2892,16 @@ function filteredEstimates() {
 }
 
 function totalsFor(estimate) {
-  const subtotal = estimate.items.reduce(
-    (sum, item) => sum + number(item.quantity) * number(item.rate),
+  // Sum rounded line cents, matching displayed line amounts and Square orders.
+  const subtotalCents = estimate.items.reduce(
+    (sum, item) => sum + Math.round(number(item.quantity) * Math.round(number(item.rate) * 100)),
     0,
   );
-  const tax = subtotal * (number(estimate.taxRate) / 100);
-  const total = subtotal + tax;
-  const balance = Math.max(total - number(estimate.deposit), 0);
+  const subtotal = subtotalCents / 100;
+  const taxCents = Math.round(subtotalCents * number(estimate.taxRate) / 100);
+  const tax = taxCents / 100;
+  const total = (subtotalCents + taxCents) / 100;
+  const balance = Math.max(subtotalCents + taxCents - Math.round(number(estimate.deposit) * 100), 0) / 100;
   return { subtotal, tax, total, balance };
 }
 
@@ -3166,7 +3368,7 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
   const currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status : "";
   if (!contact || !nextStatus || currentJobStatus === nextStatus) return contact;
   if (["Estimate Sent", "Won"].includes(nextStatus)) {
-    contact = ensureLeadProjectNumbers(contactId)?.contact || contact;
+    contact = canUseCloudSync() ? contact : ensureLeadProjectNumbers(contactId)?.contact || contact;
   }
   return updateContact(contactId, (current) => {
     const wasStatus = current.status;
@@ -4982,19 +5184,31 @@ function fillJobForm(job = {}) {
 async function saveLeadJob(event) {
   event.preventDefault();
   if (!requireAction("manageJobs")) return;
-  const contact = getSelectedContact();
+  let contact = getSelectedContact();
   if (!contact) return;
   const formData = new FormData(els.leadJobForm);
   const jobId = formData.get("jobId") || uid("job");
   const existing = contactJobs(contact).find((job) => job.id === jobId);
+  let reservedProjectNumber = existing?.projectNumber || "";
+  if (!existing && contact.leadNumber && canUseCloudSync()) {
+    try {
+      const reservation = await reserveSharedSalesNumbers(contact.id, jobId);
+      reservedProjectNumber = reservation.projectNumber;
+      contact = getSelectedContact();
+    } catch (error) {
+      setSaveState(els.jobSaveStatus, error.message || "A shared project number could not be reserved.", "error");
+      return;
+    }
+  }
   const job = normalizeJob(
     {
       ...(existing || { id: jobId, createdAt: todayISO() }),
       id: jobId,
-      projectNumber: existing?.projectNumber || (contact.leadNumber ? nextProjectNumber(contact) : ""),
+      projectNumber: existing?.projectNumber || reservedProjectNumber || (contact.leadNumber ? nextProjectNumber(contact) : ""),
       name: formData.get("name").trim(),
       status: formData.get("status"),
       value: number(formData.get("value")),
+      contractValue: number(formData.get("value")),
       salesRep: formData.get("salesRep").trim() || contact.salesRep || "Unassigned",
       lastContact: formData.get("lastContact"),
       closedDate:
@@ -5073,9 +5287,19 @@ function editLeadJob(jobId) {
 }
 
 function deleteLeadJob(jobId) {
+  if (!requireAction("manageJobs")) return;
   const contact = getSelectedContact();
   if (!contact || contactJobs(contact).length <= 1) return;
   const job = contactJobs(contact).find((item) => item.id === jobId);
+  if (!job) return;
+  const hasHistory = state.estimates.some((estimate) => estimate.contactId === contact.id && estimate.jobId === jobId) ||
+    (job.manualPayments || []).length || number(job.paidAmount) > 0 || (job.costItems || []).length ||
+    (job.emails || []).length || (contact.updates || []).some((update) => update.jobId === jobId) ||
+    Object.values(state.company.jobConversations || {}).some((entry) => entry.jobId === jobId && (entry.messages || []).length);
+  if (hasHistory) {
+    showToast("This job has estimates, payments, costs, or history. Keep it for your records instead of deleting it.");
+    return;
+  }
   const linkedDocumentCount = (contact.documents || []).filter((document) => document.jobId === jobId).length;
   if (linkedDocumentCount) {
     showToast(
@@ -5496,7 +5720,9 @@ function syncEstimatePipelineStage(estimate, estimateStatus = estimate?.status) 
       ? "Estimate Sent"
       : "";
   if (!nextStage) return;
-  const numbered = ensureLeadProjectNumbers(estimate.contactId, estimate.jobId);
+  const linkedContact = getEstimateContact(estimate);
+  const linkedJob = getEstimateJob(estimate);
+  const numbered = canUseCloudSync() ? { contact: linkedContact, job: linkedJob } : ensureLeadProjectNumbers(estimate.contactId, estimate.jobId);
   if (!numbered) return;
   estimate.leadNumber = numbered.contact.leadNumber;
   estimate.projectNumber = numbered.job?.projectNumber || estimate.projectNumber || "";
@@ -5579,27 +5805,63 @@ function documentUploadErrorMessage(error) {
 }
 
 async function storeDocumentFile(file, { documentId, leadId = "company", jobId = "", categoryId = "other" } = {}) {
+  if (!documentId || !leadId || !categoryId) throw new Error("Document, lead and category identifiers are required");
   if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) {
+    if (canUseCloudSync()) throw new Error("Shared file storage is not ready. Reconnect before uploading.");
+    if (file.size > 5 * 1024 * 1024) throw new Error("Files larger than 5 MB require connected cloud storage; the signed-in CRM supports up to 250 MB.");
     return { dataUrl: await readFileAsDataUrl(file), storagePath: "" };
   }
   const recordScope = jobId ? `${leadId}/jobs/${jobId}` : leadId;
-  const storagePath = `${supabaseStateId()}/${recordScope}/${categoryId}/${documentId}/${safeStorageFileName(file.name)}`;
+  const storagePath = `${supabaseStateId()}/${recordScope}/${categoryId}/${documentId}/${uid("version")}/${safeStorageFileName(file.name)}`;
   const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
     cacheControl: "3600",
     contentType: file.type || "application/octet-stream",
-    // Retrying an interrupted upload or migrating an older inline document can
-    // legitimately target the same object path. Replacing that exact object is
-    // safe and prevents "resource already exists" from stranding the CRM row.
-    upsert: true,
+    // Immutable revisions preserve prior bytes until new metadata is confirmed.
+    upsert: false,
   });
   if (error) throw error;
   return { dataUrl: "", storagePath };
 }
 
-async function deleteStoredDocument(record) {
-  if (!record?.storagePath || !cloudClient?.storage) return;
-  const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).remove([record.storagePath]);
-  if (error) console.warn("Stored document could not be removed", error);
+async function uploadDocumentBatch(files, uploadOne) {
+  const documents = [];
+  const failures = [];
+  // Bound parallel reads/uploads so multiple large files do not exhaust memory.
+  for (let offset = 0; offset < files.length; offset += 3) {
+    const batch = files.slice(offset, offset + 3);
+    const results = await Promise.allSettled(batch.map(uploadOne));
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") documents.push(result.value);
+      else failures.push({ name: batch[index].name, error: result.reason });
+    });
+  }
+  if (!documents.length && failures.length) throw failures[0].error;
+  return { documents, failures };
+}
+
+function reportUploadFailures(failures, element) {
+  if (!failures.length) return true;
+  const message = `Other files were saved. Retry only these failed uploads: ${failures.map((failure) => failure.name).join(", ")}`;
+  setSaveState(element, message, "error");
+  showToast(message);
+  return false;
+}
+
+async function archiveDocumentRecord(record) {
+  if (!record || durableWriteBlocked) return false;
+  if (!canUseCloudSync()) {
+    try {
+      localStorage.setItem(`jobcrest-archived-document:${record.id}`, JSON.stringify({ ...record, archivedAt: new Date().toISOString() }));
+      return true;
+    } catch { showToast("Document was not removed: a recovery copy could not be saved."); return false; }
+  }
+  if (!durableRecordsReady || !cloudClient || !authSession?.user?.id || !(await waitForDurableSaveSlot())) return false;
+  const row = durableRowsFromState().find(item => item.record_type === "document" && item.id === record.id);
+  if (!row) return false;
+  // Archive metadata first. Keep the immutable current and prior file bytes so
+  // a rejected/uncertain save can never destroy a still-visible document.
+  const { error } = await commitDurableChanges([], [], [row]);
+  return !error;
 }
 
 async function downloadManagedDocument(documentId) {
@@ -5727,8 +5989,8 @@ async function uploadLeadDocuments(files) {
   );
 
   try {
-    const documents = await Promise.all(
-      selectedFiles.map(async (file) => {
+    const { documents, failures } = await uploadDocumentBatch(
+      selectedFiles, async (file) => {
         const id = uid("doc");
         const stored = await storeDocumentFile(file, {
           documentId: id,
@@ -5751,7 +6013,7 @@ async function uploadLeadDocuments(files) {
           uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
           versionNumber: 1,
         }, { leadId: contact.id, categoryId: category.id, categories: state.company.documentCategories });
-      }),
+      },
     );
 
     updateContact(contact.id, (current) => ({
@@ -5793,7 +6055,7 @@ async function uploadLeadDocuments(files) {
       "success",
     );
     showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
-    return true;
+    return reportUploadFailures(failures, els.leadDocumentUploadStatus);
   } finally {
     els.uploadLeadDocumentButton.disabled = false;
   }
@@ -5815,8 +6077,8 @@ async function uploadLeadPhotos(files) {
   );
 
   try {
-    const photos = await Promise.all(
-      selectedFiles.map(async (file) => {
+    const { documents: photos, failures } = await uploadDocumentBatch(
+      selectedFiles, async (file) => {
         const id = uid("photo");
         const stored = await storeDocumentFile(file, {
           documentId: id,
@@ -5843,7 +6105,7 @@ async function uploadLeadPhotos(files) {
           },
           { leadId: contact.id, categoryId: JOB_PHOTO_CATEGORY_ID, categories: state.company.documentCategories },
         );
-      }),
+      },
     );
 
     updateContact(contact.id, (current) => ({
@@ -5886,19 +6148,22 @@ async function uploadLeadPhotos(files) {
       "success",
     );
     showToast(`${photos.length} job photo${photos.length === 1 ? "" : "s"} saved to ${job.name}`);
-    return true;
+    return reportUploadFailures(failures, els.leadPhotoUploadStatus);
   } finally {
     els.uploadLeadPhotoButton.disabled = !canAction("manageDocuments");
   }
 }
 
-function removeLeadDocument(documentId) {
+async function removeLeadDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
   if (!contact) return;
   const document = contact.documents.find((item) => item.id === documentId);
+  if (!(await archiveDocumentRecord(document))) {
+    showToast("Document was not removed. Check the shared-saving status and try again.");
+    return;
+  }
   photoPreviewCache.delete(documentId);
-  void deleteStoredDocument(document);
   updateContact(contact.id, (current) => ({
     ...current,
     documents: current.documents.filter((item) => item.id !== documentId),
@@ -6028,8 +6293,8 @@ async function uploadCompanyDocuments(files) {
   );
 
   try {
-    const documents = await Promise.all(
-      selectedFiles.map(async (file) => {
+    const { documents, failures } = await uploadDocumentBatch(
+      selectedFiles, async (file) => {
         const id = uid("doc");
         const stored = await storeDocumentFile(file, { documentId: id, leadId: "company", categoryId: category });
         return normalizeDocument({
@@ -6044,7 +6309,7 @@ async function uploadCompanyDocuments(files) {
           ownerUserId: authSession?.user?.id || "",
           versionNumber: 1,
         });
-      }),
+      },
     );
     state.companyDocuments = [...documents, ...state.companyDocuments];
     saveState({ localOnly: true });
@@ -6077,16 +6342,19 @@ async function uploadCompanyDocuments(files) {
       "success",
     );
     showToast(`${documents.length} company document${documents.length === 1 ? "" : "s"} saved`);
-    return true;
+    return reportUploadFailures(failures, els.companyDocumentUploadStatus);
   } finally {
     els.uploadCompanyDocumentButton.disabled = false;
   }
 }
 
-function removeCompanyDocument(documentId) {
+async function removeCompanyDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const document = state.companyDocuments.find((item) => item.id === documentId);
-  void deleteStoredDocument(document);
+  if (!(await archiveDocumentRecord(document))) {
+    showToast("Document was not removed. Check the shared-saving status and try again.");
+    return;
+  }
   state.companyDocuments = state.companyDocuments.filter((document) => document.id !== documentId);
   saveState();
   renderCompanyDocuments();
@@ -6373,8 +6641,13 @@ function squareStatusPill(estimate) {
   return `<span class="status-pill pill-default">${escapeHtml(estimate.status)}</span>`;
 }
 
-function squareApiHeaders() {
-  const token = authSession?.session?.access_token || "";
+async function squareApiHeaders() {
+  const client = cloudClient || window.RooflineAuth?.createClient?.();
+  const { data, error } = client?.auth ? await client.auth.getSession() : { data: {} };
+  if (error) throw error;
+  if (!window.RooflineAuth?.isEditorSessionCurrent?.(data?.session?.user)) throw new Error("Your login changed. Reopen the CRM before accessing payments.");
+  const token = data?.session?.access_token || "";
+  if (!token && supabaseConfig().authRequired) throw new Error("Your session expired. Sign in again before accessing payments.");
   return {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -6448,17 +6721,22 @@ function updateJobPaymentSnapshot(contactId, jobId) {
   const contact = getContact(contactId);
   const job = contactJobs(contact).find((item) => item.id === jobId);
   if (!contact || !job) return;
-  const invoices = state.estimates.filter(
+  const linked = state.estimates.filter(
     (estimate) => estimate.contactId === contactId && estimate.jobId === jobId && estimate.squareInvoiceId,
   );
+  const byInvoice = new Map();
+  linked.forEach((estimate) => {
+    const previous = byInvoice.get(estimate.squareInvoiceId);
+    if (!previous || String(estimate.paymentUpdatedAt || "") > String(previous.paymentUpdatedAt || "")) {
+      byInvoice.set(estimate.squareInvoiceId, estimate);
+    }
+  });
+  const invoices = [...byInvoice.values()];
   const squarePaidAmount = invoices.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
   const manualPaidAmount = (job.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0);
   const paidAmount = Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
-  const invoiceContract = invoices.reduce(
-    (maximum, estimate) => Math.max(maximum, number(estimate.contractValue) || totalsFor(estimate).total),
-    0,
-  );
-  const contractValue = invoiceContract || number(job.contractValue) || number(job.value);
+  // Invoices collect against the agreed contract; they do not redefine it.
+  const contractValue = number(job.contractValue ?? job.value);
   const paymentPercent = contractValue ? Math.min(100, (paidAmount / contractValue) * 100) : 0;
   const squareLastPaymentAt = invoices
     .map((estimate) => estimate.paymentUpdatedAt || estimate.paidAt || "")
@@ -6491,143 +6769,292 @@ function updateJobPaymentSnapshot(contactId, jobId) {
   }));
 }
 
+const squareInvoiceSends = new Map();
+
+function squareSendIdentity() {
+  return JSON.stringify([authSession?.user?.id || "", String(authSession?.user?.email || "").toLowerCase(),
+    authSession?.user?.app_metadata?.role || "", currentRole()]);
+}
+
+function showSquareSendNotice(estimateId, message) {
+  const id = `square-send-notice-${encodeURIComponent(estimateId)}`;
+  let notice = document.getElementById(id);
+  if (!notice) {
+    notice = document.createElement("aside");
+    notice.id = id;
+    notice.setAttribute("role", "alert");
+    notice.style.cssText = "position:fixed;top:16px;left:16px;right:16px;z-index:100003;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px";
+    document.body.appendChild(notice);
+  }
+  notice.textContent = message;
+}
+
+function preserveSquareSendOutcome(attempt, result, message, sessionIsCurrent) {
+  squareInvoiceSends.set(attempt.estimateId, { ...attempt, status: "review" });
+  const payload = {
+    p_request_id: attempt.requestId, rpc: "square_create_invoice", estimateId: attempt.estimateId,
+    leadId: attempt.leadId, jobId: attempt.jobId, expectedVersion: attempt.expectedVersion,
+    result: result && typeof result === "object" ? {
+      durable: result.durable === true, estimateId: result.estimateId, leadId: result.leadId, jobId: result.jobId,
+      squareInvoiceId: result.squareInvoiceId, squareOrderId: result.squareOrderId, status: result.status,
+    } : null,
+  };
+  if (sessionIsCurrent) {
+    // The server may already have committed a new estimate version. Do not
+    // advance this editor's version or silently retry its older draft.
+    preserveBlockedDurableWrite({ error: new Error(message), payload });
+    showSquareSendNotice(attempt.estimateId, message);
+  } else {
+    // Keep late receipts under the initiating identity, never show private
+    // financial details in a tab whose account changed while sending.
+    try {
+      localStorage.setItem(`jobcrest-square-send-recovery:${attempt.userId}:${attempt.requestId}`,
+        JSON.stringify({ createdAt: new Date().toISOString(), request: payload }));
+    } catch { /* The server's durable send intent remains the recovery authority. */ }
+  }
+}
+
+function squareSendPreProviderRefusal(response, result) {
+  // A generic failure can follow an accepted provider request. Only this
+  // explicit server allowlist proves that this attempt never reached Square.
+  if (response.ok || !result || result.noProviderAction !== true || result.durable === true
+      || result.squareInvoiceId || result.squareOrderId || result.intentId) return "";
+  const beginErrors = {
+    legacy_invoice_review_required: "An administrator must check Square for an earlier invoice attempt before sending this older estimate.",
+    estimate_changed_before_invoice: "The estimate changed. Reload and review the saved estimate before sending.",
+    won_estimate_required: "Save the estimate as Won before sending an invoice.",
+    invoice_already_linked: "This estimate already has a linked Square invoice. Reload its invoice status.",
+    saved_customer_email_and_numbers_required: "Save the customer email, lead number and project number before sending.",
+  };
+  if (response.status === 409 && result.stage === "begin" && Object.hasOwn(beginErrors, result.code)) {
+    return beginErrors[result.code];
+  }
+  if (response.status === 400 && result.error === "Send only the saved estimate ID and its current version.") return result.error;
+  if (response.status === 503 && result.error === "Reliable Square invoice storage is not configured. No invoice was sent.") return result.error;
+  return "";
+}
+
 async function sendToSquare(estimateId) {
   if (currentRole() !== "admin") {
     showToast("Only an administrator can send Square invoices");
-    return;
+    return false;
   }
-  const estimate = state.estimates.find((e) => e.id === estimateId);
-  const numbered = ensureLeadProjectNumbers(estimate?.contactId, estimate?.jobId);
-  const contact = numbered?.contact || getEstimateContact(estimate);
-  const job = numbered?.job || getEstimateJob(estimate);
-  if (!estimate || !contact) { showToast("Missing estimate or contact"); return; }
-  if (estimate.status !== "Won") {
-    showToast("Mark the estimate Won before sending its Square invoice");
-    return;
+  if (squareInvoiceSends.has(estimateId)) return false;
+  if (!canUseCloudSync() || !durableRecordsReady || !cloudClient || !authSession?.user?.id || durableWriteBlocked) {
+    showSquareSendNotice(estimateId, "Invoice sending was not started. Connect to the shared CRM and resolve any save recovery notice first.");
+    return false;
   }
-  if (!contact.email) {
-    showToast("Add the customer's email before sending the Square invoice");
-    return;
+  const original = state.estimates.find((item) => item.id === estimateId);
+  const originalContact = getEstimateContact(original);
+  const originalJob = getEstimateJob(original);
+  if (!original || !originalContact || !originalJob || original.status !== "Won" || original.squareInvoiceId || !originalContact.email) {
+    showSquareSendNotice(estimateId, "Invoice sending was not started. Choose a saved Won estimate with a valid lead, job, and customer email, and no existing Square invoice.");
+    return false;
   }
-  estimate.leadNumber = contact.leadNumber;
-  estimate.projectNumber = job?.projectNumber || "";
 
-  const btn = document.querySelector(`[data-square-send="${estimateId}"]`);
-  if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
-
+  const identity = squareSendIdentity();
+  const sessionIsCurrent = () => identity === squareSendIdentity() && currentRole() === "admin"
+    && Boolean(window.RooflineAuth?.isEditorSessionCurrent?.(authSession?.user));
+  const attempt = { requestId: crypto.randomUUID(), estimateId, leadId: original.contactId,
+    jobId: original.jobId, userId: authSession.user.id, expectedVersion: 0, status: "sending" };
+  squareInvoiceSends.set(estimateId, attempt);
+  const currentTarget = (confirmedInvoiceId = "") => {
+    const estimate = state.estimates.find((item) => item.id === estimateId);
+    if (!estimate || estimate.contactId !== attempt.leadId || estimate.jobId !== attempt.jobId
+        || (estimate.squareInvoiceId && estimate.squareInvoiceId !== confirmedInvoiceId)) return null;
+    const contact = getEstimateContact(estimate);
+    const job = getEstimateJob(estimate);
+    return contact?.id === attempt.leadId && job?.id === attempt.jobId ? estimate : null;
+  };
+  const buttons = [...document.querySelectorAll("[data-square-send]")].filter((button) => button.dataset.squareSend === estimateId);
+  buttons.forEach((button) => { button.disabled = true; button.textContent = "Sending…"; });
+  let requested = false;
+  let result = null;
+  let confirmed = false;
   try {
-    const totals = totalsFor(estimate);
-    const res = await fetch("/api/square/create-invoice", {
-      method: "POST",
-      headers: squareApiHeaders(),
-      body: JSON.stringify({
-        estimateId: estimate.id,
-        leadId: contact.id,
-        leadNumber: estimate.leadNumber,
-        jobId: estimate.jobId,
-        projectNumber: estimate.projectNumber,
-        estimateNumber: estimate.estimateNumber,
-        projectTitle: estimate.projectTitle,
-        jobAddress: job?.address || contact.address || "",
-        contactName: contact.name,
-        contactEmail: contact.email,
-        lineItems: estimate.items,
-        total: totals.total,
-        taxRate: estimate.taxRate,
-        deposit: estimate.deposit,
-        dueDate: estimate.validUntil || "",
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) {
-      showToast(`Square error: ${data.error || "Unknown error"}`);
-      if (btn) { btn.disabled = false; btn.textContent = "Send to Square"; }
-      return;
+    if (!sessionIsCurrent()) throw new Error("The signed-in account changed before sending.");
+    const numbered = canUseCloudSync()
+      ? { contact: getContact(attempt.leadId), job: contactJobs(getContact(attempt.leadId)).find(job => job.id === attempt.jobId) }
+      : ensureLeadProjectNumbers(attempt.leadId, attempt.jobId);
+    const target = currentTarget();
+    if (!target || numbered?.contact?.id !== attempt.leadId || numbered?.job?.id !== attempt.jobId) {
+      throw new Error("The estimate's lead or job changed before sending.");
     }
-    estimate.squareInvoiceId = data.squareInvoiceId;
-    estimate.squareOrderId = data.squareOrderId || "";
-    estimate.squareInvoiceNumber = data.squareInvoiceNumber || "";
-    estimate.squareInvoiceUrl = data.squareInvoiceUrl;
-    estimate.squareDeliveryMethod = data.squareDeliveryMethod || "EMAIL";
-    estimate.squarePublishedAt = data.squarePublishedAt || new Date().toISOString();
-    estimate.squareRecipientEmail = contact.email;
-    estimate.squareStatus = data.status === "PUBLISHED" ? "SENT" : data.status;
-    estimate.contractValue = totals.total;
-    estimate.paidAmount = 0;
-    estimate.paymentPercent = 0;
-    updateContact(contact.id, (current) => ({
-      ...current,
-      jobs: contactJobs(current).map((item) =>
-        item.id === estimate.jobId
-          ? {
-              ...item,
-              value: totals.total,
-              contractValue: totals.total,
-              squarePaidAmount: 0,
-              paidAmount: (item.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0),
-              paymentPercent: totals.total
-                ? Math.min(
-                    100,
-                    ((item.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0) / totals.total) * 100,
-                  )
-                : 0,
-            }
-          : item,
-      ),
-    }));
-    saveState();
-    renderInvoicesView();
-    showToast("Invoice published in Square. Email delivery is not yet confirmed.");
-  } catch (err) {
-    showToast(`Failed: ${err.message}`);
-    if (btn) { btn.disabled = false; btn.textContent = "Send to Square"; }
+    target.leadNumber = numbered.contact.leadNumber;
+    target.projectNumber = numbered.job.projectNumber;
+    saveState({ localOnly: true });
+    if (!(await waitForDurableSaveSlot()) || !sessionIsCurrent() || !(await flushDurableRecordsSave())) {
+      throw new Error("The lead, job and estimate could not all be confirmed saved.");
+    }
+    const saved = currentTarget();
+    if (!sessionIsCurrent() || !saved || saved.status !== "Won" || durableWriteBlocked || durableSaveInFlight || hasPendingDurableChanges()) {
+      throw new Error("Finish saving the latest lead, job and estimate edits before sending.");
+    }
+    const snapshot = JSON.parse(JSON.stringify(saved));
+    attempt.expectedVersion = getDurableCommitWriter().getVersion({ record_type: "estimate", id: estimateId });
+    if (!Number.isSafeInteger(attempt.expectedVersion) || attempt.expectedVersion < 1) {
+      throw new Error("The saved estimate version could not be confirmed.");
+    }
+    const headers = await squareApiHeaders();
+    // Refreshing auth can yield while the rep edits. Billing must start from
+    // the exact acknowledged version, not a newly typed browser-only amount.
+    if (!sessionIsCurrent() || !currentTarget() || durableWriteBlocked || durableSaveInFlight || hasPendingDurableChanges()
+        || !durableRecordDataMatches(currentTarget(), snapshot)
+        || getDurableCommitWriter().getVersion({ record_type: "estimate", id: estimateId }) !== attempt.expectedVersion) {
+      throw new Error("The estimate changed before sending. Save the latest edits and send again.");
+    }
+    requested = true;
+    const response = await fetch("/api/square/create-invoice", {
+      method: "POST", headers, signal: AbortSignal.timeout(120000),
+      body: JSON.stringify({ estimateId, expectedVersion: attempt.expectedVersion }),
+    });
+    result = await response.json();
+    const preProviderRefusal = squareSendPreProviderRefusal(response, result);
+    if (preProviderRefusal) {
+      requested = false;
+      throw new Error(preProviderRefusal);
+    }
+    if (!response.ok || result?.error || result?.durable !== true || result.estimateId !== estimateId
+        || result.leadId !== attempt.leadId || result.jobId !== attempt.jobId
+        || typeof result.squareInvoiceId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(result.squareInvoiceId)
+        || !Number.isFinite(result.contractValue) || result.contractValue <= 0) {
+      throw new Error("Square invoice creation and its shared CRM association could not both be confirmed.");
+    }
+    if (!sessionIsCurrent()) throw new Error("The signed-in account changed while the invoice was being sent.");
+    if (!currentTarget(result.squareInvoiceId) || durableWriteBlocked || durableSaveInFlight || hasPendingDurableChanges()) {
+      throw new Error("The invoice is attached in the shared CRM, but this page has newer or changed records to review.");
+    }
+    // The server has already attached the invoice. Only guarded hydration may
+    // adopt its version; never repeat the association as a browser money write.
+    const rows = await reloadDurableRecords({ showUpdateToast: false });
+    if (!sessionIsCurrent()) throw new Error("The signed-in account changed while confirming the shared invoice.");
+    const refreshed = currentTarget(result.squareInvoiceId);
+    if (rows === null || !refreshed || refreshed.squareInvoiceId !== result.squareInvoiceId) {
+      throw new Error("The invoice was attached in the shared CRM, but this page could not safely reload the confirmation.");
+    }
+    document.getElementById(`square-send-notice-${encodeURIComponent(estimateId)}`)?.remove();
+    if (state.view === "invoices" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) renderInvoicesView();
+    confirmed = true;
+    showToast("Invoice published in Square and attached to the shared CRM. Email delivery is not yet confirmed.");
+    return true;
+  } catch (error) {
+    if (requested) {
+      const message = result?.durable === true
+        ? "Square reports the invoice is attached to the shared CRM, but this page could not safely adopt it. Do not send another invoice. Download unsaved work, then reload and review the shared record."
+        : "The invoice outcome could not be confirmed. Do not create a separate invoice. Download unsaved work and have an administrator review Square and this saved estimate. After reloading and resolving save recovery, retry only this same saved estimate to resume its existing attempt.";
+      preserveSquareSendOutcome(attempt, result, message, sessionIsCurrent());
+    } else if (sessionIsCurrent()) {
+      showSquareSendNotice(estimateId, `Invoice sending was not started. ${error.message}`);
+    }
+    return false;
+  } finally {
+    const review = squareInvoiceSends.get(estimateId)?.status === "review";
+    if (!review) squareInvoiceSends.delete(estimateId);
+    if (sessionIsCurrent()) buttons.forEach((button) => {
+      button.disabled = review || confirmed;
+      button.textContent = review ? "Review invoice outcome" : confirmed ? "Published in Square" : "Send to Square";
+    });
+  }
+}
+
+function setPaymentRefreshStatus(message) {
+  let notice = document.getElementById("crmPaymentRefreshStatus");
+  if (!notice && message) {
+    notice = document.createElement("aside");
+    notice.id = "crmPaymentRefreshStatus";
+    notice.setAttribute("role", "status");
+    notice.style.cssText = "position:fixed;bottom:12px;right:16px;max-width:420px;z-index:900;background:#fff4de;color:#34250b;padding:10px 14px;border:1px solid #b87912;border-radius:8px;font-size:13px";
+    document.body.appendChild(notice);
+  }
+  if (notice) {
+    notice.textContent = message;
+    notice.hidden = !message;
   }
 }
 
 async function pollSquarePayments() {
+  // Sales reps receive confirmed shared balances through record subscriptions.
+  // Once enabled, the server worker alone reconciles provider payment fields.
+  const currentIdentity = () => JSON.stringify([authSession?.user?.id || "", authSession?.user?.email || "",
+    authSession?.user?.app_metadata?.role || ""]);
+  const initiatingIdentity = currentIdentity();
+  const sessionIsCurrent = () => currentRole() === "admin" && !durableWriteBlocked
+    && currentIdentity() === initiatingIdentity && window.RooflineAuth.isEditorSessionCurrent();
+  if (!sessionIsCurrent()) return;
+  if (squarePollInFlight) return;
+  squarePollInFlight = true;
   try {
-    const invoiceIds = state.estimates.map((estimate) => estimate.squareInvoiceId).filter(Boolean);
-    if (!invoiceIds.length) return;
-    const res = await fetch("/api/square/payment-status", {
-      method: "POST",
-      headers: squareApiHeaders(),
-      body: JSON.stringify({ invoiceIds }),
-    });
-    if (!res.ok) return;
-    const { payments = {} } = await res.json();
-    let changed = false;
-    const touchedJobs = new Set();
-    state.estimates.forEach((estimate) => {
-      if (!estimate.squareInvoiceId) return;
-      const record = payments[estimate.squareInvoiceId];
-      if (!record || record.error) return;
-      const nextPaid = number(record.paidAmount);
-      const nextContract = number(record.contractAmount) || totalsFor(estimate).total;
-      const nextPercent = nextContract ? Math.min(100, (nextPaid / nextContract) * 100) : 0;
-      if (nextPaid !== number(estimate.paidAmount) || nextContract !== number(estimate.contractValue) || record.status !== estimate.squareStatus) changed = true;
-      estimate.squareStatus = record.status || estimate.squareStatus;
-      estimate.contractValue = nextContract;
-      estimate.paidAmount = nextPaid;
-      estimate.paymentPercent = nextPercent;
-      estimate.paymentRequests = record.paymentRequests || [];
-      estimate.paymentUpdatedAt = record.updatedAt || new Date().toISOString();
-      estimate.paidAt = nextPercent >= 100 ? estimate.paidAt || estimate.paymentUpdatedAt : "";
-      touchedJobs.add(`${estimate.contactId}|${estimate.jobId}`);
-    });
-    if (changed) {
-      touchedJobs.forEach((key) => {
-        const [contactId, jobId] = key.split("|");
-        updateJobPaymentSnapshot(contactId, jobId);
+    if (window.ROOFLINE_SUPABASE_CONFIG?.squarePaymentWorkerEnabled === true) {
+      const headers = await squareApiHeaders();
+      if (!sessionIsCurrent()) return;
+      const response = await fetch("/api/square/sync-status", {
+        method: "GET", headers, signal: AbortSignal.timeout(15000),
       });
-      saveState();
-      render();
-      showToast("Square payments updated");
+      if (!response.ok) throw new Error("Shared payment sync status is unavailable.");
+      const status = await response.json();
+      if (!sessionIsCurrent()) return;
+      const validTime = (value) => typeof value === "string" && Boolean(value.trim()) && Number.isFinite(Date.parse(value));
+      if (!status || Array.isArray(status) || status.enabled !== true
+          || !Number.isSafeInteger(status.pending) || status.pending < 0
+          || !Number.isSafeInteger(status.review) || status.review < 0
+          || (status.lastProcessedAt !== null && !validTime(status.lastProcessedAt))
+          || (status.oldestPendingAt != null && !validTime(status.oldestPendingAt))) {
+        throw new Error("Shared payment sync status could not be confirmed.");
+      }
+      const delayedQueue = status.pending > 0 && validTime(status.oldestPendingAt)
+        && Date.now() - Date.parse(status.oldestPendingAt) > 5 * 60 * 1000;
+      setPaymentRefreshStatus(status.review > 0
+        ? `${status.review} payment updates need administrator review; last confirmed balances are shown.`
+        : delayedQueue ? `${status.pending} payment updates are queued; last confirmed balances are shown.` : "");
+      // Realtime adopts confirmed database balances when safe. Never refresh
+      // provider totals, save patches, or redraw the active editor here.
+      return;
     }
-  } catch {}
+    const snapshot = window.CrmPaymentRefresh.capture(state.estimates, {
+      contractValue: (estimate) => number(estimate.contractValue) || totalsFor(estimate).total,
+    });
+    if (!snapshot.invoiceIds.length) { setPaymentRefreshStatus(""); return; }
+    const collected = await window.CrmPaymentRefresh.collect(snapshot, async (invoiceIds, { signal }) => {
+      if (!sessionIsCurrent()) throw new Error("The signed-in session changed.");
+      const res = await fetch("/api/square/payment-status", {
+        method: "POST",
+        headers: await squareApiHeaders(),
+        body: JSON.stringify({ invoiceIds }),
+        signal,
+      });
+      if (!res.ok) throw new Error("Payment refresh failed. Last known balances are displayed.");
+      return res.json();
+    });
+    // No await between checking identity/current drafts and applying payment-only
+    // patches. A late reply must not mutate a new session or overwrite typing.
+    if (!sessionIsCurrent()) return;
+    const plan = window.CrmPaymentRefresh.reconcile(snapshot, collected, state.estimates, {
+      isJobCurrent: (contactId, jobId) => {
+        const contact = getContact(contactId);
+        return Boolean(contact && contactJobs(contact).some((job) => job.id === jobId));
+      },
+    });
+    if (plan.changed) {
+      plan.patches.forEach((patch) => {
+        const estimate = state.estimates.find((item) => item.id === patch.estimateId);
+        Object.assign(estimate, JSON.parse(JSON.stringify(patch.fields)));
+      });
+      plan.touchedJobs.forEach(({ contactId, jobId }) => updateJobPaymentSnapshot(contactId, jobId));
+      saveState();
+      if (!["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) render();
+    }
+    setPaymentRefreshStatus(plan.message);
+  } catch (error) {
+    if (sessionIsCurrent()) setPaymentRefreshStatus(window.CrmPaymentRefresh.STALE_MESSAGE);
+    console.warn("Square balances could not be refreshed", error.message);
+  } finally {
+    squarePollInFlight = false;
+  }
 }
 
 // Keep Square payment progress current throughout the signed-in CRM session.
 let squarePollInterval = null;
+let squarePollInFlight = false;
 function startSquarePoll() {
   if (squarePollInterval) return;
   pollSquarePayments();
@@ -6639,9 +7066,12 @@ function renderInvoicesView() {
   startSquarePoll();
 
   const estimates = [...state.estimates].sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
-  const totalPaid = estimates.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
-  const totalPending = estimates
+  const financialInvoices = [...new Map([...estimates]
     .filter((estimate) => estimate.squareInvoiceId)
+    .sort((a, b) => String(a.paymentUpdatedAt || "").localeCompare(String(b.paymentUpdatedAt || "")))
+    .map((estimate) => [estimate.squareInvoiceId, estimate])).values()];
+  const totalPaid = financialInvoices.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
+  const totalPending = financialInvoices
     .reduce((sum, estimate) => sum + Math.max((number(estimate.contractValue) || totalsFor(estimate).total) - number(estimate.paidAmount), 0), 0);
 
   const summaryBar = `
@@ -7216,27 +7646,42 @@ function renderEstimatePreview(estimate) {
   `;
 }
 
+function companyFormValues() {
+  return {
+    ...state.company,
+    phone: formatPhoneNumber(state.company.phone),
+    userName: state.currentUser.name,
+    userEmail: state.currentUser.email,
+    userPhone: formatPhoneNumber(state.currentUser.phone || ""),
+    userRole: state.currentUser.role,
+  };
+}
+
+function trackCompanyFormDraft(event) {
+  const field = event.target;
+  if (!canAction("manageCompany") || !field.name || field.type === "file") return;
+  const baseline = companyFormValues();
+  if (!Object.hasOwn(baseline, field.name)) return;
+  const draft = { ...state.companyFormDraft };
+  if (field.value === String(baseline[field.name] ?? "")) delete draft[field.name];
+  else draft[field.name] = field.value;
+  state.companyFormDraft = Object.keys(draft).length ? draft : null;
+  // A form draft is local until explicit Save; it still guards remote hydration.
+  queueLocalStateSave();
+}
+
 function renderCompanyForm() {
   const form = els.companyForm;
   state.company = normalizeCompany(state.company);
-  Object.entries(state.company).forEach(([key, value]) => {
+  Object.entries({ ...companyFormValues(), ...state.companyFormDraft }).forEach(([key, value]) => {
     const field = form.elements[key];
-    if (field) field.value = key === "phone" ? formatPhoneNumber(value) : value;
+    const nextValue = String(value ?? "");
+    if (field && field.type !== "file" && field.value !== nextValue) field.value = nextValue;
   });
   if (els.companyLogoPreview) {
     els.companyLogoPreview.src = state.company.logoDataUrl || "icon.svg";
     els.companyLogoPreview.classList.toggle("logo-placeholder", !state.company.logoDataUrl);
   }
-  const userFields = {
-    userName: state.currentUser.name,
-    userEmail: state.currentUser.email,
-    userPhone: state.currentUser.phone || "",
-    userRole: state.currentUser.role,
-  };
-  Object.entries(userFields).forEach(([key, value]) => {
-    const field = form.elements[key];
-    if (field) field.value = key === "userPhone" ? formatPhoneNumber(value) : value || "";
-  });
   renderDocumentCategoriesSettings();
 }
 
@@ -7565,7 +8010,7 @@ function deleteContact(contactId) {
   showToast("Contact deleted");
 }
 
-function createEstimate(contactId, shouldRender = true, jobId = "") {
+async function createEstimate(contactId, shouldRender = true, jobId = "") {
   if (!requireAction("manageEstimates")) return null;
   if (!contactId) {
     showToast("Choose a lead before creating an estimate");
@@ -7577,17 +8022,23 @@ function createEstimate(contactId, shouldRender = true, jobId = "") {
     return null;
   }
   const initialJob = contactJobs(contact).find((item) => item.id === jobId) || primaryJob(contact);
-  const numbered = ensureLeadProjectNumbers(contactId, initialJob?.id || jobId);
-  contact = numbered?.contact || contact;
-  const job = numbered?.job || initialJob;
+  const estimateId = uid("estimate");
+  let reservation = null;
+  if (canUseCloudSync()) {
+    try { reservation = await reserveSharedSalesNumbers(contactId, initialJob?.id || jobId, estimateId); }
+    catch (error) { showToast(error.message || "A shared estimate number could not be reserved."); return null; }
+  }
+  const numbered = reservation ? null : ensureLeadProjectNumbers(contactId, initialJob?.id || jobId);
+  contact = getContact(contactId) || numbered?.contact || contact;
+  const job = contactJobs(contact).find((item) => item.id === (initialJob?.id || jobId)) || numbered?.job || initialJob;
 
   const estimate = {
-    id: uid("estimate"),
+    id: estimateId,
     contactId,
     jobId: job?.id || "",
-    leadNumber: contact.leadNumber,
-    projectNumber: job?.projectNumber || "",
-    estimateNumber: nextEstimateNumber(),
+    leadNumber: reservation?.leadNumber || contact.leadNumber,
+    projectNumber: reservation?.projectNumber || job?.projectNumber || "",
+    estimateNumber: reservation?.estimateNumber || nextEstimateNumber(),
     projectTitle: job?.name || "Exterior Restoration Estimate",
     status: "Draft",
     projectManager: job?.salesRep || contact.salesRep || state.currentUser.name || "",
@@ -7656,6 +8107,10 @@ function setEstimateSaveState(estimateId, message, tone = "") {
 }
 
 async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevisions.get(estimateId) || 0) {
+  if (durableWriteBlocked) {
+    setEstimateSaveState(estimateId, "Not saved. Shared saving is paused; review the recovery notice.", "error");
+    return false;
+  }
   if (!estimateId || !state.estimates.some((estimate) => estimate.id === estimateId)) return false;
   window.clearTimeout(estimateSaveTimers.get(estimateId));
   estimateSaveTimers.delete(estimateId);
@@ -7673,6 +8128,7 @@ async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevi
 }
 
 function queueEstimateVerifiedSave(estimateId, { immediate = false } = {}) {
+  if (durableWriteBlocked) return;
   if (!estimateId) return;
   const revision = (estimateSaveRevisions.get(estimateId) || 0) + 1;
   estimateSaveRevisions.set(estimateId, revision);
@@ -7700,6 +8156,25 @@ function updateSelectedEstimateFromField(fieldName, value) {
   if (!canAction("manageEstimates")) return;
   const estimate = getSelectedEstimate();
   if (!estimate) return;
+  if (canUseCloudSync() && estimate.estimateNumber && ["contactId", "jobId"].includes(fieldName) && value !== estimate[fieldName]) {
+    showToast("A numbered estimate stays with its original lead and job. Create a new estimate for a different project.");
+    renderEstimateForm(estimate);
+    return;
+  }
+  if (["contactId", "jobId"].includes(fieldName) && value !== estimate[fieldName]) {
+    const hasDocument = state.contacts.some((contact) => (contact.documents || []).some((document) => document.estimateId === estimate.id));
+    if (estimate.squareInvoiceId || number(estimate.paidAmount) > 0 || hasDocument) {
+      showToast("This estimate already has a saved PDF or invoice. Create a new estimate for a different lead or job.");
+      renderEstimateForm(estimate);
+      return;
+    }
+    const contact = getContact(fieldName === "contactId" ? value : estimate.contactId);
+    if (!contact || (fieldName === "jobId" && !contactJobs(contact).some((job) => job.id === value))) {
+      showToast("Select an existing lead and a job belonging to that lead.");
+      renderEstimateForm(estimate);
+      return;
+    }
+  }
 
   if (["taxRate", "deposit"].includes(fieldName)) {
     estimate[fieldName] = number(value);
@@ -7751,6 +8226,12 @@ function deleteEstimate() {
   if (!requireAction("manageEstimates")) return;
   const estimate = getSelectedEstimate();
   if (!estimate) return;
+  if (estimate.squareInvoiceId || number(estimate.paidAmount) > 0 || state.contacts.some((contact) =>
+    (contact.documents || []).some((document) => document.estimateId === estimate.id))) {
+    showToast("This estimate has an invoice, payment, or saved PDF and must be retained for your records.");
+    return;
+  }
+
   if (!window.confirm(`Delete estimate ${estimate.estimateNumber}?`)) return;
   state.estimates = state.estimates.filter((item) => item.id !== estimate.id);
   state.selectedEstimateId = state.estimates[0]?.id || null;
@@ -7824,6 +8305,11 @@ function estimateFileName(estimate = getSelectedEstimate()) {
 async function saveEstimatePdfDocument(estimate, contact, doc) {
   if (!canAction("manageDocuments")) return null;
   const job = getEstimateJob(estimate);
+  if (!contact || !job || estimate.contactId !== contact.id) throw new Error("Choose a valid lead and its job before saving the PDF");
+  const targetIsCurrent = () => state.estimates.some((current) => current.id === estimate.id
+    && current.contactId === contact.id && current.jobId === job.id)
+    && Boolean(getContact(contact.id)) && getEstimateJob(estimate)?.id === job.id;
+  if (!targetIsCurrent()) throw new Error("The estimate's lead or job changed. Review it before saving the PDF.");
   const categories = state.company.documentCategories || defaultDocumentCategories;
   const category = categories.find((item) => item.id === "doccat_estimates") || categoryForLegacyName("Estimates", categories);
   if (!category) throw new Error("The Estimates document category is unavailable");
@@ -7839,6 +8325,9 @@ async function saveEstimatePdfDocument(estimate, contact, doc) {
     jobId: estimate.jobId || job?.id || "",
     categoryId: category.id,
   });
+  // Uploading may take long enough for this estimate or its parent to be
+  // removed/reassigned. Never attach the completed file to a changed target.
+  if (!targetIsCurrent()) throw new Error("The estimate's lead or job changed during upload. Review it before saving the PDF.");
   const savedDocument = normalizeDocument({
     ...(existing || {}),
     id,
@@ -7851,6 +8340,15 @@ async function saveEstimatePdfDocument(estimate, contact, doc) {
     uploadedAt: new Date().toISOString(),
     uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
     versionNumber: existing ? Math.max(1, number(existing.versionNumber)) + 1 : 1,
+    previousVersions: existing ? [...(existing.previousVersions || []), {
+      versionNumber: existing.versionNumber,
+      storagePath: existing.storagePath || "",
+      dataUrl: existing.dataUrl || "",
+      name: existing.name,
+      size: existing.size,
+      uploadedAt: existing.uploadedAt,
+      uploadedBy: existing.uploadedBy,
+    }] : [],
     source: "Estimate PDF",
     estimateId: estimate.id,
     leadId: contact.id,
@@ -7950,7 +8448,10 @@ function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) {
 }
 
 async function downloadEstimatePdf(options = {}) {
-  const estimate = getSelectedEstimate();
+  // An explicit save owns its estimate even if the user opens another one
+  // while the shared save finishes. Keep PDF input detached from later edits.
+  const sourceEstimate = options.estimateSnapshot || getSelectedEstimate();
+  const estimate = sourceEstimate ? JSON.parse(JSON.stringify(sourceEstimate)) : null;
   const contact = getEstimateContact(estimate);
   const job = getEstimateJob(estimate);
   if (!estimate || !contact) {
@@ -8343,16 +8844,30 @@ function printEstimate() {
 async function saveCurrentEstimateAndPdf() {
   const estimate = getSelectedEstimate();
   if (!estimate || estimateExplicitSaves.has(estimate.id)) return false;
+  const snapshot = JSON.parse(JSON.stringify(estimate));
   estimateExplicitSaves.add(estimate.id);
   flushQueuedLocalStateSave();
   const revision = (estimateSaveRevisions.get(estimate.id) || 0) + 1;
   estimateSaveRevisions.set(estimate.id, revision);
+  const snapshotIsCurrent = () => {
+    const current = state.estimates.find((item) => item.id === snapshot.id);
+    return current && estimateSaveRevisions.get(snapshot.id) === revision
+      && durableRecordDataMatches(current, snapshot);
+  };
+  const keepNewerChanges = () => {
+    setEstimateSaveState(snapshot.id, "Newer changes still need an estimate PDF. Select Save Estimate again when you finish editing.", "error");
+    return false;
+  };
 
   try {
     const estimateSaved = await flushEstimateVerifiedSave(estimate.id, revision);
     if (!estimateSaved) return false;
-    const pdfSaved = await downloadEstimatePdf({ silent: true, download: false });
+    // Do not generate a newer unsaved draft, or mark edits made during either
+    // network request as fully saved. The rep can keep typing without a lock.
+    if (!snapshotIsCurrent()) return keepNewerChanges();
+    const pdfSaved = await downloadEstimatePdf({ silent: true, download: false, estimateSnapshot: snapshot });
     if (!pdfSaved) return false;
+    if (!snapshotIsCurrent()) return keepNewerChanges();
     setEstimateSaveState(estimate.id, "", "");
     return true;
   } finally {
@@ -8363,17 +8878,23 @@ async function saveCurrentEstimateAndPdf() {
 async function openEstimateLeadOverview(contactId) {
   const estimate = getSelectedEstimate();
   const contact = getContact(contactId || estimate?.contactId);
-  if (!estimate || !contact) return false;
+  if (!estimate || !contact || contact.id !== estimate.contactId) return false;
+  const estimateId = estimate.id;
+  const jobId = estimate.jobId || "";
+  const initialView = state.view;
   const confirmed = window.confirm(
     `Save the latest changes and estimate PDF before opening ${contact.name}? Select Cancel to stay on this estimate.`,
   );
   if (!confirmed) return false;
   const saved = await saveCurrentEstimateAndPdf();
+  // A delayed save must not pull the rep away from another estimate or view
+  // they deliberately opened in the meantime.
+  if (getSelectedEstimate()?.id !== estimateId || state.view !== initialView) return false;
   if (!saved) {
-    showToast("The estimate could not be saved. You are still on the estimate page.");
+    showToast("The estimate and its latest PDF are not both confirmed. You are still on the estimate page; review the save status before continuing.");
     return false;
   }
-  openLeadDetail(contact.id, "overview", estimate.jobId || "");
+  openLeadDetail(contact.id, "overview", jobId);
   return true;
 }
 
@@ -8399,7 +8920,9 @@ function saveCompany(event) {
     googleReviewUrl: formData.get("googleReviewUrl").trim(),
     defaultTerms: formData.get("defaultTerms").trim(),
   };
+  state.companyFormDraft = null;
   saveState();
+  renderCompanyForm();
   renderBrandLogo();
   renderTopbarProfile();
   renderEstimatePreview(getSelectedEstimate());
@@ -8557,8 +9080,8 @@ function bindEvents() {
     if (action === "open-job-photos") openLeadJobPhotos(contactId, actionButton.dataset.jobId);
     if (action === "refresh-weather") loadWeather({ force: true });
     if (action === "edit-contact") openContactDialog(contactId);
-    if (action === "estimate-contact") createEstimate(contactId);
-    if (action === "estimate-job") createEstimate(contactId, true, actionButton.dataset.jobId);
+    if (action === "estimate-contact") await createEstimate(contactId);
+    if (action === "estimate-job") await createEstimate(contactId, true, actionButton.dataset.jobId);
     if (action === "go-to-settings") { state.view = "company"; render(); }
     if (action === "clear-lead-stage-filter") {
       state.leadStageFilter = "";
@@ -8775,9 +9298,9 @@ function bindEvents() {
     const contact = getSelectedContact();
     if (contact && requireAction("sendEmail")) openLeadDetail(contact.id, "email");
   });
-  els.estimateLeadDetailButton.addEventListener("click", () => {
+  els.estimateLeadDetailButton.addEventListener("click", async () => {
     const contact = getSelectedContact();
-    if (contact && requireAction("manageEstimates")) createEstimate(contact.id);
+    if (contact && requireAction("manageEstimates")) await createEstimate(contact.id);
   });
   els.uploadLeadDocumentButton.addEventListener("click", () => {
     if (!requireAction("manageDocuments")) return;
@@ -8918,12 +9441,12 @@ function bindEvents() {
     const id = els.contactForm.elements.id.value;
     if (id) deleteContact(id);
   });
-  els.estimateFromContactButton.addEventListener("click", () => {
+  els.estimateFromContactButton.addEventListener("click", async () => {
     if (!requireAction("manageEstimates")) return;
     const id = els.contactForm.elements.id.value;
     if (id) {
       els.contactDialog.close();
-      createEstimate(id);
+      await createEstimate(id);
     }
   });
 
@@ -8969,9 +9492,9 @@ function bindEvents() {
     state.newEstimateJobId = event.target.value;
     saveState();
   });
-  els.newEstimateButton.addEventListener("click", () => {
+  els.newEstimateButton.addEventListener("click", async () => {
     if (!requireAction("manageEstimates")) return;
-    const estimate = createEstimate(els.newEstimateContact?.value, true, els.newEstimateJob?.value);
+    const estimate = await createEstimate(els.newEstimateContact?.value, true, els.newEstimateJob?.value);
     if (estimate) {
       els.estimateCreatePanel?.classList.add("hidden");
       els.toggleEstimateCreateButton?.setAttribute("aria-expanded", "false");
@@ -9051,7 +9574,16 @@ function bindEvents() {
   els.printEstimateButton.addEventListener("click", printEstimate);
   els.sendEstimateButton.addEventListener("click", sendEstimate);
   window.addEventListener("pagehide", flushQueuedLocalStateSave);
+  window.addEventListener("beforeunload", (event) => {
+    flushQueuedLocalStateSave();
+    if (window.RooflineAuth.isEditorSessionCurrent() && (state.companyFormDraft || (canUseCloudSync() && durableRecordsReady && (durableWriteBlocked || durableSaveInFlight || cloudSaveInFlight || hasPendingDurableChanges() || hasPendingCompanyChanges())))) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
   els.companyForm.addEventListener("submit", saveCompany);
+  els.companyForm.addEventListener("input", trackCompanyFormDraft);
+  els.companyForm.addEventListener("change", trackCompanyFormDraft);
   els.documentCategoryCreateForm?.addEventListener("submit", createDocumentCategory);
   let draggedDocumentCategoryId = "";
   els.documentCategoriesList?.addEventListener("dragstart", (event) => {
@@ -9165,6 +9697,52 @@ async function playSignInUnlockTransition() {
   overlay.setAttribute("aria-hidden", "true");
 }
 
+function showStartupDataError() {
+  document.documentElement.classList.remove("vault-entry-pending");
+  const panel = document.createElement("main");
+  panel.setAttribute("role", "alert");
+  panel.style.cssText = "position:fixed;inset:0;z-index:100000;background:#f7f9fc;color:#17243a;display:grid;place-content:center;gap:16px;padding:32px;text-align:center";
+  const title = document.createElement("h1");
+  title.textContent = "Shared CRM data could not be loaded";
+  const message = document.createElement("p");
+  message.textContent = "No records were deleted. Editing is paused so an old device copy cannot replace shared information. Check your connection and try again.";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Try loading again";
+  retry.addEventListener("click", () => location.reload());
+  panel.append(title, message, retry);
+  document.body.appendChild(panel);
+}
+
+function pauseForSessionChange() {
+  checkpointPendingDraft();
+  durableWriteBlocked = true;
+  durableWritesEnabled = false;
+  cloudReady = false;
+  window.clearTimeout(durableSaveTimer);
+  window.clearTimeout(durableReloadTimer);
+  window.clearTimeout(cloudSaveTimer);
+  window.clearInterval(squarePollInterval);
+  estimateSaveTimers.forEach(timer => window.clearTimeout(timer));
+  // Retain recovery copies under the original user, never a newly signed-in
+  // identity. Do not expose an old user's draft download on the signed-out view.
+  document.querySelectorAll("body > *").forEach(element => {
+    if (!["SCRIPT", "STYLE"].includes(element.tagName)) { element.inert = true; element.hidden = true; }
+  });
+  const panel = document.createElement("main");
+  panel.setAttribute("role", "alert");
+  panel.style.cssText = "position:fixed;inset:0;z-index:100010;background:#f7f9fc;color:#17243a;display:grid;place-content:center;gap:16px;padding:32px;text-align:center";
+  const title = document.createElement("h1");
+  title.textContent = "Your CRM session changed";
+  const message = document.createElement("p");
+  message.textContent = "This tab has stopped saving because you signed out, changed accounts, or your access changed. Sign in again to load shared records and review any recovery copy for your account.";
+  const login = document.createElement("a");
+  login.href = "/login?reason=session-changed";
+  login.textContent = "Return to sign in";
+  panel.append(title, message, login);
+  document.body.appendChild(panel);
+}
+
 async function startApp() {
   if (!window.RooflineAuth) {
     location.replace("/login?reason=auth-loader");
@@ -9174,7 +9752,19 @@ async function startApp() {
   authSession = await window.RooflineAuth.requireAuth();
   if (!authSession) return;
   authSession = await promoteSignedInSession();
+  window.addEventListener("jobcrest:session-invalidated", pauseForSessionChange, { once: true });
+  window.RooflineAuth.bindEditorSession(authSession.user);
 
+  // Discover earlier drafts BEFORE replacing the disposable business cache.
+  // Each page owns a separate slot so simultaneous tabs cannot erase drafts.
+  if (canUseCloudSync() && authSession?.user?.id) {
+    let recoveryStorage;
+    try { recoveryStorage = localStorage; } catch { /* Browser may deny storage. */ }
+    draftRecoveryStore = window.CrmDraftRecovery.create({ storage: recoveryStorage, companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
+    const earlier = draftRecoveryStore.list();
+    showPreviousDraftRecovery(earlier.entries);
+    if (!earlier.available) showDraftStorageWarning();
+  }
   state = loadState(activeStorageKey());
   state.currentUser = currentUserFromAuthSession(authSession);
   if (canUseCloudSync() && authSession?.user?.id) {
@@ -9185,6 +9775,10 @@ async function startApp() {
     state.contacts = [];
     state.estimates = [];
     state.calendarTasks = [];
+    state.companyDocuments = [];
+    // Older unsubmitted settings remain in the recovery export, never replayed
+    // against a fresh server version without review.
+    state.companyFormDraft = null;
   }
   saveState({ localOnly: true });
   // Durable per-record rows are authoritative for leads, jobs, costs, notes,
@@ -9194,7 +9788,14 @@ async function startApp() {
   await purgeLegacyJobCrestCaches();
   await initializeCloudSync();
   await initializeDurableRecords();
-  if (ensureExistingSalesNumbers()) saveState();
+  if (canUseCloudSync() && !durableRecordsReady) {
+    showStartupDataError();
+    return;
+  }
+  if (canUseCloudSync()) {
+    try { await ensureExistingSharedSalesNumbers(); }
+    catch (error) { console.warn("Shared sales numbering is unavailable", error); showStartupDataError(); return; }
+  } else if (ensureExistingSalesNumbers()) saveState();
   void migrateInlineDocumentsToStorage();
   hydrateIcons();
   bindEvents();

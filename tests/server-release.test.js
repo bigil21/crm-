@@ -8,7 +8,7 @@ const serverSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 
 function server(env = {}, user = null) {
   let route; const reads = [], outbound = [];
-  const context = vm.createContext({ console, URL, Buffer, __dirname: root, module: { exports: {} },
+  const context = vm.createContext({ console, URL, Buffer, AbortSignal, __dirname: root, module: { exports: {} },
     process: { env },
     require(name) {
       if (name === 'http') return { createServer: handler => { route = handler; return {}; } };
@@ -66,13 +66,13 @@ test('malformed URLs return controlled errors and static writes are rejected', a
 });
 
 test('login redirects, fresh HTML and health/config work without database migrations', async () => {
-  const h = server({ AUTH_REQUIRED: 'true', SUPABASE_SYNC_ENABLED: 'true', SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'public-test' });
+  const h = server({ AUTH_REQUIRED: 'true', SUPABASE_SYNC_ENABLED: 'true', SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'sb_publishable_synthetic' });
   assert.equal((await h.request('/login/')).headers.Location, '/login');
   assert.equal((await h.request('/logout/')).headers.Location, '/logout');
   const html = await h.request('/'); assert.match(html.headers['Cache-Control'], /no-store/);
   const health = JSON.parse((await h.request('/api/health')).body);
   assert.equal(health.authRequired, true); assert.equal(health.cloudSyncConfigured, true);
-  assert.equal(health.release, 'server-protection-20260915');
+  assert.equal(health.release, 'full-audit-repairs-20260921');
   const config = (await h.request('/auth-config.js')).body; assert.match(config, /"authRequired":true/);
   assert.equal(h.outbound.length, 0);
 });
@@ -89,13 +89,13 @@ test('only an explicit development demo may bypass authentication', async () => 
   assert.equal(JSON.parse((await h.request('/api/health')).body).authRequired, false);
 });
 test('valid company admin and sales authorization stays compatible', async () => {
-  const env = { AUTH_REQUIRED: 'true', SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'public-test' };
-  const admin = server(env, { email: 'admin@coastalcrestroofing.com', app_metadata: { role: 'admin' } });
-  assert.equal((await admin.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 503, 'admin reaches unconfigured provider guard');
-  const sales = server(env, { email: 'sales@coastalcrestroofing.com', app_metadata: { role: 'sales' } });
+  const env = { AUTH_REQUIRED: 'true', SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'sb_publishable_synthetic' };
+  const admin = server(env, { id: 'admin-user', email: 'admin@coastalcrestroofing.com', app_metadata: { role: 'admin' } });
+  assert.equal((await admin.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 400, 'admin reaches trusted request validation');
+  const sales = server(env, { id: 'sales-user', email: 'sales@coastalcrestroofing.com', app_metadata: { role: 'sales' } });
   assert.equal((await sales.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 403);
-  assert.equal((await sales.request('/api/square/payment-status', 'POST', 'Bearer synthetic')).status, 503);
-  const outsider = server(env, { email: 'outsider@example.invalid', app_metadata: { role: 'admin' } });
+  assert.equal((await sales.request('/api/square/payment-status', 'POST', 'Bearer synthetic')).status, 400);
+  const outsider = server(env, { id: 'outsider-user', email: 'outsider@example.invalid', app_metadata: { role: 'admin' } });
   assert.equal((await outsider.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 401);
 });
 
