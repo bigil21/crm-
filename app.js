@@ -559,6 +559,7 @@ let smartDocumentPdfModule = null;
 let smartDocumentPlacementTool = "";
 let selectedSmartDocumentFieldId = "";
 let smartDocumentRenderToken = 0;
+let smartDocumentAnalysisPdf = null;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -7144,9 +7145,9 @@ function smartFieldTypeFromAnnotation(annotation) {
   const name = `${annotation.fieldName || ""} ${annotation.alternativeText || ""}`.toLowerCase();
   if (annotation.fieldType === "Sig" || /signature|signed by|sign here/.test(name)) return "signature";
   if (/initials?/.test(name)) return "initials";
-  if (/date/.test(name)) return "date";
+  if (/date/.test(name) && !/time/.test(name)) return "date";
   if (/email/.test(name)) return "email";
-  if (/amount|price|total|quantity|number/.test(name)) return "number";
+  if (/amount|price|total|quantity|number/.test(name) && !/phone|lead|job|project/.test(name)) return "number";
   return annotation.multiLine ? "textarea" : "text";
 }
 
@@ -7215,6 +7216,11 @@ function smartFieldOverlaps(fields, candidate) {
 
 async function analyzeSmartDocumentPages() {
   if (!smartDocumentPdf || !els.smartDocumentPages) return setSaveState(els.smartDocumentSaveStatus, "Open a PDF before analyzing it.", "error");
+  const pdf = smartDocumentPdf;
+  if (smartDocumentAnalysisPdf === pdf) return;
+  smartDocumentAnalysisPdf = pdf;
+  const renderToken = smartDocumentRenderToken;
+  const isCurrent = () => smartDocumentPdf === pdf && smartDocumentRenderToken === renderToken;
   els.analyzeSmartDocument.disabled = true;
   setSaveState(els.smartDocumentSaveStatus, "Analyzing every page for form fields, labels, and blank lines…", "saving");
   try {
@@ -7223,21 +7229,36 @@ async function analyzeSmartDocumentPages() {
     const startingFieldCount = fields.length;
     const labelPattern = /(?:^|\b)(name|customer|company|address|city|state|zip|phone|email|date|description|item|material|quantity|qty|price|rate|amount|total|signature|initials?|notes?)\b/i;
     for (const pageElement of els.smartDocumentPages.querySelectorAll(".smart-document-page")) {
+      if (!isCurrent()) return;
       const page = pageElement._pdfPage;
       const viewport = pageElement._pdfViewport;
       const pageNumber = number(pageElement.dataset.smartPage);
       const pageWidth = viewport.width; const pageHeight = viewport.height;
-      const annotations = await page.getAnnotations({ intent: "display" });
-      annotations.filter((item) => item.subtype === "Widget" && Array.isArray(item.rect)).forEach((annotation) => {
-        const rect = viewport.convertToViewportRectangle(annotation.rect);
-        const left = Math.max(0, Math.min(rect[0], rect[2])); const top = Math.max(0, Math.min(rect[1], rect[3]));
-        const candidate = { page: pageNumber, x: left / pageWidth, y: top / pageHeight, width: Math.max(18, Math.abs(rect[2] - rect[0])) / pageWidth, height: Math.max(16, Math.abs(rect[3] - rect[1])) / pageHeight };
+      if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = `Analyzing page ${pageNumber} of ${pdf.numPages}…`;
+      const annotations = pageElement._smartAnnotations ||= await page.getAnnotations({ intent: "display" });
+      if (!isCurrent()) return;
+      const widgets = annotations.filter((item) => item.subtype === "Widget" && Array.isArray(item.rect) && item.rect.length === 4 && item.rect.every(Number.isFinite));
+      widgets.forEach((annotation) => {
+        // PDF.js 6 removed convertToViewportRectangle. Points work in both
+        // versions, including scaled, cropped and rotated page viewports.
+        const start = viewport.convertToViewportPoint(annotation.rect[0], annotation.rect[1]);
+        const end = viewport.convertToViewportPoint(annotation.rect[2], annotation.rect[3]);
+        const left = Math.max(0, Math.min(pageWidth, start[0], end[0]));
+        const top = Math.max(0, Math.min(pageHeight, start[1], end[1]));
+        const right = Math.min(pageWidth, Math.max(start[0], end[0]));
+        const bottom = Math.min(pageHeight, Math.max(start[1], end[1]));
+        if (right <= left || bottom <= top) return;
+        const candidate = { page: pageNumber, x: left / pageWidth, y: top / pageHeight, width: (right - left) / pageWidth, height: (bottom - top) / pageHeight };
         if (smartFieldOverlaps(fields, candidate)) return;
         const rawName = String(annotation.fieldName || "").slice(0, 200);
         const name = humanizeSmartFieldName(annotation.alternativeText || rawName, `Field ${fields.length + 1}`);
         fields.push({ id: uid("smart-field"), label: name, type: smartFieldTypeFromAnnotation(annotation), required: annotation.required === true, sourceName: rawName, placeholder: "", ...candidate, fontSize: 10, detected: true });
       });
-      const text = await page.getTextContent();
+      // Native fields already identify the inputs on this page precisely.
+      // Avoid slower text heuristics and spurious bubbles beside their labels.
+      if (widgets.length) continue;
+      const text = pageElement._smartTextContent ||= await page.getTextContent();
+      if (!isCurrent()) return;
       const lines = smartTextRunsOnLines(text.items, viewport);
       const blankPattern = /(?:_{1,4}\s*[/.-]\s*){1,2}_{1,4}|_{3,}|\.{5,}|\[\s*\]|[□☐❑]/g;
       lines.forEach((line) => {
@@ -7291,15 +7312,23 @@ async function analyzeSmartDocumentPages() {
         });
       });
     }
+    if (!isCurrent()) return;
     renderSmartDocumentEditor(fields.slice(0, 300), responses);
     const detectedCount = Math.max(0, Math.min(300, fields.length) - startingFieldCount);
     if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = detectedCount
       ? `${detectedCount} fillable area${detectedCount === 1 ? " was" : "s were"} placed automatically. Review, move, resize, or delete any field before saving.`
-      : "No new blank areas were detected. Choose a field type and click the exact place it belongs.";
+      : fields.length
+        ? `${Math.min(300, fields.length)} fields are already mapped. Review the existing bubbles or choose a field type to add another.`
+        : "No new blank areas were detected. Choose a field type and click the exact place it belongs.";
     setSaveState(els.smartDocumentSaveStatus, `${Math.min(300, fields.length)} fillable fields are mapped across the original document.`, "success");
   } catch (error) {
+    if (!isCurrent()) return;
+    if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Analysis stopped. Try Analyze Document again, or place fields manually using the toolbar.";
     setSaveState(els.smartDocumentSaveStatus, error.message || "The document could not be analyzed.", "error");
-  } finally { els.analyzeSmartDocument.disabled = false; }
+  } finally {
+    if (smartDocumentAnalysisPdf === pdf) smartDocumentAnalysisPdf = null;
+    if (isCurrent()) els.analyzeSmartDocument.disabled = false;
+  }
 }
 
 async function renderSmartDocumentCanvas(url, record) {
@@ -7367,6 +7396,7 @@ async function openSmartDocumentDialog(record) {
   const smart = record.smartDocument;
   selectedSmartDocumentFieldId = "";
   els.smartDocumentForm.reset();
+  els.analyzeSmartDocument.disabled = true;
   els.smartDocumentForm.elements.documentId.value = record.id;
   els.smartDocumentTitle.textContent = smart ? record.name : `Create Smart Document from ${record.name}`;
   els.smartDocumentMeta.textContent = [lead?.name, job?.name, smart ? `${smart.status} · revision ${smart.revision}` : "New Smart Document"].filter(Boolean).join(" · ");
@@ -7514,6 +7544,7 @@ async function emailNativeSmartDocument() {
 }
 
 function closeSmartDocumentDialog() {
+  smartDocumentRenderToken += 1;
   els.smartDocumentDialog?.close();
   els.smartDocumentPreview?.removeAttribute("src");
   els.smartDocumentPages && (els.smartDocumentPages.innerHTML = "");
