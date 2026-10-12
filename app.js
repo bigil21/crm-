@@ -1054,6 +1054,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     uploadedBy: document.uploadedBy || "Local user",
     versionNumber: Math.max(1, number(document.versionNumber || document.version) || 1),
     source: document.source || "",
+    sourceDocumentId: document.sourceDocumentId || "",
     estimateId: document.estimateId || "",
     smartDocument: document.smartDocument && Array.isArray(document.smartDocument.fields)
       ? {
@@ -1083,6 +1084,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
           completedAt: document.smartDocument.completedAt || "",
           completedBy: document.smartDocument.completedBy || "",
           completedFile: document.smartDocument.completedFile?.storagePath ? { ...document.smartDocument.completedFile } : null,
+          completedDocumentId: document.smartDocument.completedDocumentId || "",
           previousCompletions: Array.isArray(document.smartDocument.previousCompletions) ? document.smartDocument.previousCompletions.slice(-10) : [],
           lastEmailedAt: document.smartDocument.lastEmailedAt || "",
           lastEmailedTo: document.smartDocument.lastEmailedTo || "",
@@ -7481,11 +7483,17 @@ async function saveNativeSmartDocument(status) {
     if (!response.ok || result.saved !== true) throw new Error(result.error || "The Smart Document could not be saved.");
     const appliedRows = await reloadDurableRecords({ showUpdateToast: false, allowInFlight: trustedMutationLocked });
     reloadNeeded = appliedRows === null;
-    const current = findManagedDocument(payload.documentId);
+    const completedCopy = result.status === "completed" && result.completedDocumentId;
+    if (result.status === "completed" && (!completedCopy || result.completedDocument?.id !== completedCopy)) throw new Error("The completed PDF copy could not be confirmed in its document category.");
+    const current = findManagedDocument(completedCopy || payload.documentId);
     const record = current.record && result.smartDocument
       ? { ...current.record, smartDocument: result.smartDocument }
-      : current.record;
+      : current.record || (completedCopy ? normalizeDocument(result.completedDocument) : null);
     if (record) {
+      if (completedCopy) {
+        els.smartDocumentForm.elements.documentId.value = completedCopy;
+        els.smartDocumentTitle.textContent = record.name;
+      }
       els.smartDocumentMeta.textContent = `${record.name} · ${result.status} · revision ${result.revision}`;
       const completed = result.status === "completed";
       els.smartDocumentEmailPanel.classList.toggle("hidden", !completed);
@@ -7495,7 +7503,7 @@ async function saveNativeSmartDocument(status) {
         if (previewUrl) { els.smartDocumentPreviewFallback.classList.add("hidden"); await renderSmartDocumentCanvas(previewUrl, { ...record, type: "application/pdf", name: result.completedFile?.name || record.name }); renderSmartDocumentOverlays([], {}); }
       }
     }
-    setSaveState(els.smartDocumentSaveStatus, status === "completed" ? "Completed PDF saved to this job. It is ready to email." : status === "template" ? "Smart Document fields saved." : "Draft responses saved.", "success");
+    setSaveState(els.smartDocumentSaveStatus, status === "completed" ? `Completed PDF saved as a new copy in ${record?.category || "the original document category"}. The original document is retained.` : status === "template" ? "Smart Document fields saved." : "Draft responses saved.", "success");
     return true;
   } catch (error) {
     setSaveState(els.smartDocumentSaveStatus, error.message || "The Smart Document could not be saved.", "error");
