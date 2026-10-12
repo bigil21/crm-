@@ -657,6 +657,7 @@ function smartDocumentPayload(existing, fields, responses, status, user, complet
     updatedBy: user.id,
   };
   if (existing?.completedFile) result.completedFile = existing.completedFile;
+  if (existing?.completedDocumentId) result.completedDocumentId = existing.completedDocumentId;
   if (Array.isArray(existing?.previousCompletions)) result.previousCompletions = existing.previousCompletions.slice(-9);
   if (completedFile) {
     if (result.completedFile) result.previousCompletions = [...(result.previousCompletions || []), result.completedFile].slice(-10);
@@ -704,12 +705,18 @@ async function handleSmartDocumentSave(req, res, user) {
     }
     const smartDocument = smartDocumentPayload(record.data.smartDocument, fields, responses, requestedStatus, user, completedFile);
     const saved = await saveTrustedSmartDocument(store, user, record, smartDocument);
+    if (requestedStatus === "completed" && (!saved.completed_document_id || saved.completed_document?.id !== saved.completed_document_id || saved.completed_document?.storagePath !== completedFile.storagePath)) {
+      throw new Error("smart_document_record_unconfirmed");
+    }
+    const savedSmartDocument = saved.smart_document || smartDocument;
     sendJson(res, 200, {
       saved: true,
       status: requestedStatus,
       revision: smartDocument.revision,
-      smartDocument,
-      completedFile: smartDocument.completedFile || null,
+      smartDocument: savedSmartDocument,
+      completedFile: savedSmartDocument.completedFile || null,
+      completedDocumentId: saved.completed_document_id || null,
+      completedDocument: saved.completed_document || null,
       filledSourceFields,
       recordVersion: saved.version,
     });
