@@ -65,7 +65,7 @@ test('client switches preview and future email to the saved copy after reloading
   const source=app.slice(app.indexOf('async function saveNativeSmartDocument('),app.indexOf('async function emailNativeSmartDocument('));
   const smart={status:'completed',revision:2,completedFile:{storagePath:'coastal-crest/filled.pdf'}};
   const copy={id:'copy-1',name:'Sales Sheet - Completed.pdf',category:'Sales Reference',smartDocument:smart};
-  const h={messages:[],reload:false,preview:null};
+  const h={messages:[],reload:false,preview:null,folderRenders:0};
   const element=()=>({textContent:'',classList:{toggle(){},add(){}}});
   const context=vm.createContext({requireAction:()=>true,smartDocumentPayloadFromEditor:()=>({documentId:'original'}),
     settleDurableWritesBeforeTrustedMutation:async()=>true,setSmartDocumentButtonsDisabled:()=>{},
@@ -74,6 +74,7 @@ test('client switches preview and future email to the saved copy after reloading
     fetch:async()=>({ok:true,json:async()=>({saved:true,status:'completed',revision:2,smartDocument:smart,completedDocumentId:copy.id,completedDocument:copy})}),
     reloadDurableRecords:async()=>{h.reload=true;return [];},findManagedDocument:id=>{assert.equal(h.reload,true);return {record:id==='copy-1'?copy:null};},
     normalizeDocument:value=>value,smartDocumentPreviewUrl:async record=>{h.preview=record.id;return 'https://example.invalid/filled.pdf';},
+    renderCompanyDocuments:()=>h.folderRenders++,renderLeadDocuments:()=>h.folderRenders++,
     renderSmartDocumentCanvas:async()=>{},renderSmartDocumentOverlays:()=>{},queueDurableRecordsReload:()=>{},
     els:{smartDocumentSaveStatus:element(),smartDocumentMeta:element(),smartDocumentTitle:element(),smartDocumentEmailPanel:element(),emailSmartDocument:element(),smartDocumentPreviewFallback:element(),smartDocumentForm:{elements:{documentId:{value:'original'}}}},
   });
@@ -81,5 +82,6 @@ test('client switches preview and future email to the saved copy after reloading
   assert.equal(await context.saveNativeSmartDocument('completed'),true);
   assert.equal(context.els.smartDocumentForm.elements.documentId.value,'copy-1');
   assert.equal(h.preview,'copy-1');
+  assert.equal(h.folderRenders,1,'refresh the folder immediately after saving');
   assert.match(h.messages.at(-1).message,/new copy in Sales Reference/);
 });

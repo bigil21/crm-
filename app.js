@@ -7489,6 +7489,10 @@ async function saveNativeSmartDocument(status) {
     const record = current.record && result.smartDocument
       ? { ...current.record, smartDocument: result.smartDocument }
       : current.record || (completedCopy ? normalizeDocument(result.completedDocument) : null);
+    if (completedCopy && appliedRows !== null) {
+      if (current.lead) renderLeadDocuments(current.lead);
+      else renderCompanyDocuments();
+    }
     if (record) {
       if (completedCopy) {
         els.smartDocumentForm.elements.documentId.value = completedCopy;
