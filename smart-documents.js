@@ -1,6 +1,6 @@
 const { PDFDocument, StandardFonts, rgb, PDFTextField, PDFCheckBox, PDFDropdown, PDFOptionList, PDFRadioGroup } = require("pdf-lib");
 
-const FIELD_TYPES = new Set(["text", "textarea", "date", "number", "email", "checkbox"]);
+const FIELD_TYPES = new Set(["text", "textarea", "date", "number", "email", "checkbox", "signature", "initials"]);
 const MAX_FIELDS = 300;
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
@@ -130,7 +130,7 @@ function applyExistingPdfFields(pdf, fields, responses) {
   return filled;
 }
 
-function drawPlacedField(pdf, field, response, font) {
+function drawPlacedField(pdf, field, response, font, signatureFont = font) {
   if (![field.x, field.y, field.width, field.height].every(Number.isFinite)) return false;
   const page = pdf.getPages()[field.page - 1];
   if (!page) return false;
@@ -153,11 +153,12 @@ function drawPlacedField(pdf, field, response, font) {
   }
   const text = responseText(field, response);
   if (!text) return true;
-  const lines = wrapText(text, font, fontSize, Math.max(6, width - 4));
+  const activeFont = ["signature", "initials"].includes(field.type) ? signatureFont : font;
+  const lines = wrapText(text, activeFont, fontSize, Math.max(6, width - 4));
   const lineHeight = fontSize * 1.12;
   const maxLines = Math.max(1, Math.floor((height - 3) / lineHeight));
   lines.slice(0, maxLines).forEach((line, index) => {
-    page.drawText(line, { x: x + 2, y: y + height - fontSize - 2 - (index * lineHeight), size: fontSize, font, color: rgb(0.03, 0.05, 0.08), maxWidth: width - 4 });
+    page.drawText(line, { x: x + 2, y: y + height - fontSize - 2 - (index * lineHeight), size: fontSize, font: activeFont, color: rgb(0.03, 0.05, 0.08), maxWidth: width - 4 });
   });
   return true;
 }
@@ -188,10 +189,11 @@ async function renderCompletedDocument(document, template, actor = {}) {
   }
   const filledSourceFields = sourceEmbedded ? applyExistingPdfFields(pdf, fields, responses) : [];
   const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const signatureFont = await pdf.embedFont(StandardFonts.HelveticaOblique);
   const filledSet = new Set(filledSourceFields.map((name) => name.trim().toLowerCase()));
   fields.forEach((field) => {
     if (field.sourceName && filledSet.has(field.sourceName.trim().toLowerCase())) return;
-    drawPlacedField(pdf, field, responses[field.id], font);
+    drawPlacedField(pdf, field, responses[field.id], font, signatureFont);
   });
   if (sourceEmbedded && filledSourceFields.length) {
     try { pdf.getForm().flatten(); } catch { /* Placed fields still remain authoritative. */ }

@@ -649,6 +649,7 @@ function smartDocumentPayload(existing, fields, responses, status, user, complet
     fields,
     responses,
     status,
+    analysisVersion: 1,
     revision,
     createdAt: existing?.createdAt || now,
     createdBy: existing?.createdBy || user.id,
@@ -703,9 +704,17 @@ async function handleSmartDocumentSave(req, res, user) {
     }
     const smartDocument = smartDocumentPayload(record.data.smartDocument, fields, responses, requestedStatus, user, completedFile);
     const saved = await saveTrustedSmartDocument(store, user, record, smartDocument);
-    sendJson(res, 200, { saved: true, status: requestedStatus, revision: smartDocument.revision, completedFile: smartDocument.completedFile || null, filledSourceFields, recordVersion: saved.version });
+    sendJson(res, 200, {
+      saved: true,
+      status: requestedStatus,
+      revision: smartDocument.revision,
+      smartDocument,
+      completedFile: smartDocument.completedFile || null,
+      filledSourceFields,
+      recordVersion: saved.version,
+    });
   } catch (error) {
-    const badRequest = ["invalid_smart_document_fields", "duplicate_smart_document_field", "invalid_smart_document_field_type", "invalid_smart_document_text", "invalid_smart_document_email", "invalid_smart_document_number", "invalid_smart_document_date", "smart_document_required_field_missing"].includes(error.message);
+    const badRequest = ["invalid_smart_document_fields", "duplicate_smart_document_field", "invalid_smart_document_field_type", "invalid_smart_document_field_placement", "invalid_smart_document_text", "invalid_smart_document_email", "invalid_smart_document_number", "invalid_smart_document_date", "smart_document_required_field_missing"].includes(error.message);
     const messages = {
       document_not_found: "The saved CRM document could not be found or is not assigned to you.",
       smart_document_required_field_missing: "Complete every required field before saving the completed document.",

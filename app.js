@@ -1059,7 +1059,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
           fields: document.smartDocument.fields.slice(0, 300).map((field, index) => ({
             id: String(field?.id || `field-${index + 1}`),
             label: String(field?.label || `Field ${index + 1}`),
-            type: ["text", "textarea", "date", "number", "email", "checkbox"].includes(field?.type) ? field.type : "text",
+            type: ["text", "textarea", "date", "number", "email", "checkbox", "signature", "initials"].includes(field?.type) ? field.type : "text",
             required: Boolean(field?.required),
             sourceName: String(field?.sourceName || ""),
             placeholder: String(field?.placeholder || ""),
@@ -1073,6 +1073,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
           })),
           responses: document.smartDocument.responses && typeof document.smartDocument.responses === "object" ? { ...document.smartDocument.responses } : {},
           status: ["template", "draft", "completed"].includes(document.smartDocument.status) ? document.smartDocument.status : "template",
+          analysisVersion: Math.max(0, Math.round(number(document.smartDocument.analysisVersion) || 0)),
           revision: Math.max(1, number(document.smartDocument.revision) || 1),
           createdAt: document.smartDocument.createdAt || "",
           createdBy: document.smartDocument.createdBy || "",
@@ -1968,10 +1969,19 @@ function hasPendingDurableChanges() {
 }
 
 function rememberDurableRows(rows = [], auditRows = []) {
-  durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => [durableRecordKey(row), durableFingerprint(row)]));
+  // The UI normalizes old records with safe display defaults. Fingerprint the
+  // normalized state that is actually in memory, while retaining the database
+  // rows (and their versions) as the writer's concurrency baseline. Otherwise
+  // a newly introduced optional property can make every unchanged record look
+  // edited and cause an unnecessary versioned write immediately after loading.
+  rows.forEach(row => durableFinancialBaseline.set(durableRecordKey(row), row.data));
+  const normalizedRows = new Map(durableRowsFromState().map((row) => [durableRecordKey(row), row]));
+  durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => {
+    const normalized = normalizedRows.get(durableRecordKey(row));
+    return [durableRecordKey(row), durableFingerprint(normalized || row)];
+  }));
   durableAuditIds = new Set(auditRows.map((row) => row.id));
   getDurableCommitWriter().remember(rows);
-  rows.forEach(row => durableFinancialBaseline.set(durableRecordKey(row), row.data));
 }
 
 function getDurableCommitWriter() {
@@ -2160,13 +2170,13 @@ async function fetchAllCompanyRows(table, orderColumns = ["id"]) {
   return rows;
 }
 
-async function reloadDurableRecords({ showUpdateToast = false } = {}) {
+async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = false } = {}) {
   if (durableWriteBlocked) return null;
   try {
     const revision = localEditRevision;
-    if (durableSaveInFlight || hasPendingDurableChanges()) return null;
+    if ((!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges()) return null;
     const { rows, auditRows } = await fetchDurableRows();
-    if (durableWriteBlocked || revision !== localEditRevision || durableSaveInFlight || hasPendingDurableChanges()) {
+    if (durableWriteBlocked || revision !== localEditRevision || (!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges()) {
       // Do not advance fingerprints for a response we did not apply.
       queueDurableRecordsReload({ showUpdateToast: false });
       return null;
@@ -2291,6 +2301,14 @@ async function waitForDurableSaveSlot() {
     await new Promise((resolve) => window.setTimeout(resolve, 50));
   }
   return !durableSaveInFlight;
+}
+
+async function settleDurableWritesBeforeTrustedMutation() {
+  if (!canUseCloudSync()) return true;
+  if (!(await waitForDurableSaveSlot()) || durableWriteBlocked) return false;
+  window.clearTimeout(durableSaveTimer);
+  if (hasPendingDurableChanges() && !(await flushDurableRecordsSave())) return false;
+  return (await waitForDurableSaveSlot()) && !durableWriteBlocked && !hasPendingDurableChanges();
 }
 
 async function persistCriticalLeadChange({ statusElement, button, successMessage }) {
@@ -2518,13 +2536,23 @@ async function persistCompanyDocumentRecords(documentIds) {
   );
   if (documentRows.length !== wantedIds.size) return false;
 
-  const { data: commitResult, error: writeError } = await commitDurableChanges(documentRows);
-  if (writeError) throw writeError;
-
-  const confirmed = commitResult.rows;
-  if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
-  // Preserve the writer's immutable acknowledgement when uploads overlap edits.
-  return true;
+  window.clearTimeout(durableSaveTimer);
+  durableSaveInFlight = true;
+  documentRows.forEach(markRecentLocalDurableWrite);
+  try {
+    const { data: commitResult, error: writeError } = await commitDurableChanges(documentRows);
+    if (writeError) {
+      documentRows.forEach(clearRecentLocalDurableWrite);
+      throw writeError;
+    }
+    const confirmed = commitResult.rows;
+    if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
+    // Preserve the writer's immutable acknowledgement when uploads overlap edits.
+    return true;
+  } finally {
+    durableSaveInFlight = false;
+    queueDurableRecordsSave();
+  }
 }
 
 async function initializeDurableRecords() {
@@ -6929,7 +6957,7 @@ function renderSmartDocumentEditor(fields, responses = {}) {
     <div class="smart-document-field-row${field.id === selectedSmartDocumentFieldId ? " selected" : ""}" data-smart-field-id="${escapeHtml(field.id)}" data-smart-detected="${field.detected ? "true" : "false"}">
       <input name="fieldLabel" value="${escapeHtml(field.label)}" maxlength="120" aria-label="Field label" placeholder="Field label" />
       <select name="fieldType" aria-label="Field type">
-        ${[["text","Text"],["textarea","Long text"],["date","Date"],["number","Number"],["email","Email"],["checkbox","Checkbox"]].map(([value, label]) => `<option value="${value}" ${field.type === value ? "selected" : ""}>${label}</option>`).join("")}
+        ${[["text","Text"],["textarea","Long text"],["date","Date"],["number","Number"],["email","Email"],["checkbox","Checkbox"],["signature","Signature"],["initials","Initials"]].map(([value, label]) => `<option value="${value}" ${field.type === value ? "selected" : ""}>${label}</option>`).join("")}
       </select>
       <label class="smart-document-required"><input name="fieldRequired" type="checkbox" ${field.required ? "checked" : ""} />Required</label>
       <button class="mini-button" type="button" data-remove-smart-field="${escapeHtml(field.id)}" aria-label="Remove ${escapeHtml(field.label)}"><span aria-hidden="true" data-icon="trash"></span></button>
@@ -7090,6 +7118,8 @@ function renderSmartDocumentOverlays(fields = smartDocumentFieldRows(), response
 
 function defaultSmartFieldSize(type) {
   if (type === "checkbox") return { width: 0.055, height: 0.04 };
+  if (type === "signature") return { width: 0.34, height: 0.055 };
+  if (type === "initials") return { width: 0.14, height: 0.05 };
   if (type === "textarea") return { width: 0.42, height: 0.1 };
   return { width: type === "date" || type === "number" ? 0.22 : 0.32, height: 0.045 };
 }
@@ -7112,10 +7142,69 @@ function addPlacedSmartField(type, pageNumber, x, y, { label = "", sourceName = 
 function smartFieldTypeFromAnnotation(annotation) {
   if (annotation.fieldType === "Btn") return "checkbox";
   const name = `${annotation.fieldName || ""} ${annotation.alternativeText || ""}`.toLowerCase();
+  if (annotation.fieldType === "Sig" || /signature|signed by|sign here/.test(name)) return "signature";
+  if (/initials?/.test(name)) return "initials";
   if (/date/.test(name)) return "date";
   if (/email/.test(name)) return "email";
   if (/amount|price|total|quantity|number/.test(name)) return "number";
   return annotation.multiLine ? "textarea" : "text";
+}
+
+function smartFieldTypeFromLabel(value, { checkbox = false } = {}) {
+  const label = String(value || "").toLowerCase();
+  if (checkbox) return "checkbox";
+  if (/signature|signed by|sign here|authorized sign/.test(label)) return "signature";
+  if (/\binitials?\b/.test(label)) return "initials";
+  if (/\bdate\b|mm\s*[/.-]\s*dd|dd\s*[/.-]\s*mm/.test(label)) return "date";
+  if (/\bemail\b/.test(label)) return "email";
+  if (/amount|price|total|qty|quantity|rate|cost|balance|deposit|payment/.test(label)) return "number";
+  if (/description|scope|notes?|comments?|details?/.test(label)) return "textarea";
+  return "text";
+}
+
+function cleanDetectedSmartFieldLabel(value, fallback) {
+  const cleaned = String(value || "")
+    .replace(/(?:_{2,}|\.{4,}|\[\s*\]|[□☐❑]|(?:_{1,4}\s*[/.-]\s*){1,2}_{1,4})/g, " ")
+    .replace(/^\s*(?:please\s+)?(?:enter|provide|print|type)\s+/i, "")
+    .replace(/[\s:;,.\-–—]+$/g, "")
+    .trim();
+  if (!cleaned) return fallback;
+  const parts = cleaned.split(/\s{2,}|\|/).map((part) => part.trim()).filter(Boolean);
+  return String(parts.at(-1) || cleaned).slice(-120);
+}
+
+function humanizeSmartFieldName(value, fallback) {
+  const text = String(value || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return fallback;
+  return text.replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 120);
+}
+
+function smartTextRunsOnLines(items, viewport) {
+  const runs = items.map((item) => {
+    const transform = smartDocumentPdfModule.Util.transform(viewport.transform, item.transform);
+    const height = Math.max(8, Math.abs(transform[3] || item.height || 12));
+    return {
+      text: String(item.str || ""),
+      x: transform[4],
+      y: transform[5] - height,
+      width: Math.max(1, Math.abs((item.width || 0) * viewport.scale)),
+      height,
+    };
+  }).filter((run) => run.text.trim());
+  const lines = [];
+  runs.sort((a, b) => a.y - b.y || a.x - b.x).forEach((run) => {
+    let line = lines.find((candidate) => Math.abs(candidate.y - run.y) <= Math.max(4, Math.min(candidate.height, run.height) * 0.55));
+    if (!line) { line = { y: run.y, height: run.height, runs: [] }; lines.push(line); }
+    line.runs.push(run);
+    line.y = Math.min(line.y, run.y);
+    line.height = Math.max(line.height, run.height);
+  });
+  lines.forEach((line) => line.runs.sort((a, b) => a.x - b.x));
+  return lines;
 }
 
 function smartFieldOverlaps(fields, candidate) {
@@ -7131,6 +7220,7 @@ async function analyzeSmartDocumentPages() {
   try {
     const responses = smartDocumentResponseValues();
     const fields = smartDocumentFieldRows();
+    const startingFieldCount = fields.length;
     const labelPattern = /(?:^|\b)(name|customer|company|address|city|state|zip|phone|email|date|description|item|material|quantity|qty|price|rate|amount|total|signature|initials?|notes?)\b/i;
     for (const pageElement of els.smartDocumentPages.querySelectorAll(".smart-document-page")) {
       const page = pageElement._pdfPage;
@@ -7143,45 +7233,70 @@ async function analyzeSmartDocumentPages() {
         const left = Math.max(0, Math.min(rect[0], rect[2])); const top = Math.max(0, Math.min(rect[1], rect[3]));
         const candidate = { page: pageNumber, x: left / pageWidth, y: top / pageHeight, width: Math.max(18, Math.abs(rect[2] - rect[0])) / pageWidth, height: Math.max(16, Math.abs(rect[3] - rect[1])) / pageHeight };
         if (smartFieldOverlaps(fields, candidate)) return;
-        const name = String(annotation.fieldName || annotation.alternativeText || `Field ${fields.length + 1}`).slice(0, 120);
-        fields.push({ id: uid("smart-field"), label: name, type: smartFieldTypeFromAnnotation(annotation), required: annotation.required === true, sourceName: String(annotation.fieldName || "").slice(0, 200), placeholder: "", ...candidate, fontSize: 10, detected: true });
+        const rawName = String(annotation.fieldName || "").slice(0, 200);
+        const name = humanizeSmartFieldName(annotation.alternativeText || rawName, `Field ${fields.length + 1}`);
+        fields.push({ id: uid("smart-field"), label: name, type: smartFieldTypeFromAnnotation(annotation), required: annotation.required === true, sourceName: rawName, placeholder: "", ...candidate, fontSize: 10, detected: true });
       });
       const text = await page.getTextContent();
-      text.items.forEach((item) => {
-        const label = String(item.str || "").trim();
-        const blankRun = /_{3,}|\.{5,}/.test(label);
-        if (!blankRun && !(label.endsWith(":") && labelPattern.test(label))) return;
-        const transform = smartDocumentPdfModule.Util.transform(viewport.transform, item.transform);
-        const itemX = transform[4]; const itemTop = transform[5] - Math.abs(transform[3] || item.height || 12);
-        const renderedWidth = Math.max(1, Math.abs((item.width || 0) * viewport.scale));
-        const inlineBlanks = [...label.matchAll(/([A-Za-z][A-Za-z ]{0,32}?):\s*(_{3,}|\.{5,})/g)];
-        if (inlineBlanks.length > 1) {
-          const pixelsPerCharacter = renderedWidth / Math.max(1, label.length);
-          inlineBlanks.forEach((match) => {
-            const cleanLabel = String(match[1] || "").trim().slice(0, 120);
-            if (!labelPattern.test(cleanLabel)) return;
-            const blank = String(match[2] || "");
-            const blankOffset = Number(match.index || 0) + String(match[0] || "").indexOf(blank);
-            const x = Math.max(0, Math.min(0.96, (itemX + blankOffset * pixelsPerCharacter) / pageWidth));
-            const width = Math.max(0.06, Math.min(0.36, Math.max(24, blank.length * pixelsPerCharacter) / pageWidth));
-            const type = /date/i.test(cleanLabel) ? "date" : /amount|price|total|qty|quantity|rate/i.test(cleanLabel) ? "number" : /email/i.test(cleanLabel) ? "email" : "text";
-            const candidate = { page: pageNumber, x, y: Math.max(0, itemTop / pageHeight), width: Math.min(width, 0.98 - x), height: Math.max(defaultSmartFieldSize(type).height, 18 / pageHeight) };
-            if (!smartFieldOverlaps(fields, candidate)) fields.push({ id: uid("smart-field"), label: cleanLabel, type, required: false, sourceName: "", placeholder: "", ...candidate, fontSize: 10, detected: true });
+      const lines = smartTextRunsOnLines(text.items, viewport);
+      const blankPattern = /(?:_{1,4}\s*[/.-]\s*){1,2}_{1,4}|_{3,}|\.{5,}|\[\s*\]|[□☐❑]/g;
+      lines.forEach((line) => {
+        line.runs.forEach((run, runIndex) => {
+          const matches = [...run.text.matchAll(blankPattern)];
+          const previousText = line.runs.slice(Math.max(0, runIndex - 2), runIndex).map((item) => item.text.trim()).join(" ");
+          const pixelsPerCharacter = run.width / Math.max(1, run.text.length);
+          matches.forEach((match) => {
+            const marker = String(match[0] || "");
+            const checkbox = /\[\s*\]|[□☐❑]/.test(marker);
+            const labelSource = `${previousText} ${run.text.slice(0, Number(match.index || 0))}`.trim();
+            const fallback = checkbox ? `Checkbox ${fields.length + 1}` : `Field ${fields.length + 1}`;
+            const cleanLabel = cleanDetectedSmartFieldLabel(labelSource, fallback);
+            const type = smartFieldTypeFromLabel(`${cleanLabel} ${marker}`, { checkbox });
+            const size = defaultSmartFieldSize(type);
+            const markerX = run.x + Number(match.index || 0) * pixelsPerCharacter;
+            const markerWidth = Math.max(checkbox ? 16 : 30, marker.length * pixelsPerCharacter);
+            const x = Math.max(0, Math.min(0.97, markerX / pageWidth));
+            const candidate = {
+              page: pageNumber,
+              x,
+              y: Math.max(0, run.y / pageHeight),
+              width: Math.min(checkbox ? size.width : Math.max(size.width * 0.55, markerWidth / pageWidth), 0.98 - x),
+              height: Math.max(size.height, Math.min(0.08, (run.height + 6) / pageHeight)),
+            };
+            if (!smartFieldOverlaps(fields, candidate)) fields.push({
+              id: uid("smart-field"), label: cleanLabel, type, required: false, sourceName: "", placeholder: "",
+              ...candidate, fontSize: 10, detected: true,
+            });
           });
-          return;
-        }
-        let x = blankRun ? itemX / pageWidth : Math.min(0.92, (itemX + renderedWidth + 6) / pageWidth);
-        let y = Math.max(0, itemTop / pageHeight);
-        const available = Math.max(0.08, 0.98 - x);
-        const size = defaultSmartFieldSize(/date/i.test(label) ? "date" : /amount|price|total|qty|quantity|rate/i.test(label) ? "number" : /email/i.test(label) ? "email" : "text");
-        const candidate = { page: pageNumber, x, y, width: Math.min(size.width, available), height: Math.max(size.height, 18 / pageHeight) };
-        if (smartFieldOverlaps(fields, candidate)) return;
-        const cleanLabel = (label.replace(/[:_.]+\s*$/g, "").trim() || `Field ${fields.length + 1}`).slice(0, 120);
-        fields.push({ id: uid("smart-field"), label: cleanLabel, type: /date/i.test(cleanLabel) ? "date" : /amount|price|total|qty|quantity|rate/i.test(cleanLabel) ? "number" : /email/i.test(cleanLabel) ? "email" : "text", required: false, sourceName: "", placeholder: "", ...candidate, fontSize: 10, detected: true });
+
+          const label = run.text.trim();
+          if (matches.length || !labelPattern.test(label)) return;
+          const strongStandaloneLabel = /(?:[:：]\s*$)|\b(?:signature|signed by|sign here|initials?|date)\b\s*[:：]?\s*$/i.test(label);
+          if (!strongStandaloneLabel) return;
+          const next = line.runs[runIndex + 1];
+          if (next && next.x <= run.x + run.width + 18 && /(?:_{1,4}\s*[/.-]\s*){1,2}_{1,4}|_{3,}|\.{5,}|\[\s*\]|[□☐❑]/.test(next.text)) return;
+          const cleanLabel = cleanDetectedSmartFieldLabel(label, `Field ${fields.length + 1}`);
+          const type = smartFieldTypeFromLabel(cleanLabel);
+          const size = defaultSmartFieldSize(type);
+          const x = Math.max(0, Math.min(0.92, (run.x + run.width + 6) / pageWidth));
+          const candidate = {
+            page: pageNumber, x, y: Math.max(0, run.y / pageHeight),
+            width: Math.min(size.width, Math.max(0.06, 0.98 - x)),
+            height: Math.max(size.height, Math.min(0.08, (run.height + 6) / pageHeight)),
+          };
+          if (!smartFieldOverlaps(fields, candidate)) fields.push({
+            id: uid("smart-field"), label: cleanLabel, type, required: false, sourceName: "", placeholder: "",
+            ...candidate, fontSize: 10, detected: true,
+          });
+        });
       });
     }
     renderSmartDocumentEditor(fields.slice(0, 300), responses);
-    setSaveState(els.smartDocumentSaveStatus, `${fields.length} fillable fields are mapped across the original document. Review, move, resize, or add fields before saving.`, "success");
+    const detectedCount = Math.max(0, Math.min(300, fields.length) - startingFieldCount);
+    if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = detectedCount
+      ? `${detectedCount} fillable area${detectedCount === 1 ? " was" : "s were"} placed automatically. Review, move, resize, or delete any field before saving.`
+      : "No new blank areas were detected. Choose a field type and click the exact place it belongs.";
+    setSaveState(els.smartDocumentSaveStatus, `${Math.min(300, fields.length)} fillable fields are mapped across the original document.`, "success");
   } catch (error) {
     setSaveState(els.smartDocumentSaveStatus, error.message || "The document could not be analyzed.", "error");
   } finally { els.analyzeSmartDocument.disabled = false; }
@@ -7280,7 +7395,10 @@ async function openSmartDocumentDialog(record) {
     els.analyzeSmartDocument.title = smartDocumentPdf ? "Detect fields, labels, and blank lines across every PDF page" : "Automatic detection is available for PDF documents; fields can still be placed manually on this image";
     els.smartDocumentCanvasHelp.textContent = fields.length
       ? "Fill values directly on the original pages. Drag the field title to move it and use the lower-right handle to resize it."
-      : "Select Analyze Document to detect fields on every page, or choose a field type and click anywhere on a page.";
+      : smartDocumentPdf
+        ? "Analyzing the original document and placing likely fillable areas…"
+        : "Choose a field type and click anywhere on the document to place it.";
+    if (smartDocumentPdf && (!fields.length || (smart?.analysisVersion || 0) < 1)) await analyzeSmartDocumentPages();
   } catch {
     els.smartDocumentPages.innerHTML = "";
     els.smartDocumentPreviewFallback.classList.remove("hidden");
@@ -7313,15 +7431,30 @@ async function saveNativeSmartDocument(status) {
   let payload;
   try { payload = smartDocumentPayloadFromEditor(status); }
   catch (error) { setSaveState(els.smartDocumentSaveStatus, error.message, "error"); return false; }
+  if (!(await settleDurableWritesBeforeTrustedMutation())) {
+    setSaveState(els.smartDocumentSaveStatus, "Finish or recover the pending shared save before saving this Smart Document.", "error");
+    return false;
+  }
   setSmartDocumentButtonsDisabled(true);
   setSaveState(els.smartDocumentSaveStatus, status === "completed" ? "Creating and securely saving the completed PDF…" : "Saving Smart Document…", "saving");
+  let trustedMutationLocked = false;
+  let reloadNeeded = false;
   try {
+    if (canUseCloudSync()) {
+      window.clearTimeout(durableSaveTimer);
+      durableSaveInFlight = true;
+      trustedMutationLocked = true;
+    }
     const headers = await squareApiHeaders();
     const response = await fetch("/api/smart-documents/save", { method: "POST", headers, signal: AbortSignal.timeout(90000), body: JSON.stringify(payload) });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.saved !== true) throw new Error(result.error || "The Smart Document could not be saved.");
-    await reloadDurableRecords({ showUpdateToast: false });
-    const { record } = findManagedDocument(payload.documentId);
+    const appliedRows = await reloadDurableRecords({ showUpdateToast: false, allowInFlight: trustedMutationLocked });
+    reloadNeeded = appliedRows === null;
+    const current = findManagedDocument(payload.documentId);
+    const record = current.record && result.smartDocument
+      ? { ...current.record, smartDocument: result.smartDocument }
+      : current.record;
     if (record) {
       els.smartDocumentMeta.textContent = `${record.name} · ${result.status} · revision ${result.revision}`;
       const completed = result.status === "completed";
@@ -7337,7 +7470,11 @@ async function saveNativeSmartDocument(status) {
   } catch (error) {
     setSaveState(els.smartDocumentSaveStatus, error.message || "The Smart Document could not be saved.", "error");
     return false;
-  } finally { setSmartDocumentButtonsDisabled(false); }
+  } finally {
+    if (trustedMutationLocked) durableSaveInFlight = false;
+    if (reloadNeeded) queueDurableRecordsReload({ showUpdateToast: false });
+    setSmartDocumentButtonsDisabled(false);
+  }
 }
 
 async function emailNativeSmartDocument() {

@@ -139,6 +139,39 @@ test('successful empty reload is authoritative', async () => {
   assert.equal(applied, true);
 });
 
+test('durable reload fingerprints normalized UI records without advancing database versions', () => {
+  let remembered;
+  const raw = { record_type: 'document', id: 'doc-1', version: 7, data: { name: 'Agreement.pdf' } };
+  const normalized = { record_type: 'document', id: 'doc-1', data: { name: 'Agreement.pdf', smartDocument: null } };
+  const c = functions('app.js', ['rememberDurableRows'], {
+    durableFinancialBaseline: new Map(), durableRecordFingerprints: new Map(), durableAuditIds: new Set(),
+    durableRecordKey: row => `${row.record_type}:${row.id}`,
+    durableFingerprint: row => JSON.stringify(row.data),
+    durableRowsFromState: () => [normalized],
+    getDurableCommitWriter: () => ({ remember: rows => { remembered = rows; } }),
+  });
+  c.rememberDurableRows([raw], []);
+  assert.equal(c.durableRecordFingerprints.get('document:doc-1'), JSON.stringify(normalized.data));
+  assert.equal(remembered[0].version, 7);
+});
+
+test('company document confirmation holds the shared save lock', async () => {
+  let lockedDuringCommit = false;
+  const row = { record_type: 'document', id: 'doc-1', lead_id: '__company__', data: { name: 'Agreement.pdf' } };
+  const c = functions('app.js', ['persistCompanyDocumentRecords'], {
+    durableRecordsReady: true, cloudClient: {}, authSession: { user: { id: 'admin' } },
+    waitForDurableSaveSlot: async () => true, durableRowsFromState: () => [row],
+    COMPANY_DOCUMENT_LEAD_ID: '__company__', durableSaveInFlight: false,
+    window: { clearTimeout() {} }, durableSaveTimer: null,
+    markRecentLocalDurableWrite() {}, clearRecentLocalDurableWrite() {},
+    commitDurableChanges: async () => { lockedDuringCommit = c.durableSaveInFlight; return { data: { rows: [row] }, error: null }; },
+    hasPendingDurableChanges: () => false, queueDurableRecordsSave() {},
+  });
+  assert.equal(await c.persistCompanyDocumentRecords(['doc-1']), true);
+  assert.equal(lockedDuringCommit, true);
+  assert.equal(c.durableSaveInFlight, false);
+});
+
 test('pending company-setting edits prevent stale background hydration', async () => {
   let read = false;
   const c = functions('app.js', ['reloadCloudState'], {

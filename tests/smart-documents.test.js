@@ -17,6 +17,8 @@ test('Smart Document validation preserves typed fields and enforces required res
   assert.throws(() => normalizeResponses(fields, { 'customer-name': '', approved: false }, { requireComplete: true }), /smart_document_required_field_missing/);
   assert.throws(() => normalizeFields([{ id: 'email', label: 'Email', type: 'script' }]), /invalid_smart_document_field_type/);
   assert.throws(() => normalizeFields([{ id: 'bad', label: 'Bad', type: 'text', page: 1, x: .9, y: .2, width: .2, height: .04 }]), /invalid_smart_document_field_placement/);
+  assert.equal(normalizeFields([{ id: 'sign', label: 'Signature', type: 'signature', page: 1, x: .1, y: .8, width: .3, height: .05 }])[0].type, 'signature');
+  assert.equal(normalizeFields([{ id: 'initial', label: 'Initials', type: 'initials', page: 1, x: .7, y: .8, width: .1, height: .05 }])[0].type, 'initials');
 });
 
 test('completed Smart Document fills the original PDF field without appending a questionnaire page', async () => {
@@ -56,7 +58,7 @@ test('positioned Smart Document values are embedded on their original page', asy
 });
 
 test('Smart Document RPC is service-only, row-locked, and bounded', () => {
-  const migration = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261012043232_smart_document_positioned_fields.sql'), 'utf8');
+  const migration = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261012044525_smart_document_positioned_fields.sql'), 'utf8');
   assert.match(migration, /security definer[\s\S]*set search_path = ''/i);
   assert.match(migration, /for update/i);
   assert.match(migration, /jsonb_array_length\(p_smart_document->'fields'\) > 300/i);
@@ -80,7 +82,7 @@ test('Smart Document RPC durably updates only the targeted document record', asy
     `);
     const migration = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261012041248_native_smart_documents.sql'), 'utf8');
     await db.exec(migration);
-    await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261012043232_smart_document_positioned_fields.sql'), 'utf8'));
+    await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261012044525_smart_document_positioned_fields.sql'), 'utf8'));
     const smart = { status: 'draft', fields: [{ id: 'name', label: 'Name', type: 'text', required: true }], responses: { name: 'Jordan' } };
     await db.exec('set role authenticated');
     await assert.rejects(db.query('select public.crm_save_smart_document($1,$2,$3::jsonb,$4::uuid)', ['coastal-crest','doc-1',JSON.stringify(smart),'00000000-0000-4000-8000-000000000001']), error => error.code === '42501');
@@ -108,6 +110,9 @@ test('lead and job document cards expose native Smart Document actions', () => {
   assert.match(app, /renderSmartDocumentOverlays/);
   assert.match(app, /deleteSelectedSmartDocumentField/);
   assert.match(app, /use arrow keys for precise movement/);
+  assert.match(app, /if \(smartDocumentPdf && \(!fields\.length \|\| \(smart\?\.analysisVersion \|\| 0\) < 1\)\) await analyzeSmartDocumentPages\(\)/);
+  assert.match(app, /smartFieldTypeFromLabel/);
+  assert.match(app, /signature.*initials/);
   assert.match(page, /id="deleteSelectedSmartField"/);
   assert.match(styles, /\.smart-field-overlay\.selected/);
   assert.match(page, /Save Completed PDF/);
