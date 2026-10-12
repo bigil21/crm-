@@ -1403,7 +1403,7 @@ async function handleSquareSyncStatus(req, res, user) {
   }
 }
 
-const server = http.createServer((req, res) => {
+const handleRequest = (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -1588,7 +1588,8 @@ const server = http.createServer((req, res) => {
       send(res, 200, req.method === "HEAD" ? undefined : content, mimeType);
     }
   });
-});
+};
+const server = http.createServer(handleRequest);
 
 if (require.main === module) {
   if (process.env.CRM_STAGING_ACCESS === "true" && !stagingTestIdentity()) {
@@ -1603,4 +1604,4 @@ if (require.main === module) {
   if (stopBackupWorker) server.once("close", stopBackupWorker);
 }
 
-module.exports = { isApiAdmin, squareInvoicePaymentSummary };
+module.exports = { handleRequest, isApiAdmin, squareInvoicePaymentSummary };

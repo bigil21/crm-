@@ -79,3 +79,9 @@ Example manager metadata:
 - `operations_manager`: team jobs, projects, documents, tasks, and operational reports
 
 You can enter roles with spaces or hyphens in Supabase metadata, but underscore values such as `sales_manager` are preferred.
+# Vercel deployment
+
+`vercel.json` selects the explicit `api/index.js` function and routes requests through the same authenticated handler as `server.js`. Do not select the browser `app.js` as a Node backend entrypoint. Browser assets and the PDF.js module/worker are included in the function bundle, while private repository paths remain blocked by the server allowlist.
+
+Configure the required production environment variables in Vercel as described below. Persistent Square payment and recovery backup workers continue to run on the long-lived Render server; importing the Vercel handler does not start them.
+
