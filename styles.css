@@ -5217,16 +5217,16 @@ textarea:focus {
 .smart-document-image-page > img { height: auto !important; }
 .smart-document-overlay-layer { position: absolute; inset: 0; z-index: 3; }
 .smart-document-page-number { position: absolute; right: 8px; bottom: 7px; z-index: 4; padding: 3px 7px; border-radius: 999px; background: rgba(7, 28, 54, .7); color: #fff; font-size: 10px; pointer-events: none; }
-.smart-field-overlay { position: absolute; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 22px; min-height: 18px; border: 2px solid #1473e6; border-radius: 4px; background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(12, 66, 136, .2); user-select: none; }
+.smart-field-overlay { position: absolute; min-width: 0; min-height: 0; border: 2px solid #1473e6; border-radius: 4px; background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(12, 66, 136, .2); user-select: none; }
 .smart-field-overlay.selected { z-index: 8; border-color: #f28c18; box-shadow: 0 0 0 3px rgba(242,140,24,.3), 0 4px 12px rgba(12,66,136,.25); }
 .smart-field-overlay.selected .smart-field-drag-handle { background: #d66b00; }
 .smart-field-overlay:focus-within { z-index: 7; border-color: #074a9f; box-shadow: 0 0 0 3px rgba(20, 115, 230, .18); }
-.smart-field-drag-handle { overflow: hidden; width: 100%; min-height: 14px; padding: 1px 4px; border: 0; border-radius: 2px 2px 0 0; background: #1473e6; color: #fff; font: 700 9px/1.25 system-ui,sans-serif; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: move; touch-action: none; }
+.smart-field-drag-handle { position: absolute; left: -2px; bottom: 100%; overflow: hidden; width: calc(100% + 4px); min-width: 22px; min-height: 14px; padding: 1px 4px; border: 0; border-radius: 2px 2px 0 0; background: #1473e6; color: #fff; font: 700 9px/1.25 system-ui,sans-serif; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: move; touch-action: none; }
 .smart-field-overlay input:not([type="checkbox"]),
 .smart-field-overlay textarea { width: 100%; height: 100%; min-height: 0; padding: 1px 3px; border: 0; border-radius: 0; background: transparent; color: #071525; line-height: 1.05; user-select: text; }
 .smart-field-overlay textarea { resize: none; }
-.smart-field-overlay input[type="checkbox"] { align-self: center; justify-self: start; width: min(22px, 70%); height: min(22px, 70%); margin: 2px; }
-.smart-field-resize-handle { position: absolute; z-index: 3; right: -7px; bottom: -7px; width: 16px; height: 16px; padding: 0; border: 2px solid #fff; border-radius: 4px; background: #1473e6; box-shadow: 0 1px 3px rgba(3,35,71,.35); cursor: nwse-resize; touch-action: none; }
+.smart-field-overlay input[type="checkbox"] { display: block; width: 100%; height: 100%; min-height: 0; margin: 0; }
+.smart-field-resize-handle { position: absolute; z-index: 3; right: -12px; bottom: -12px; width: 12px; height: 12px; padding: 0; border: 2px solid #fff; border-radius: 4px; background: #1473e6; box-shadow: 0 1px 3px rgba(3,35,71,.35); cursor: nwse-resize; touch-action: none; }
 .smart-field-overlay.selected .smart-field-resize-handle { background: #d66b00; }
 .smart-document-field-row.selected { border-color: #f28c18; box-shadow: 0 0 0 2px rgba(242,140,24,.16); }
 .smart-document-editor { min-height: 0; overflow: auto; padding: 18px; border-left: 1px solid var(--line); background: var(--surface-soft); }
