@@ -5172,14 +5172,19 @@ textarea:focus {
 }
 
 .smart-document-workspace {
-  width: min(1500px, calc(100vw - 28px));
-  height: min(920px, calc(100vh - 28px));
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  width: 100vw;
+  height: 100vh;
+  width: 100dvw;
+  height: 100dvh;
   max-width: none;
   max-height: none;
   padding: 0;
   overflow: hidden;
   border: 0;
-  border-radius: 18px;
+  border-radius: 0;
   background: var(--surface);
   color: var(--ink);
   box-shadow: 0 24px 80px rgba(4, 20, 42, 0.34);
@@ -5200,7 +5205,7 @@ textarea:focus {
 
 .smart-document-header h2 { margin: 2px 0 0; }
 .smart-document-actions { justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid var(--line); border-bottom: 0; }
-.smart-document-layout { display: grid; grid-template-columns: minmax(560px, 1.45fr) minmax(360px, 0.55fr); min-height: 0; }
+.smart-document-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(440px, 0.8fr); min-height: 0; }
 .smart-document-preview { min-height: 0; overflow: auto; padding: 14px; background: #dce4ee; }
 .smart-document-preview iframe { width: 100%; height: 100%; border: 0; border-radius: 10px; background: #fff; }
 .smart-document-preview .empty-state { height: 100%; display: grid; place-items: center; }
@@ -5237,7 +5242,7 @@ textarea:focus {
 .compact-heading h3 { margin: 2px 0 0; font-size: 16px; }
 .smart-document-fields,
 .smart-document-responses { display: grid; gap: 10px; }
-.smart-document-field-row { display: grid; grid-template-columns: minmax(130px, 1fr) 110px auto auto; gap: 8px; align-items: center; padding: 10px; border: 1px solid #d7e0ea; border-radius: 10px; }
+.smart-document-field-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto auto; gap: 8px; align-items: center; padding: 10px; border: 1px solid #d7e0ea; border-radius: 10px; }
 .smart-document-field-row input,
 .smart-document-field-row select { min-width: 0; }
 .smart-document-source-name { grid-column: 1 / -1; }
@@ -5254,7 +5259,6 @@ textarea:focus {
 #smartDocumentSaveStatus:not(:empty) { padding-top: 10px; padding-bottom: 10px; border-top: 1px solid var(--line); }
 
 @media (max-width: 900px) {
-  .smart-document-workspace { width: 100vw; height: 100vh; border-radius: 0; }
   .smart-document-layout { grid-template-columns: 1fr; overflow: auto; }
   .smart-document-preview { min-height: 42vh; }
   .smart-document-editor { overflow: visible; border-left: 0; border-top: 1px solid var(--line); }
