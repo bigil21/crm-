@@ -18,6 +18,7 @@ const safeWrites = read("supabase/migrations/20260914_conflict_safe_record_write
 const squareWorkflow = read("square-invoice-workflow.js");
 const squareIntents = read("supabase/migrations/20260915_durable_square_invoice_sends.sql");
 const salesNumbers = read("supabase/migrations/20260916_atomic_sales_numbers.sql");
+const recoveryBackup = read("recovery-backup.js");
 const sharedInputRoles = ["office_manager", "sales_manager", "operations_manager", "sales", "production", "viewer"];
 
 const checks = [
@@ -38,7 +39,7 @@ const checks = [
   ["durable per-record table", schema.includes("create table if not exists public.crm_records")],
   ["append-only audit events", schema.includes("create table if not exists public.crm_audit_events")],
   ["conversation message table", schema.includes("create table if not exists public.crm_conversation_messages")],
-  ["daily recovery backups", schema.includes("create table if not exists public.crm_backups")],
+  ["daily recovery backups run without an open browser", schema.includes("create table if not exists public.crm_backups") && server.includes("startRecoveryBackupWorker()") && recoveryBackup.includes('source: "server"') && recoveryBackup.includes('resolution=ignore-duplicates')],
   ["private document bucket", schema.includes("values ('crm-documents', 'crm-documents', false")],
   ["row-level security on records", schema.includes("alter table public.crm_records enable row level security")],
   ["all company users can edit shared CRM records", schema.includes('create policy "Company users update durable CRM records"') && !schema.includes("and (public.can_manage_team_crm() or owner_id = auth.uid())") && sharedRecordMigration.includes('on public.crm_records for update to authenticated')],
@@ -94,7 +95,7 @@ const checks = [
   ["same-account devices receive realtime updates", !app.includes("row?.updated_by === authSession.user.id") && !app.includes("row?.actor_user_id === authSession.user.id")],
   ["document uploads verify durable records", app.includes("persistLeadDocumentRecords") && app.includes("saved to the shared CRM")],
   ["lead documents are isolated by job", index.includes('id="leadDocumentJobSelect"') && app.includes('document.jobId === selectedJob?.id') && app.includes('jobId: job.id')],
-  ["lead email activity is isolated by job", index.includes('id="leadEmailJobSelect"') && app.includes("emails: (job.emails || []).map(normalizeJobEmail)") && app.includes("Email activity saved to this job")],
+  ["lead email activity is isolated by job", index.includes('id="leadEmailJobSelect"') && app.includes("emails: (job.emails || []).map(normalizeJobEmail)") && app.includes("job.id === payload.job.id ? { ...job, emails: [emailRecord, ...(job.emails || [])] } : job") && app.includes("persistLeadJobRecord(payload.job.id")],
   ["lead conversations and notes are isolated by job", projectConversations.includes("update.jobId ? update.jobId === job.id") && projectConversations.includes("state.selectedLeadJobId = event.target.value")],
   ["job photo library is available per lead", index.includes('data-lead-tab="photos"') && index.includes('id="leadPhotoInput"') && index.includes('accept="image/jpeg,image/png,image/webp') && app.includes("uploadLeadPhotos")],
   ["photos are isolated by job", app.includes('document.kind === "photo" && document.jobId === jobId') && app.includes('jobId: job.id') && app.includes('`${leadId}/jobs/${jobId}`')],

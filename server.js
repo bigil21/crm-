@@ -262,6 +262,26 @@ function squareWorkerConfig() {
   return { origin: publicConfig.origin, companyId: publicConfig.companyId, key };
 }
 
+function recoveryBackupConfig() {
+  const config = supabaseConfig();
+  const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  if (!config.url || !key || process.env.SUPABASE_SYNC_ENABLED !== "true") return null;
+  return {
+    origin: config.url.replace(/\/$/, ""),
+    companyId: process.env.SUPABASE_STATE_ID || "coastal-crest",
+    key,
+    fetch,
+    timeZone: process.env.CRM_TIME_ZONE || "America/New_York",
+    onError: () => console.warn("Daily CRM recovery backup could not be confirmed; it will retry."),
+  };
+}
+
+function startRecoveryBackupWorker() {
+  const config = recoveryBackupConfig();
+  if (!config) return null;
+  return require(path.join(__dirname, "recovery-backup.js")).start(config);
+}
+
 async function squareWorkerRpc(config, name, payload) {
   const response = await fetch(`${config.origin}/rest/v1/rpc/${name}`, {
     method: "POST", signal: AbortSignal.timeout(15000),
@@ -780,6 +800,8 @@ if (require.main === module) {
   });
   const stopWorker = startSquarePaymentWorker();
   if (stopWorker) server.once("close", stopWorker);
+  const stopBackupWorker = startRecoveryBackupWorker();
+  if (stopBackupWorker) server.once("close", stopBackupWorker);
 }
 
 module.exports = { isApiAdmin, squareInvoicePaymentSummary };
