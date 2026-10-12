@@ -70,6 +70,8 @@ test('authentication fails closed when flag is absent', async () => {
 });
 test('protected APIs reject anonymous requests', async () => {
   assert.equal((await backend().request('/api/square/payment-status', 'POST', '{}')).status, 401);
+  assert.equal((await backend().request('/api/smart-documents/save', 'POST', '{}')).status, 401);
+  assert.equal((await backend().request('/api/smart-documents/email', 'POST', '{}')).status, 401);
 });
 test('unconfigured webhook rejects events rather than accepting unsigned data', async () => {
   assert.equal((await backend().request('/webhooks/square', 'POST', '{}')).status, 503);

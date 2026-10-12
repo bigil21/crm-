@@ -242,6 +242,9 @@ const actionPermissions = {
   "remove-company-document": "manageDocuments",
   "rename-company-document": "manageDocuments",
   "upload-to-category": "manageDocuments",
+  "prepare-zoho-smart-document": "manageDocuments",
+  "open-smart-document": "manageDocuments",
+  "sync-google-drive-document": "manageDocuments",
   "edit-document-category": "manageCompany",
   "toggle-document-category": "manageCompany",
   "delete-document-category": "manageCompany",
@@ -547,6 +550,10 @@ const recentLocalDurableWrites = new Map();
 let estimateVisualRefreshTimer = null;
 let pendingDurableRender = false;
 const photoPreviewCache = new Map();
+let googleIntegrationState = { loaded: false, loading: false, configured: false, connected: false, email: "", providerEmail: "", gmailSend: false, gmailRead: false };
+let googleDriveState = { loaded: false, loading: false, configured: false };
+let zohoIntegrationState = { loaded: false, loading: false, configured: false, connected: false, email: "", dataCenter: "" };
+let smartDocumentPreviewObjectUrl = "";
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -638,9 +645,12 @@ const els = {
   leadEmailHeading: document.querySelector("#leadEmailHeading"),
   leadEmailJobSelect: document.querySelector("#leadEmailJobSelect"),
   leadEmailForm: document.querySelector("#leadEmailForm"),
+  leadEmailTemplate: document.querySelector("#leadEmailTemplate"),
   leadEmailHistory: document.querySelector("#leadEmailHistory"),
   leadEmailSaveStatus: document.querySelector("#leadEmailSaveStatus"),
   copyLeadEmailButton: document.querySelector("#copyLeadEmailButton"),
+  leadEmailSubmitLabel: document.querySelector("#leadEmailSubmitLabel"),
+  refreshLeadEmailThreadsButton: document.querySelector("#refreshLeadEmailThreadsButton"),
   leadDocumentsPanel: document.querySelector("#leadDocumentsPanel"),
   leadDocumentHeading: document.querySelector("#leadDocumentHeading"),
   leadDocumentJobSelect: document.querySelector("#leadDocumentJobSelect"),
@@ -649,6 +659,7 @@ const els = {
   uploadLeadDocumentButton: document.querySelector("#uploadLeadDocumentButton"),
   leadDocumentInput: document.querySelector("#leadDocumentInput"),
   leadDocumentUploadStatus: document.querySelector("#leadDocumentUploadStatus"),
+  leadDocumentSmartAfterUpload: document.querySelector("#leadDocumentSmartAfterUpload"),
   leadPhotosPanel: document.querySelector("#leadPhotosPanel"),
   leadPhotoHeading: document.querySelector("#leadPhotoHeading"),
   leadPhotoJobSelect: document.querySelector("#leadPhotoJobSelect"),
@@ -712,6 +723,7 @@ const els = {
   uploadCompanyDocumentButton: document.querySelector("#uploadCompanyDocumentButton"),
   companyDocumentInput: document.querySelector("#companyDocumentInput"),
   companyDocumentUploadStatus: document.querySelector("#companyDocumentUploadStatus"),
+  companyDocumentSmartAfterUpload: document.querySelector("#companyDocumentSmartAfterUpload"),
   companyDocumentsList: document.querySelector("#companyDocumentsList"),
   calendarTaskForm: document.querySelector("#calendarTaskForm"),
   salesRepOptions: document.querySelector("#salesRepOptions"),
@@ -731,6 +743,38 @@ const els = {
   companyLogoPreview: document.querySelector("#companyLogoPreview"),
   documentCategoryCreateForm: document.querySelector("#documentCategoryCreateForm"),
   documentCategoriesList: document.querySelector("#documentCategoriesList"),
+  googleIntegrationStatus: document.querySelector("#googleIntegrationStatus"),
+  googleIntegrationPill: document.querySelector("#googleIntegrationPill"),
+  googleDriveIntegrationStatus: document.querySelector("#googleDriveIntegrationStatus"),
+  connectGoogleWorkspaceButton: document.querySelector("#connectGoogleWorkspaceButton"),
+  disconnectGoogleWorkspaceButton: document.querySelector("#disconnectGoogleWorkspaceButton"),
+  zohoIntegrationStatus: document.querySelector("#zohoIntegrationStatus"),
+  zohoIntegrationPill: document.querySelector("#zohoIntegrationPill"),
+  connectZohoSignButton: document.querySelector("#connectZohoSignButton"),
+  disconnectZohoSignButton: document.querySelector("#disconnectZohoSignButton"),
+  zohoSignDialog: document.querySelector("#zohoSignDialog"),
+  zohoSignForm: document.querySelector("#zohoSignForm"),
+  zohoSignDocumentName: document.querySelector("#zohoSignDocumentName"),
+  zohoSignSaveStatus: document.querySelector("#zohoSignSaveStatus"),
+  prepareZohoSignButton: document.querySelector("#prepareZohoSignButton"),
+  closeZohoSignDialog: document.querySelector("#closeZohoSignDialog"),
+  cancelZohoSignDialog: document.querySelector("#cancelZohoSignDialog"),
+  smartDocumentDialog: document.querySelector("#smartDocumentDialog"),
+  smartDocumentForm: document.querySelector("#smartDocumentForm"),
+  smartDocumentTitle: document.querySelector("#smartDocumentTitle"),
+  smartDocumentMeta: document.querySelector("#smartDocumentMeta"),
+  smartDocumentPreview: document.querySelector("#smartDocumentPreview"),
+  smartDocumentPreviewFallback: document.querySelector("#smartDocumentPreviewFallback"),
+  smartDocumentFields: document.querySelector("#smartDocumentFields"),
+  smartDocumentResponses: document.querySelector("#smartDocumentResponses"),
+  smartDocumentEmailPanel: document.querySelector("#smartDocumentEmailPanel"),
+  smartDocumentSaveStatus: document.querySelector("#smartDocumentSaveStatus"),
+  addSmartDocumentField: document.querySelector("#addSmartDocumentField"),
+  saveSmartDocumentTemplate: document.querySelector("#saveSmartDocumentTemplate"),
+  saveSmartDocumentDraft: document.querySelector("#saveSmartDocumentDraft"),
+  completeSmartDocument: document.querySelector("#completeSmartDocument"),
+  emailSmartDocument: document.querySelector("#emailSmartDocument"),
+  closeSmartDocumentDialog: document.querySelector("#closeSmartDocumentDialog"),
   toast: document.querySelector("#toast"),
 };
 
@@ -1001,6 +1045,53 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     versionNumber: Math.max(1, number(document.versionNumber || document.version) || 1),
     source: document.source || "",
     estimateId: document.estimateId || "",
+    smartDocument: document.smartDocument && Array.isArray(document.smartDocument.fields)
+      ? {
+          fields: document.smartDocument.fields.slice(0, 80).map((field, index) => ({
+            id: String(field?.id || `field-${index + 1}`),
+            label: String(field?.label || `Field ${index + 1}`),
+            type: ["text", "textarea", "date", "number", "email", "checkbox"].includes(field?.type) ? field.type : "text",
+            required: Boolean(field?.required),
+            sourceName: String(field?.sourceName || ""),
+            placeholder: String(field?.placeholder || ""),
+          })),
+          responses: document.smartDocument.responses && typeof document.smartDocument.responses === "object" ? { ...document.smartDocument.responses } : {},
+          status: ["template", "draft", "completed"].includes(document.smartDocument.status) ? document.smartDocument.status : "template",
+          revision: Math.max(1, number(document.smartDocument.revision) || 1),
+          createdAt: document.smartDocument.createdAt || "",
+          createdBy: document.smartDocument.createdBy || "",
+          updatedAt: document.smartDocument.updatedAt || "",
+          updatedBy: document.smartDocument.updatedBy || "",
+          completedAt: document.smartDocument.completedAt || "",
+          completedBy: document.smartDocument.completedBy || "",
+          completedFile: document.smartDocument.completedFile?.storagePath ? { ...document.smartDocument.completedFile } : null,
+          previousCompletions: Array.isArray(document.smartDocument.previousCompletions) ? document.smartDocument.previousCompletions.slice(-10) : [],
+          lastEmailedAt: document.smartDocument.lastEmailedAt || "",
+          lastEmailedTo: document.smartDocument.lastEmailedTo || "",
+          lastEmailMessageId: document.smartDocument.lastEmailMessageId || "",
+        }
+      : null,
+    zohoSign: document.zohoSign?.requestId
+      ? {
+          requestId: String(document.zohoSign.requestId),
+          status: String(document.zohoSign.status || "draft"),
+          recipientEmail: String(document.zohoSign.recipientEmail || ""),
+          createdAt: document.zohoSign.createdAt || "",
+          createdBy: document.zohoSign.createdBy || "",
+        }
+      : null,
+    googleDrive: document.googleDrive?.fileId && /^https:\/\/drive\.google\.com\//.test(document.googleDrive.webViewLink || "")
+      ? {
+          fileId: String(document.googleDrive.fileId),
+          webViewLink: String(document.googleDrive.webViewLink),
+          leadFolderId: String(document.googleDrive.leadFolderId || ""),
+          jobFolderId: String(document.googleDrive.jobFolderId || ""),
+          categoryFolderId: String(document.googleDrive.categoryFolderId || ""),
+          versionNumber: Math.max(1, number(document.googleDrive.versionNumber) || 1),
+          syncedAt: document.googleDrive.syncedAt || "",
+          syncedBy: document.googleDrive.syncedBy || "",
+        }
+      : null,
     contactId: document.contactId || resolvedLeadId,
     jobId: document.jobId || "",
     kind:
@@ -1032,6 +1123,12 @@ function normalizeJobEmail(email = {}) {
     message: email.message || "",
     createdAt: email.createdAt || new Date().toISOString(),
     createdBy: email.createdBy || "CRM user",
+    provider: email.provider || "",
+    providerMessageId: email.providerMessageId || email.gmailMessageId || "",
+    providerThreadId: email.providerThreadId || email.gmailThreadId || "",
+    direction: email.direction === "inbound" ? "inbound" : "outbound",
+    deliveryStatus: email.deliveryStatus || "",
+    attachmentName: email.attachmentName || "",
   };
 }
 
@@ -1050,6 +1147,11 @@ function normalizeCalendarTask(task) {
     notes: task.notes || "",
     createdAt: task.createdAt || new Date().toISOString(),
     completed: Boolean(task.completed),
+    googleEventId: task.googleEventId || "",
+    googleEventUrl: task.googleEventUrl || "",
+    googleSyncStatus: ["synced", "pending", "not_connected", "error"].includes(task.googleSyncStatus) ? task.googleSyncStatus : "",
+    googleSyncedAt: task.googleSyncedAt || "",
+    googleSyncError: task.googleSyncError || "",
   };
 }
 
@@ -3103,6 +3205,82 @@ function googleCalendarUrl(task) {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
+function taskGoogleSyncLabel(task) {
+  if (task.googleSyncStatus === "synced") return '<span class="status-pill pill-won">Google synced</span>';
+  if (task.googleSyncStatus === "pending") return '<span class="status-pill pill-inspection">Google pending</span>';
+  if (task.googleSyncStatus === "not_connected") return '<span class="status-pill pill-default">Google not connected</span>';
+  if (task.googleSyncStatus === "error") return '<span class="status-pill pill-rejected">Google sync failed</span>';
+  return "";
+}
+
+async function syncCalendarTaskToGoogle(task) {
+  const snapshot = normalizeCalendarTask(JSON.parse(JSON.stringify(task)));
+  const contact = getContact(snapshot.contactId);
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/calendar/event", {
+      method: "POST", headers, signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({
+        ownerEmail: snapshot.ownerEmail || currentOwner().email,
+        task: snapshot,
+        contact: contact ? { name: contact.name, phone: contact.phone, email: contact.email, address: contact.address } : null,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    const current = state.calendarTasks.find((item) => item.id === snapshot.id);
+    if (!current || current.title !== snapshot.title || current.dueAt !== snapshot.dueAt || current.ownerEmail !== snapshot.ownerEmail) return false;
+    if (!response.ok || result?.synced !== true) {
+      const notConnected = response.status === 409 && result?.code === "google_not_connected";
+      Object.assign(current, {
+        googleSyncStatus: notConnected ? "not_connected" : "error",
+        googleSyncError: String(result?.error || "Google Calendar could not be updated.").slice(0, 300),
+      });
+      saveState();
+      if (state.view === "calendar" || state.view === "tasks") render();
+      return false;
+    }
+    Object.assign(current, {
+      googleEventId: result.eventId,
+      googleEventUrl: result.htmlLink || "",
+      googleSyncStatus: "synced",
+      googleSyncedAt: result.updated || new Date().toISOString(),
+      googleSyncError: "",
+    });
+    saveState();
+    if (state.view === "calendar" || state.view === "tasks") render();
+    return true;
+  } catch {
+    const current = state.calendarTasks.find((item) => item.id === snapshot.id);
+    if (current && current.title === snapshot.title && current.dueAt === snapshot.dueAt) {
+      current.googleSyncStatus = "error";
+      current.googleSyncError = "Google Calendar could not be reached.";
+      saveState();
+      if (state.view === "calendar" || state.view === "tasks") render();
+    }
+    return false;
+  }
+}
+
+async function removeCalendarTaskFromGoogle(task) {
+  if (!task?.googleEventId) return true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/calendar/event", {
+      method: "DELETE", headers, signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ ownerEmail: task.ownerEmail || currentOwner().email, eventId: task.googleEventId }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result?.deleted !== true) {
+      showToast(result?.error || "Google Calendar could not remove the event.");
+      return false;
+    }
+    return true;
+  } catch {
+    showToast("Google Calendar could not be reached. The CRM task was kept to prevent an orphaned event.");
+    return false;
+  }
+}
+
 function upcomingTasks(limit = 6) {
   const now = new Date();
   return [...state.calendarTasks]
@@ -3637,7 +3815,7 @@ function applyPermissionsToDom() {
   if (els.profitJobSelect) els.profitJobSelect.disabled = !financialWritable;
 
   const emailWritable = canAction("sendEmail");
-  els.leadEmailForm?.querySelectorAll("input, textarea, button").forEach((field) => {
+  els.leadEmailForm?.querySelectorAll("input, textarea, select, button").forEach((field) => {
     field.disabled = !emailWritable;
   });
 
@@ -5402,14 +5580,30 @@ function deleteLeadJob(jobId) {
   showToast("Job removed");
 }
 
-function defaultLeadEmail(contact, job = selectedLeadJob(contact)) {
+function leadEmailTemplate(contact, job = selectedLeadJob(contact), template = "follow-up") {
   const projectLabel = job?.projectNumber ? `${job.projectNumber} - ${job.name}` : job?.name || "your project";
-  return {
-    fromEmail: state.currentUser.email || state.company.email || "",
-    toEmail: contact.email || "",
-    subject: `${state.company.name} follow-up for ${projectLabel}`,
-    message: `Hi ${contact.name},\n\nI wanted to follow up on ${projectLabel}.\n\nPlease let me know if you have any questions or if there is a good time to connect.\n\nThank you,\n${state.currentUser.name || state.company.name}`,
+  const firstName = String(contact.name || "there").trim().split(/\s+/)[0] || "there";
+  const company = state.company.name || "our team";
+  const sender = state.currentUser.name || company;
+  const choices = {
+    inspection: [`Inspection confirmation for ${projectLabel}`, `Hi ${firstName},\n\nThis is a confirmation regarding the inspection for ${projectLabel}. Please let me know if the scheduled time still works or if anything has changed.\n\nThank you,\n${sender}`],
+    estimate: [`Estimate follow-up for ${projectLabel}`, `Hi ${firstName},\n\nI wanted to follow up on the estimate for ${projectLabel}. I am happy to answer any questions or review the scope with you.\n\nThank you,\n${sender}`],
+    deposit: [`Deposit reminder for ${projectLabel}`, `Hi ${firstName},\n\nThis is a friendly reminder regarding the deposit for ${projectLabel}. Please let me know if you need the invoice or payment instructions resent.\n\nThank you,\n${sender}`],
+    production: [`Production update for ${projectLabel}`, `Hi ${firstName},\n\nHere is an update on ${projectLabel}.\n\n[Add the current production status here.]\n\nThank you,\n${sender}`],
+    review: [`Thank you from ${company}`, `Hi ${firstName},\n\nThank you for trusting ${company} with ${projectLabel}. We appreciate your business and would be grateful if you shared your experience with a review.\n\n${state.company.reviewLink || "[Add review link]"}\n\nThank you,\n${sender}`],
+    "follow-up": [`${company} follow-up for ${projectLabel}`, `Hi ${firstName},\n\nI wanted to follow up on ${projectLabel}.\n\nPlease let me know if you have any questions or if there is a good time to connect.\n\nThank you,\n${sender}`],
   };
+  const [subject, message] = choices[template] || choices["follow-up"];
+  return { fromEmail: googleIntegrationState.providerEmail || state.currentUser.email || state.company.email || "", toEmail: contact.email || "", subject, message };
+}
+
+function applyLeadEmailTemplate(contact, job, template = "follow-up") {
+  if (!els.leadEmailForm) return;
+  const data = leadEmailTemplate(contact, job, template);
+  Object.entries(data).forEach(([key, value]) => {
+    const field = els.leadEmailForm.elements[key];
+    if (field) field.value = value;
+  });
 }
 
 function renderLeadEmail(contact) {
@@ -5420,11 +5614,20 @@ function renderLeadEmail(contact) {
     els.leadEmailJobSelect.disabled = !job;
   }
   if (els.leadEmailHeading) els.leadEmailHeading.textContent = job ? `${job.name} Email` : "Email for this job";
-  const data = defaultLeadEmail(contact, job);
-  Object.entries(data).forEach(([key, value]) => {
-    const field = els.leadEmailForm.elements[key];
-    if (field && !field.matches(":focus")) field.value = value;
-  });
+  const emailContext = `${contact.id}:${job?.id || ""}`;
+  if (els.leadEmailForm.dataset.emailContext !== emailContext) {
+    els.leadEmailForm.dataset.emailContext = emailContext;
+    if (els.leadEmailTemplate) els.leadEmailTemplate.value = "follow-up";
+    applyLeadEmailTemplate(contact, job, "follow-up");
+  }
+  if (!googleIntegrationState.loaded && !googleIntegrationState.loading) void refreshGoogleIntegrationStatus().then(() => renderLeadEmail(getSelectedContact()));
+  if (els.leadEmailSubmitLabel) els.leadEmailSubmitLabel.textContent = googleIntegrationState.gmailSend ? "Send with Gmail" : "Open Email";
+  const fromField = els.leadEmailForm.elements.fromEmail;
+  if (fromField) {
+    fromField.readOnly = googleIntegrationState.gmailSend;
+    fromField.title = googleIntegrationState.gmailSend ? "Messages are sent from the connected Google Workspace account" : "Email account used by your default mail application";
+    if (googleIntegrationState.gmailSend && googleIntegrationState.providerEmail) fromField.value = googleIntegrationState.providerEmail;
+  }
   if (els.leadEmailHistory) {
     const emails = [...(job?.emails || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     els.leadEmailHistory.innerHTML = emails.length
@@ -5436,13 +5639,19 @@ function renderLeadEmail(contact) {
                   <strong>${escapeHtml(email.subject || "Client email")}</strong>
                   <span>${escapeHtml(formatDateTime(email.createdAt))}</span>
                 </div>
-                <span class="status-pill">${escapeHtml(email.toEmail || "No recipient")}</span>
+                <span class="status-pill">${email.direction === "inbound" ? "Reply received" : escapeHtml(email.deliveryStatus === "sent" ? "Sent with Gmail" : email.toEmail || "No recipient")}</span>
                 <p>${nl2br(email.message || "No message saved")}</p>
+                ${email.attachmentName ? `<small><strong>Attachment:</strong> ${escapeHtml(email.attachmentName)}</small>` : ""}
                 <small>Prepared by ${escapeHtml(email.createdBy || "CRM user")}</small>
               </article>`,
           )
           .join("")
       : `<div class="empty-state">No email activity saved for ${escapeHtml(job?.name || "this job")} yet.</div>`;
+  }
+  const hasGmailThreads = Boolean((job?.emails || []).some((email) => email.provider === "gmail" && email.providerThreadId));
+  if (els.refreshLeadEmailThreadsButton) {
+    els.refreshLeadEmailThreadsButton.disabled = !hasGmailThreads || !googleIntegrationState.gmailRead;
+    els.refreshLeadEmailThreadsButton.title = !googleIntegrationState.gmailRead ? "Connect or reconnect Google Workspace to check Gmail replies" : "Check Gmail for new replies to this job";
   }
 }
 
@@ -5468,7 +5677,7 @@ function mailtoUrl(toEmail, subject, message) {
   )}`;
 }
 
-function submitLeadEmail(event) {
+async function submitLeadEmail(event) {
   event.preventDefault();
   if (!requireAction("sendEmail")) return;
   const payload = leadEmailPayload();
@@ -5477,16 +5686,37 @@ function submitLeadEmail(event) {
     showToast("Add a client email address first");
     return;
   }
-  if (payload.fromEmail) {
-    state.currentUser.email = payload.fromEmail;
+  if (!payload.subject || !payload.message) { showToast("Add an email subject and message first"); return; }
+  let providerResult = null;
+  if (googleIntegrationState.gmailSend) {
+    setSaveState(els.leadEmailSaveStatus, "Sending securely through Gmail…", "saving");
+    try {
+      const headers = await squareApiHeaders();
+      const response = await fetch("/api/integrations/google/gmail/send", {
+        method: "POST", headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ toEmail: payload.toEmail, subject: payload.subject, message: payload.message }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.sent) throw new Error(result.error || "Gmail could not send the message.");
+      providerResult = result;
+    } catch (error) {
+      setSaveState(els.leadEmailSaveStatus, error.message || "Gmail could not send the message.", "error");
+      return;
+    }
   }
   const emailRecord = normalizeJobEmail({
     id: uid("job_email"),
-    fromEmail: payload.fromEmail,
+    fromEmail: providerResult?.fromEmail || payload.fromEmail,
     toEmail: payload.toEmail,
     subject: payload.subject,
     message: payload.message,
     createdBy: state.currentUser.name || state.currentUser.email || "CRM user",
+    createdAt: providerResult?.sentAt || new Date().toISOString(),
+    provider: providerResult ? "gmail" : "",
+    providerMessageId: providerResult?.messageId || "",
+    providerThreadId: providerResult?.threadId || "",
+    deliveryStatus: providerResult ? "sent" : "draft_opened",
   });
   updateContact(payload.contact.id, (current) => ({
     ...current,
@@ -5497,11 +5727,11 @@ function submitLeadEmail(event) {
   const emailUpdateContact = addContactUpdate(payload.contact.id, {
     author: state.currentUser.name || "Local user",
     jobId: payload.job.id,
-    message: `Opened email draft: ${payload.subject || "Client email"}.`,
+    message: `${providerResult ? "Sent Gmail message" : "Opened email draft"}: ${payload.subject || "Client email"}.`,
   });
   saveState({ localOnly: true });
   renderLeadEmail(getSelectedContact());
-  setSaveState(els.leadEmailSaveStatus, "Email saved to this job. Syncing in the background...", "saving");
+  setSaveState(els.leadEmailSaveStatus, `${providerResult ? "Gmail sent" : "Email draft opened"}. Saving activity to this job…`, "saving");
   const emailSave = canUseCloudSync()
     ? persistLeadJobRecord(payload.job.id, emailUpdateContact?.updates?.[0]?.id || "")
     : Promise.resolve(true);
@@ -5513,15 +5743,52 @@ function submitLeadEmail(event) {
         return;
       }
       queueCloudSave();
-      setSaveState(els.leadEmailSaveStatus, "Email activity saved to this job.", "success");
+      setSaveState(els.leadEmailSaveStatus, `${providerResult ? "Gmail sent and" : "Email activity"} saved to this job.`, "success");
     })
     .catch((error) => {
       console.warn("Job email sync failed", error);
       queueDurableRecordsSave();
       setSaveState(els.leadEmailSaveStatus, "Email is saved locally and will retry shared CRM sync.", "error");
     });
-  window.location.href = mailtoUrl(payload.toEmail, payload.subject, payload.message);
-  showToast(`Email draft opened and saved to ${payload.job.name}`);
+  if (!providerResult) window.location.href = mailtoUrl(payload.toEmail, payload.subject, payload.message);
+  showToast(`${providerResult ? "Email sent from Gmail" : "Email draft opened"} and saved to ${payload.job.name}`);
+}
+
+async function refreshLeadEmailThreads() {
+  if (!requireAction("sendEmail")) return;
+  const contact = getSelectedContact();
+  const job = contact && selectedLeadJob(contact);
+  if (!contact || !job) return;
+  const threadIds = [...new Set((job.emails || []).filter((email) => email.provider === "gmail" && email.providerThreadId).map((email) => email.providerThreadId))];
+  if (!threadIds.length) { showToast("Send an email with Gmail before checking replies"); return; }
+  setSaveState(els.leadEmailSaveStatus, "Checking Gmail for replies…", "saving");
+  if (els.refreshLeadEmailThreadsButton) els.refreshLeadEmailThreadsButton.disabled = true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/gmail/threads", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ threadIds }), signal: AbortSignal.timeout(30000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.synced) throw new Error(result.error || "Gmail replies could not be checked.");
+    const known = new Set((job.emails || []).map((email) => email.providerMessageId).filter(Boolean));
+    const additions = result.threads.flatMap((thread) => thread.messages || []).filter((message) => !known.has(message.messageId)).map((message) => normalizeJobEmail({
+      id: uid("job_email"), fromEmail: message.fromEmail, toEmail: message.toEmail, subject: message.subject, message: message.message,
+      createdAt: message.createdAt, createdBy: message.direction === "inbound" ? "Customer reply" : state.currentUser.name || "CRM user",
+      provider: "gmail", providerMessageId: message.messageId, providerThreadId: message.threadId, direction: message.direction, deliveryStatus: message.direction === "inbound" ? "received" : "sent",
+    }));
+    if (additions.length) {
+      updateContact(contact.id, (current) => ({ ...current, jobs: contactJobs(current).map((item) => item.id === job.id ? { ...item, emails: [...additions, ...(item.emails || [])] } : item) }));
+      const saved = canUseCloudSync() ? await persistLeadJobRecord(job.id, "") : true;
+      if (!saved) queueDurableRecordsSave();
+      saveState({ localOnly: true });
+      renderLeadEmail(getSelectedContact());
+    }
+    setSaveState(els.leadEmailSaveStatus, additions.length ? `${additions.length} new Gmail message${additions.length === 1 ? "" : "s"} saved to this job.` : "No new Gmail replies found.", "success");
+  } catch (error) {
+    setSaveState(els.leadEmailSaveStatus, error.message || "Gmail replies could not be checked.", "error");
+  } finally {
+    renderLeadEmail(getSelectedContact());
+  }
 }
 
 async function copyLeadEmail() {
@@ -5537,7 +5804,103 @@ async function copyLeadEmail() {
   }
 }
 
+function supportsZohoSmartDocument(record) {
+  return number(record?.size) > 0 && number(record.size) <= 25 * 1024 * 1024 &&
+    /\.(pdf|jpe?g|png|docx?|html?|tex|txt|sxw|odt|rtf|xlsx?|ods)$/i.test(record?.name || "");
+}
+
+function supportsNativeSmartDocument(record) {
+  return record?.kind !== "photo" && number(record?.size) > 0 && number(record.size) <= 25 * 1024 * 1024 && Boolean(record.storagePath || record.dataUrl);
+}
+
+function nativeSmartDocumentButton(record) {
+  const supported = supportsNativeSmartDocument(record);
+  const status = record.smartDocument?.status || "";
+  const label = status === "completed" ? "Open Completed Doc" : status ? "Continue Smart Doc" : "Create Smart Doc";
+  const title = supported
+    ? "Create, fill, save, and email this document without leaving JobCrest"
+    : "Finish saving this file to shared storage before creating a Smart Document";
+  return `<button class="secondary-button smart-document-button" type="button" data-action="open-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}"><span aria-hidden="true" data-icon="edit"></span>${label}</button>`;
+}
+
+function zohoSmartDocumentButton(record) {
+  // Zoho Sign remains intentionally dormant until its separate rollout is approved.
+  if (!zohoIntegrationState.configured) return "";
+  const supported = supportsZohoSmartDocument(record);
+  const linked = Boolean(record?.zohoSign?.requestId);
+  const title = supported
+    ? linked ? "Continue preparing this Smart Document in Zoho Sign" : "Turn this file into a Zoho Sign Smart Document"
+    : "Zoho Sign supports common PDF, image, document, and spreadsheet files up to 25 MB";
+  return `
+    <button class="secondary-button zoho-smart-button" type="button" data-action="prepare-zoho-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}">
+      <span aria-hidden="true" data-icon="send"></span>${linked ? "Continue Zoho Sign" : "Zoho Sign"}
+    </button>`;
+}
+
+function googleDriveDocumentButton(record) {
+  const currentCopy = record.googleDrive?.fileId && record.googleDrive.versionNumber === record.versionNumber;
+  if (currentCopy) {
+    return `<a class="secondary-button" href="${escapeHtml(record.googleDrive.webViewLink)}" target="_blank" rel="noopener noreferrer" title="Open the company Drive copy"><span aria-hidden="true" data-icon="folder"></span>Drive</a>`;
+  }
+  if (!googleDriveState.configured) return "";
+  return `<button class="secondary-button" type="button" data-action="sync-google-drive-document" data-document-id="${escapeHtml(record.id)}" title="Copy this saved CRM file to the company Drive"><span aria-hidden="true" data-icon="upload"></span>Copy to Drive</button>`;
+}
+
+async function refreshGoogleDriveStatus(force = false) {
+  if (googleDriveState.loading || (googleDriveState.loaded && !force)) return googleDriveState;
+  googleDriveState.loading = true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/drive/status", { headers, signal: AbortSignal.timeout(15000) });
+    const result = await response.json().catch(() => ({}));
+    googleDriveState = { loaded: true, loading: false, configured: response.ok && result.configured === true };
+  } catch {
+    googleDriveState = { loaded: true, loading: false, configured: false };
+  }
+  if (els.googleDriveIntegrationStatus) {
+    els.googleDriveIntegrationStatus.textContent = googleDriveState.configured
+      ? "Company Shared Drive is ready. Saved documents and photos are copied into lead, project, and category folders."
+      : "Company Shared Drive setup is required before automatic document copies begin.";
+  }
+  return googleDriveState;
+}
+
+async function syncDocumentsToGoogleDrive(documentIds, { statusElement = null, force = false } = {}) {
+  if (!canUseCloudSync() || !documentIds?.length) return { synced: 0, skipped: true };
+  const status = await refreshGoogleDriveStatus(force);
+  if (!status.configured) return { synced: 0, skipped: true };
+  if (statusElement) setSaveState(statusElement, "Saved to JobCrest. Copying to the company Drive in the background…", "saving");
+  const headers = await squareApiHeaders();
+  const failures = [];
+  let synced = 0;
+  for (let offset = 0; offset < documentIds.length; offset += 2) {
+    const batch = documentIds.slice(offset, offset + 2);
+    const results = await Promise.allSettled(batch.map(async (documentId) => {
+      const response = await fetch("/api/integrations/google/drive/document", {
+        method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ documentId }), signal: AbortSignal.timeout(90000),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.synced) throw new Error(result.error || "Drive copy failed.");
+      return result;
+    }));
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") synced += 1;
+      else failures.push({ documentId: batch[index], error: result.reason });
+    });
+  }
+  if (synced) await reloadDurableRecords({ showUpdateToast: false });
+  render();
+  if (statusElement) {
+    setSaveState(statusElement, failures.length
+      ? `${synced} Drive cop${synced === 1 ? "y" : "ies"} completed. ${failures.length} will need to be retried.`
+      : `${synced} file${synced === 1 ? "" : "s"} saved to JobCrest and the company Drive.`, failures.length ? "error" : "success");
+  }
+  if (failures.length) console.warn("Google Drive copies failed", failures);
+  return { synced, failures };
+}
+
 function renderLeadDocuments(contact) {
+  if (canUseCloudSync() && !googleDriveState.loaded && !googleDriveState.loading) void refreshGoogleDriveStatus().then(() => renderLeadDocuments(getSelectedContact() || contact));
   const selectedJob = selectedLeadJob(contact);
   const configuredCategories = state.company.documentCategories || [];
   const visibleCategories = configuredCategories.filter(
@@ -5611,9 +5974,15 @@ function renderLeadDocuments(contact) {
                                 <strong>${escapeHtml(document.name)}</strong>
                                 <span>${escapeHtml(formatBytes(document.size))} · ${escapeHtml(document.type)} · Version ${escapeHtml(document.versionNumber)} · ${escapeHtml(formatDateTime(document.uploadedAt))}</span>
                                 <span>Uploaded by ${escapeHtml(document.uploadedBy)}</span>
+                                ${document.smartDocument ? `<span class="smart-document-meta">Smart Document · ${escapeHtml(document.smartDocument.status)}${document.smartDocument.lastEmailedTo ? ` · Emailed to ${escapeHtml(document.smartDocument.lastEmailedTo)}` : ""}</span>` : ""}
+                                ${document.zohoSign?.requestId ? `<span class="zoho-smart-meta">Zoho Sign ${escapeHtml(document.zohoSign.status || "draft")} · ${escapeHtml(document.zohoSign.recipientEmail || "recipient pending")}</span>` : ""}
+                                ${document.googleDrive?.fileId ? `<span class="zoho-smart-meta">Company Drive copy · Version ${escapeHtml(document.googleDrive.versionNumber)}</span>` : ""}
                               </div>
                               <div class="row-actions">
                                 <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="download"></span>Download</button>
+                                ${nativeSmartDocumentButton(document)}
+                                ${zohoSmartDocumentButton(document)}
+                                ${googleDriveDocumentButton(document)}
                                 <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(document.name)}" data-action="rename-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="edit"></span></button>
                                 <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(document.name)}" data-action="remove-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="trash"></span></button>
                               </div>
@@ -5691,6 +6060,7 @@ async function hydrateLeadPhotoPreviews(contactId, jobId) {
 }
 
 function renderLeadPhotos(contact) {
+  if (canUseCloudSync() && !googleDriveState.loaded && !googleDriveState.loading) void refreshGoogleDriveStatus().then(() => renderLeadPhotos(getSelectedContact() || contact));
   if (!els.leadPhotosGrid || !els.leadPhotoJobSelect) return;
   const jobs = contactJobs(contact);
   if (!jobs.some((job) => job.id === state.selectedLeadJobId)) {
@@ -5729,8 +6099,10 @@ function renderLeadPhotos(contact) {
                     <strong>${escapeHtml(photo.name)}</strong>
                     <span>${escapeHtml(formatBytes(photo.size))} · ${escapeHtml(formatDateTime(photo.uploadedAt))}</span>
                     <span>Uploaded by ${escapeHtml(photo.uploadedBy)}</span>
+                    ${photo.googleDrive?.fileId ? `<span class="zoho-smart-meta">Company Drive copy · Version ${escapeHtml(photo.googleDrive.versionNumber)}</span>` : ""}
                   </div>
                   <div class="row-actions">
+                    ${googleDriveDocumentButton(photo)}
                     <button class="mini-button" type="button" title="Rename photo" aria-label="Rename ${escapeHtml(photo.name)}" data-action="rename-document" data-document-id="${escapeHtml(photo.id)}"><span aria-hidden="true" data-icon="edit"></span></button>
                     <button class="mini-button" type="button" title="Remove photo" aria-label="Remove ${escapeHtml(photo.name)}" data-action="remove-document" data-document-id="${escapeHtml(photo.id)}"><span aria-hidden="true" data-icon="trash"></span></button>
                   </div>
@@ -6121,6 +6493,7 @@ async function uploadLeadDocuments(files) {
       return false;
     }
     queueCloudSave();
+    void syncDocumentsToGoogleDrive(documents.map((document) => document.id), { statusElement: els.leadDocumentUploadStatus });
     setSaveState(
       els.leadDocumentUploadStatus,
       canUseCloudSync()
@@ -6129,7 +6502,13 @@ async function uploadLeadDocuments(files) {
       "success",
     );
     showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
-    return reportUploadFailures(failures, els.leadDocumentUploadStatus);
+    const allSaved = reportUploadFailures(failures, els.leadDocumentUploadStatus);
+    if (els.leadDocumentSmartAfterUpload?.checked) {
+      els.leadDocumentSmartAfterUpload.checked = false;
+      if (documents.length === 1) openZohoSignDialog(documents[0]);
+      else showToast("Use the Smart Doc button beside each saved file when uploading multiple documents.");
+    }
+    return allSaved;
   } finally {
     els.uploadLeadDocumentButton.disabled = false;
   }
@@ -6223,6 +6602,7 @@ async function uploadLeadPhotos(files) {
     }
 
     queueCloudSave();
+    void syncDocumentsToGoogleDrive(photos.map((photo) => photo.id), { statusElement: els.leadPhotoUploadStatus });
     setSaveState(
       els.leadPhotoUploadStatus,
       `${photos.length} photo${photos.length === 1 ? "" : "s"} saved only to ${job.name}.`,
@@ -6324,6 +6704,7 @@ async function submitLeadConversation(event) {
 
 function renderCompanyDocuments() {
   if (!els.companyDocumentsList) return;
+  if (canUseCloudSync() && !googleDriveState.loaded && !googleDriveState.loading) void refreshGoogleDriveStatus().then(renderCompanyDocuments);
   const documents = [...state.companyDocuments].sort(
     (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
   );
@@ -6336,12 +6717,18 @@ function renderCompanyDocuments() {
             <span class="document-category">${escapeHtml(document.category || "Other")}</span>
             <strong>${escapeHtml(document.name)}</strong>
             <span>${escapeHtml(formatBytes(document.size))} - ${escapeHtml(formatDateTime(document.uploadedAt))}</span>
+            ${document.smartDocument ? `<span class="smart-document-meta">Smart Document · ${escapeHtml(document.smartDocument.status)}${document.smartDocument.lastEmailedTo ? ` · Emailed to ${escapeHtml(document.smartDocument.lastEmailedTo)}` : ""}</span>` : ""}
+            ${document.zohoSign?.requestId ? `<span class="zoho-smart-meta">Zoho Sign ${escapeHtml(document.zohoSign.status || "draft")} · ${escapeHtml(document.zohoSign.recipientEmail || "recipient pending")}</span>` : ""}
+            ${document.googleDrive?.fileId ? `<span class="zoho-smart-meta">Company Drive copy · Version ${escapeHtml(document.googleDrive.versionNumber)}</span>` : ""}
           </div>
           <div class="row-actions">
             <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}">
               <span aria-hidden="true" data-icon="download"></span>
               Download
             </button>
+            ${nativeSmartDocumentButton(document)}
+            ${zohoSmartDocumentButton(document)}
+            ${googleDriveDocumentButton(document)}
             <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(
               document.name,
             )}" data-action="rename-company-document" data-document-id="${document.id}">
@@ -6423,6 +6810,7 @@ async function uploadCompanyDocuments(files) {
     }
 
     queueCloudSave();
+    void syncDocumentsToGoogleDrive(documents.map((document) => document.id), { statusElement: els.companyDocumentUploadStatus });
     setSaveState(
       els.companyDocumentUploadStatus,
       canUseCloudSync()
@@ -6431,7 +6819,13 @@ async function uploadCompanyDocuments(files) {
       "success",
     );
     showToast(`${documents.length} company document${documents.length === 1 ? "" : "s"} saved`);
-    return reportUploadFailures(failures, els.companyDocumentUploadStatus);
+    const allSaved = reportUploadFailures(failures, els.companyDocumentUploadStatus);
+    if (els.companyDocumentSmartAfterUpload?.checked) {
+      els.companyDocumentSmartAfterUpload.checked = false;
+      if (documents.length === 1) openZohoSignDialog(documents[0]);
+      else showToast("Use the Smart Doc button beside each saved file when uploading multiple documents.");
+    }
+    return allSaved;
   } finally {
     els.uploadCompanyDocumentButton.disabled = false;
   }
@@ -6462,6 +6856,274 @@ function renameCompanyDocument(documentId) {
   saveState();
   renderCompanyDocuments();
   showToast("Company document renamed");
+}
+
+function findManagedDocument(documentId) {
+  const lead = state.contacts.find((contact) => (contact.documents || []).some((record) => record.id === documentId));
+  const record = lead?.documents?.find((item) => item.id === documentId) || state.companyDocuments.find((item) => item.id === documentId);
+  return { record, lead };
+}
+
+function defaultSmartDocumentFields(lead) {
+  return [
+    { id: uid("smart-customer"), label: "Customer Name", type: "text", required: true, sourceName: "Customer Name", placeholder: "Customer name" },
+    { id: uid("smart-date"), label: "Date", type: "date", required: true, sourceName: "Date", placeholder: "" },
+    { id: uid("smart-notes"), label: "Representative Notes", type: "textarea", required: false, sourceName: "Notes", placeholder: "Enter document details" },
+  ].map((field, index) => ({ ...field, defaultValue: index === 0 ? lead?.name || "" : index === 1 ? todayISO() : "" }));
+}
+
+function smartDocumentFieldRows() {
+  return [...(els.smartDocumentFields?.querySelectorAll("[data-smart-field-id]") || [])].map((row) => ({
+    id: row.dataset.smartFieldId,
+    label: row.querySelector('[name="fieldLabel"]')?.value.trim() || "",
+    type: row.querySelector('[name="fieldType"]')?.value || "text",
+    required: Boolean(row.querySelector('[name="fieldRequired"]')?.checked),
+    sourceName: row.querySelector('[name="fieldSourceName"]')?.value.trim() || "",
+    placeholder: "",
+  }));
+}
+
+function smartDocumentResponseValues() {
+  return Object.fromEntries([...(els.smartDocumentResponses?.querySelectorAll("[data-smart-response-id]") || [])].map((control) => [
+    control.dataset.smartResponseId,
+    control.type === "checkbox" ? control.checked : control.value,
+  ]));
+}
+
+function smartDocumentInput(field, value) {
+  const common = `data-smart-response-id="${escapeHtml(field.id)}" ${field.required ? "required" : ""}`;
+  if (field.type === "textarea") return `<textarea ${common} rows="4" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}">${escapeHtml(value || "")}</textarea>`;
+  if (field.type === "checkbox") return `<span class="checkbox-input"><input ${common} type="checkbox" ${value ? "checked" : ""} /><span>Yes, confirmed</span></span>`;
+  const inputType = ["date", "number", "email"].includes(field.type) ? field.type : "text";
+  return `<input ${common} type="${inputType}" value="${escapeHtml(value || "")}" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}" ${inputType === "number" ? 'step="any"' : ""} />`;
+}
+
+function renderSmartDocumentEditor(fields, responses = {}) {
+  const safeFields = fields.length ? fields.slice(0, 80) : defaultSmartDocumentFields(findManagedDocument(els.smartDocumentForm?.elements.documentId.value).lead);
+  els.smartDocumentFields.innerHTML = safeFields.map((field) => `
+    <div class="smart-document-field-row" data-smart-field-id="${escapeHtml(field.id)}">
+      <input name="fieldLabel" value="${escapeHtml(field.label)}" maxlength="120" aria-label="Field label" placeholder="Field label" />
+      <select name="fieldType" aria-label="Field type">
+        ${[["text","Text"],["textarea","Long text"],["date","Date"],["number","Number"],["email","Email"],["checkbox","Checkbox"]].map(([value, label]) => `<option value="${value}" ${field.type === value ? "selected" : ""}>${label}</option>`).join("")}
+      </select>
+      <label class="smart-document-required"><input name="fieldRequired" type="checkbox" ${field.required ? "checked" : ""} />Required</label>
+      <button class="mini-button" type="button" data-remove-smart-field="${escapeHtml(field.id)}" aria-label="Remove ${escapeHtml(field.label)}"><span aria-hidden="true" data-icon="trash"></span></button>
+      <input class="smart-document-source-name" name="fieldSourceName" value="${escapeHtml(field.sourceName || "")}" maxlength="200" aria-label="Matching PDF field name" placeholder="Matching PDF field name (optional)" />
+    </div>`).join("");
+  els.smartDocumentResponses.innerHTML = safeFields.map((field) => {
+    const initial = Object.prototype.hasOwnProperty.call(responses, field.id) ? responses[field.id] : field.defaultValue || (field.type === "checkbox" ? false : "");
+    return `<div class="smart-document-response"><label><span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>${smartDocumentInput(field, initial)}</label></div>`;
+  }).join("");
+  hydrateIcons(els.smartDocumentFields);
+}
+
+function refreshSmartDocumentResponses() {
+  const responses = smartDocumentResponseValues();
+  const fields = smartDocumentFieldRows();
+  renderSmartDocumentEditor(fields, responses);
+}
+
+async function smartDocumentPreviewUrl(record) {
+  const completedPath = record.smartDocument?.completedFile?.storagePath || "";
+  const storagePath = completedPath || record.storagePath || "";
+  if (storagePath && cloudClient?.storage) {
+    const { data, error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).createSignedUrl(storagePath, 900);
+    if (error) throw error;
+    return data?.signedUrl || "";
+  }
+  if (record.dataUrl && /^(?:data:application\/pdf|data:image\/|data:text\/plain)/i.test(record.dataUrl)) return record.dataUrl;
+  return "";
+}
+
+async function openSmartDocumentDialog(record) {
+  if (!record || !supportsNativeSmartDocument(record) || !els.smartDocumentDialog) return showToast("Finish saving this file before creating a Smart Document.");
+  const { lead } = findManagedDocument(record.id);
+  const job = lead ? contactJobs(lead).find((item) => item.id === record.jobId) : null;
+  const smart = record.smartDocument;
+  els.smartDocumentForm.reset();
+  els.smartDocumentForm.elements.documentId.value = record.id;
+  els.smartDocumentTitle.textContent = smart ? record.name : `Create Smart Document from ${record.name}`;
+  els.smartDocumentMeta.textContent = [lead?.name, job?.name, smart ? `${smart.status} · revision ${smart.revision}` : "New Smart Document"].filter(Boolean).join(" · ");
+  const fields = smart?.fields?.length ? smart.fields : defaultSmartDocumentFields(lead);
+  const responses = smart?.responses || Object.fromEntries(fields.filter((field) => field.defaultValue !== undefined).map((field) => [field.id, field.defaultValue]));
+  renderSmartDocumentEditor(fields, responses);
+  els.smartDocumentForm.elements.emailTo.value = smart?.lastEmailedTo || lead?.email || "";
+  els.smartDocumentForm.elements.emailSubject.value = `${state.company.name || "JobCrest"} - ${record.name.replace(/\.[^.]+$/, "")}`;
+  els.smartDocumentForm.elements.emailMessage.value = `Hello ${lead?.name || ""},\n\nAttached is the completed ${record.name.replace(/\.[^.]+$/, "")} for ${job?.name || "your project"}.\n\nThank you.`;
+  const completed = smart?.status === "completed" && smart.completedFile?.storagePath;
+  els.smartDocumentEmailPanel.classList.toggle("hidden", !completed);
+  els.emailSmartDocument.classList.toggle("hidden", !completed);
+  setSaveState(els.smartDocumentSaveStatus, "", "");
+  if (smartDocumentPreviewObjectUrl) URL.revokeObjectURL(smartDocumentPreviewObjectUrl);
+  smartDocumentPreviewObjectUrl = "";
+  els.smartDocumentPreview.removeAttribute("src");
+  els.smartDocumentPreview.classList.remove("hidden");
+  els.smartDocumentPreviewFallback.classList.add("hidden");
+  els.smartDocumentDialog.showModal();
+  try {
+    const previewUrl = await smartDocumentPreviewUrl(record);
+    if (!previewUrl || !/pdf|image|text\/plain/i.test(`${record.type} ${smart?.completedFile?.type || ""}`)) throw new Error("preview_unavailable");
+    els.smartDocumentPreview.src = previewUrl;
+  } catch {
+    els.smartDocumentPreview.classList.add("hidden");
+    els.smartDocumentPreviewFallback.classList.remove("hidden");
+  }
+}
+
+function smartDocumentPayloadFromEditor(status) {
+  const fields = smartDocumentFieldRows();
+  if (!fields.length || fields.some((field) => !field.label)) throw new Error("Add a label for every Smart Document field.");
+  const ids = new Set(fields.map((field) => field.id));
+  if (ids.size !== fields.length) throw new Error("Each Smart Document field must be unique.");
+  const responses = smartDocumentResponseValues();
+  if (status === "completed") {
+    const missing = fields.find((field) => field.required && (field.type === "checkbox" ? responses[field.id] !== true : !String(responses[field.id] || "").trim()));
+    if (missing) throw new Error(`Complete the required field: ${missing.label}`);
+  }
+  return { documentId: els.smartDocumentForm.elements.documentId.value, fields, responses, status };
+}
+
+function setSmartDocumentButtonsDisabled(disabled) {
+  [els.addSmartDocumentField, els.saveSmartDocumentTemplate, els.saveSmartDocumentDraft, els.completeSmartDocument, els.emailSmartDocument]
+    .forEach((button) => { if (button) button.disabled = disabled; });
+}
+
+async function saveNativeSmartDocument(status) {
+  if (!requireAction("manageDocuments")) return false;
+  let payload;
+  try { payload = smartDocumentPayloadFromEditor(status); }
+  catch (error) { setSaveState(els.smartDocumentSaveStatus, error.message, "error"); return false; }
+  setSmartDocumentButtonsDisabled(true);
+  setSaveState(els.smartDocumentSaveStatus, status === "completed" ? "Creating and securely saving the completed PDF…" : "Saving Smart Document…", "saving");
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/smart-documents/save", { method: "POST", headers, signal: AbortSignal.timeout(90000), body: JSON.stringify(payload) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.saved !== true) throw new Error(result.error || "The Smart Document could not be saved.");
+    await reloadDurableRecords({ showUpdateToast: false });
+    const { record } = findManagedDocument(payload.documentId);
+    if (record) {
+      els.smartDocumentMeta.textContent = `${record.name} · ${result.status} · revision ${result.revision}`;
+      const completed = result.status === "completed";
+      els.smartDocumentEmailPanel.classList.toggle("hidden", !completed);
+      els.emailSmartDocument.classList.toggle("hidden", !completed);
+      if (completed) {
+        const previewUrl = await smartDocumentPreviewUrl(record).catch(() => "");
+        if (previewUrl) { els.smartDocumentPreview.classList.remove("hidden"); els.smartDocumentPreviewFallback.classList.add("hidden"); els.smartDocumentPreview.src = previewUrl; }
+      }
+    }
+    setSaveState(els.smartDocumentSaveStatus, status === "completed" ? "Completed PDF saved to this job. It is ready to email." : status === "template" ? "Smart Document fields saved." : "Draft responses saved.", "success");
+    return true;
+  } catch (error) {
+    setSaveState(els.smartDocumentSaveStatus, error.message || "The Smart Document could not be saved.", "error");
+    return false;
+  } finally { setSmartDocumentButtonsDisabled(false); }
+}
+
+async function emailNativeSmartDocument() {
+  if (!requireAction("sendEmail")) return;
+  const documentId = els.smartDocumentForm.elements.documentId.value;
+  const payload = {
+    documentId,
+    toEmail: els.smartDocumentForm.elements.emailTo.value.trim(),
+    subject: els.smartDocumentForm.elements.emailSubject.value.trim(),
+    message: els.smartDocumentForm.elements.emailMessage.value.trim(),
+  };
+  if (!payload.toEmail || !payload.subject || !payload.message) return setSaveState(els.smartDocumentSaveStatus, "Enter the recipient, subject, and message before sending.", "error");
+  setSmartDocumentButtonsDisabled(true);
+  setSaveState(els.smartDocumentSaveStatus, "Sending the completed PDF from your connected Gmail account…", "saving");
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/smart-documents/email", { method: "POST", headers, signal: AbortSignal.timeout(60000), body: JSON.stringify(payload) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.sent !== true) throw new Error(result.error || "The Smart Document could not be emailed.");
+    const { record, lead } = findManagedDocument(documentId);
+    if (lead && record?.jobId) {
+      updateContact(lead.id, (current) => ({ ...current, jobs: contactJobs(current).map((job) => job.id === record.jobId ? { ...job, emails: [normalizeJobEmail({
+        fromEmail: result.fromEmail, toEmail: payload.toEmail, subject: payload.subject, message: payload.message,
+        provider: "gmail", providerMessageId: result.messageId, providerThreadId: result.threadId,
+        deliveryStatus: "sent", attachmentName: record.smartDocument?.completedFile?.name || "Completed Smart Document.pdf",
+        createdBy: state.currentUser.name || state.currentUser.email,
+      }), ...(job.emails || [])] } : job) }));
+      saveState({ localOnly: true });
+      await persistDurableRecordNow("contact", lead.id, (confirmed, expected) => durableRecordDataMatches(confirmed, expected), { syncLegacy: false });
+    }
+    await reloadDurableRecords({ showUpdateToast: false });
+    setSaveState(els.smartDocumentSaveStatus, `Completed PDF emailed to ${result.toEmail}.`, "success");
+    render();
+  } catch (error) {
+    setSaveState(els.smartDocumentSaveStatus, error.message || "The Smart Document could not be emailed.", "error");
+  } finally { setSmartDocumentButtonsDisabled(false); }
+}
+
+function closeSmartDocumentDialog() {
+  els.smartDocumentDialog?.close();
+  els.smartDocumentPreview?.removeAttribute("src");
+  if (smartDocumentPreviewObjectUrl) URL.revokeObjectURL(smartDocumentPreviewObjectUrl);
+  smartDocumentPreviewObjectUrl = "";
+}
+
+function openZohoSignDialog(record) {
+  if (!record || !supportsZohoSmartDocument(record)) {
+    showToast("Zoho Sign supports common PDF, image, document, and spreadsheet files up to 25 MB.");
+    return;
+  }
+  if (!els.zohoSignDialog || !els.zohoSignForm) return;
+  const { lead } = findManagedDocument(record.id);
+  const form = els.zohoSignForm;
+  form.reset();
+  form.elements.documentId.value = record.id;
+  form.elements.recipientName.value = lead?.name || "";
+  form.elements.recipientEmail.value = record.zohoSign?.recipientEmail || lead?.email || "";
+  form.elements.expirationDays.value = "10";
+  form.elements.notes.value = "Please review and sign this document.";
+  if (els.zohoSignDocumentName) els.zohoSignDocumentName.textContent = `${record.name} · ${formatBytes(record.size)}`;
+  if (els.prepareZohoSignButton) els.prepareZohoSignButton.textContent = record.zohoSign?.requestId ? "Continue in Zoho Sign" : "Create Smart Document";
+  setSaveState(els.zohoSignSaveStatus, "", "");
+  els.zohoSignDialog.showModal();
+}
+
+async function prepareZohoSmartDocument(event) {
+  event.preventDefault();
+  if (!requireAction("manageDocuments")) return;
+  const formData = new FormData(els.zohoSignForm);
+  const documentId = String(formData.get("documentId") || "");
+  const { record } = findManagedDocument(documentId);
+  if (!record) return showToast("That CRM document could not be found.");
+  if (!canUseCloudSync() || !record.storagePath) {
+    setSaveState(els.zohoSignSaveStatus, "Finish saving this file to shared storage before preparing it in Zoho Sign.", "error");
+    return;
+  }
+  const editorWindow = window.open("about:blank", "_blank");
+  if (editorWindow) editorWindow.opener = null;
+  if (els.prepareZohoSignButton) els.prepareZohoSignButton.disabled = true;
+  setSaveState(els.zohoSignSaveStatus, record.zohoSign?.requestId ? "Opening the saved Zoho Sign draft…" : "Creating a secure Zoho Sign draft…", "saving");
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/zoho/sign/request", {
+      method: "POST", headers, signal: AbortSignal.timeout(60000),
+      body: JSON.stringify({
+        documentId, recipientName: String(formData.get("recipientName") || "").trim(),
+        recipientEmail: String(formData.get("recipientEmail") || "").trim(),
+        expirationDays: number(formData.get("expirationDays")), notes: String(formData.get("notes") || "").trim(),
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result?.prepared !== true || !/^https:\/\/(?:sign\.zoho\.(?:com|eu|in|jp|com\.au|sa|uk|sg|ae)|sign\.zohocloud\.ca)\/embedsend\?/.test(result.sendUrl || "")) {
+      throw new Error(result?.error || "Zoho Sign could not prepare this document.");
+    }
+    await reloadDurableRecords({ showUpdateToast: false });
+    render();
+    els.zohoSignDialog.close();
+    if (editorWindow) editorWindow.location.replace(result.sendUrl);
+    else window.open(result.sendUrl, "_blank", "noopener");
+    showToast(result.created ? "Smart Document created. Add fields in Zoho Sign before sending." : "Zoho Sign draft reopened.");
+  } catch (error) {
+    editorWindow?.close();
+    setSaveState(els.zohoSignSaveStatus, error.message || "Zoho Sign could not prepare this document.", "error");
+  } finally {
+    if (els.prepareZohoSignButton) els.prepareZohoSignButton.disabled = false;
+  }
 }
 
 async function uploadCompanyLogo(file) {
@@ -6600,19 +7262,21 @@ function renderCalendarFormOptions() {
 
 function renderTaskCard(task, options = {}) {
   const contact = getContact(task.contactId);
-  const calendarUrl = googleCalendarUrl(task);
+  const calendarUrl = task.googleEventUrl || googleCalendarUrl(task);
   return `
     <article class="task-card">
       <div>
         <strong>${escapeHtml(task.title)}</strong>
         <span>${escapeHtml(task.rep)} - ${escapeHtml(formatDateTime(task.dueAt))}</span>
         ${contact ? `<span>Related lead: ${escapeHtml(contact.name)}</span>` : ""}
+        ${taskGoogleSyncLabel(task)}
         ${task.notes && !options.compact ? `<p>${nl2br(task.notes)}</p>` : ""}
+        ${task.googleSyncError && !options.compact ? `<p class="field-error">${escapeHtml(task.googleSyncError)}</p>` : ""}
       </div>
       <div class="row-actions">
         <a class="secondary-button" href="${escapeHtml(calendarUrl)}" target="_blank" rel="noopener">
           <span aria-hidden="true" data-icon="calendar"></span>
-          Google Calendar
+          ${task.googleEventUrl ? "Open in Google Calendar" : "Google Calendar"}
         </a>
         ${
           options.compact
@@ -6632,13 +7296,20 @@ function renderTaskCard(task, options = {}) {
   `;
 }
 
-function saveCalendarTask(event) {
+async function saveCalendarTask(event) {
   event.preventDefault();
   if (!requireAction("manageTasks")) return;
   const formData = new FormData(els.calendarTaskForm);
   const taskId = formData.get("taskId");
   const existingTask = state.calendarTasks.find((task) => task.id === taskId);
+  const contact = getContact(formData.get("contactId"));
+  const owner = contact?.ownerUserId
+    ? { userId: contact.ownerUserId, email: contact.ownerEmail, name: contact.ownerName }
+    : currentOwner();
+  const ownerChanged = Boolean(existingTask?.googleEventId && existingTask.ownerEmail && existingTask.ownerEmail !== owner.email);
+  if (ownerChanged && !(await removeCalendarTaskFromGoogle(existingTask))) return;
   const task = normalizeCalendarTask({
+    ...(existingTask || {}),
     id: taskId || uid("task"),
     title: formData.get("title").trim(),
     rep: formData.get("rep").trim(),
@@ -6649,6 +7320,12 @@ function saveCalendarTask(event) {
     notes: formData.get("notes").trim(),
     createdAt: existingTask?.createdAt || new Date().toISOString(),
     completed: existingTask?.completed || false,
+    ownerUserId: owner.userId || "",
+    ownerEmail: owner.email || "",
+    ownerName: owner.name || "",
+    googleSyncStatus: "pending",
+    googleSyncError: "",
+    ...(ownerChanged ? { googleEventId: "", googleEventUrl: "", googleSyncedAt: "" } : {}),
   });
   if (existingTask) {
     state.calendarTasks = state.calendarTasks.map((item) => (item.id === task.id ? task : item));
@@ -6658,11 +7335,12 @@ function saveCalendarTask(event) {
   saveState();
   els.calendarTaskForm.reset();
   render();
-  showToast(
-    existingTask
-      ? "Task updated. Use Google Calendar to update the rep calendar."
-      : "Task saved. Use Google Calendar to add it to the rep calendar.",
-  );
+  showToast(existingTask ? "Task updated. Syncing Google Calendar…" : "Task saved. Syncing Google Calendar…");
+  const synced = await syncCalendarTaskToGoogle(task);
+  if (synced) showToast(existingTask ? "Task and Google Calendar event updated" : "Task added to the CRM and Google Calendar");
+  else if (state.calendarTasks.find((item) => item.id === task.id)?.googleSyncStatus === "not_connected") {
+    showToast("Task saved in the CRM. The assigned rep must connect Google Calendar.");
+  } else showToast("Task saved in the CRM. Google Calendar sync needs attention.");
 }
 
 function editCalendarTask(taskId) {
@@ -6703,8 +7381,11 @@ function completeCalendarTask(taskId) {
   showToast("Task marked complete");
 }
 
-function deleteCalendarTask(taskId) {
+async function deleteCalendarTask(taskId) {
   if (!requireAction("manageTasks")) return;
+  const task = state.calendarTasks.find((item) => item.id === taskId);
+  if (!task) return;
+  if (!(await removeCalendarTaskFromGoogle(task))) return;
   state.calendarTasks = state.calendarTasks.filter((task) => task.id !== taskId);
   saveState();
   render();
@@ -7630,7 +8311,8 @@ function renderEstimatePreview(estimate) {
           </div>
         </div>
         <div class="est-header-meta">
-          <p class="est-doc-label">ESTIMATE</p>
+          <p class="est-doc-label">CONSTRUCTION ESTIMATE</p>
+          <p class="est-doc-kicker">PROPOSAL &amp; SCOPE OF WORK</p>
           <p class="est-doc-num">${escapeHtml(estimate.estimateNumber)}</p>
           <p class="est-doc-date">${escapeHtml([estimate.leadNumber, estimate.projectNumber].filter(Boolean).join(" · "))}</p>
           <p class="est-doc-date">Issued: ${formatDate(estimate.issueDate)}</p>
@@ -7659,6 +8341,11 @@ function renderEstimatePreview(estimate) {
             ${rep.email ? `<p class="est-info-sub">${escapeHtml(rep.email)}</p>` : ""}
             ${rep.phone ? `<p class="est-info-sub">${escapeHtml(rep.phone)}</p>` : ""}
           </div>
+        </div>
+
+        <div class="est-investment-banner">
+          <span>Total estimated investment</span>
+          <strong>${money.format(totals.total)}</strong>
         </div>
 
         ${estimate.scopeSummary ? `
@@ -7714,6 +8401,16 @@ function renderEstimatePreview(estimate) {
           </div>
         </div>
 
+        <div class="est-payment-block">
+          <p class="est-info-label">Payment schedule</p>
+          ${number(estimate.deposit) > 0 ? `
+          <div class="est-payment-row"><span>Initial deposit upon acceptance</span><span>${totals.total ? Math.round(number(estimate.deposit) / totals.total * 100) : 0}%</span><strong>${money.format(number(estimate.deposit))}</strong></div>
+          <div class="est-payment-row"><span>Remaining balance due on completion</span><span>${totals.total ? Math.max(100 - Math.round(number(estimate.deposit) / totals.total * 100), 0) : 0}%</span><strong>${money.format(totals.balance)}</strong></div>
+          ` : `
+          <div class="est-payment-row"><span>Full balance due according to the terms below</span><span>100%</span><strong>${money.format(totals.total)}</strong></div>
+          `}
+        </div>
+
         ${(estimate.notes || company.defaultTerms) ? `
         <div class="est-notes-block">
           <p class="est-info-label">Notes &amp; Terms</p>
@@ -7721,6 +8418,10 @@ function renderEstimatePreview(estimate) {
         </div>
         ` : ""}
 
+        <div class="est-acceptance-block">
+          <p class="est-info-label">Acceptance of proposal</p>
+          <p>I authorize the work described in this proposal and agree to the pricing, payment schedule, and terms shown above. Changes to this scope require written approval.</p>
+        </div>
         <div class="est-sig-grid">
           <div class="est-sig-line">Customer signature</div>
           <div class="est-sig-line">Date</div>
@@ -7759,6 +8460,154 @@ function trackCompanyFormDraft(event) {
   queueLocalStateSave();
 }
 
+function renderGoogleIntegrationCard() {
+  if (!els.googleIntegrationStatus || !els.googleIntegrationPill) return;
+  const status = googleIntegrationState;
+  if (status.loading || !status.loaded) {
+    els.googleIntegrationStatus.textContent = "Checking your Google Workspace connection…";
+    els.googleIntegrationPill.textContent = "Checking";
+    els.googleIntegrationPill.className = "status-pill pill-default";
+  } else if (!status.configured) {
+    els.googleIntegrationStatus.textContent = "Google OAuth must be configured by an administrator before accounts can connect.";
+    els.googleIntegrationPill.textContent = "Setup needed";
+    els.googleIntegrationPill.className = "status-pill pill-inspection";
+  } else if (status.connected) {
+    const gmailReady = status.gmailSend && status.gmailRead;
+    els.googleIntegrationStatus.textContent = gmailReady
+      ? `Calendar and Gmail connected as ${status.providerEmail || status.email}`
+      : `Calendar connected as ${status.providerEmail || status.email}. Reconnect to enable Gmail.`;
+    els.googleIntegrationPill.textContent = gmailReady ? "Connected" : "Reconnect";
+    els.googleIntegrationPill.className = gmailReady ? "status-pill pill-won" : "status-pill pill-inspection";
+  } else {
+    els.googleIntegrationStatus.textContent = `Connect the Google account matching ${status.email || currentOwner().email}`;
+    els.googleIntegrationPill.textContent = "Not connected";
+    els.googleIntegrationPill.className = "status-pill pill-default";
+  }
+  if (els.connectGoogleWorkspaceButton) {
+    els.connectGoogleWorkspaceButton.classList.toggle("hidden", status.connected && status.gmailSend && status.gmailRead);
+    els.connectGoogleWorkspaceButton.textContent = status.connected ? "Reconnect Google Workspace" : "Connect Google Workspace";
+    els.connectGoogleWorkspaceButton.disabled = status.loading || !status.configured;
+  }
+  if (els.disconnectGoogleWorkspaceButton) {
+    els.disconnectGoogleWorkspaceButton.classList.toggle("hidden", !status.connected);
+    els.disconnectGoogleWorkspaceButton.disabled = status.loading;
+  }
+}
+
+async function refreshGoogleIntegrationStatus(force = false) {
+  if (googleIntegrationState.loading || (googleIntegrationState.loaded && !force)) return;
+  googleIntegrationState.loading = true;
+  renderGoogleIntegrationCard();
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/status", { headers, signal: AbortSignal.timeout(15000) });
+    const result = await response.json().catch(() => ({}));
+    googleIntegrationState = {
+      loaded: true, loading: false, configured: response.ok && result.configured === true,
+      connected: response.ok && result.connected === true, email: result.email || currentOwner().email,
+      providerEmail: result.providerEmail || "", gmailSend: result.gmailSend === true, gmailRead: result.gmailRead === true,
+    };
+  } catch {
+    googleIntegrationState = { loaded: true, loading: false, configured: false, connected: false, email: currentOwner().email, providerEmail: "", gmailSend: false, gmailRead: false };
+  }
+  renderGoogleIntegrationCard();
+}
+
+async function connectGoogleWorkspace() {
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/connect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !/^https:\/\/accounts\.google\.com\//.test(result.authorizationUrl || "")) throw new Error(result.error || "Google connection could not start.");
+    window.location.assign(result.authorizationUrl);
+  } catch (error) {
+    showToast(error.message || "Google connection could not start");
+  }
+}
+
+async function disconnectGoogleWorkspace() {
+  if (!window.confirm("Disconnect Google Workspace from JobCrest? Existing Google events and sent Gmail messages will remain in Google.")) return;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/disconnect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error("Google Workspace could not be disconnected.");
+    googleIntegrationState = { ...googleIntegrationState, loaded: true, loading: false, connected: false, providerEmail: "", gmailSend: false, gmailRead: false };
+    renderGoogleIntegrationCard();
+    showToast("Google Workspace disconnected");
+  } catch (error) { showToast(error.message); }
+}
+
+function renderZohoIntegrationCard() {
+  if (!els.zohoIntegrationStatus || !els.zohoIntegrationPill) return;
+  const status = zohoIntegrationState;
+  if (status.loading || !status.loaded) {
+    els.zohoIntegrationStatus.textContent = "Checking your Zoho Sign connection…";
+    els.zohoIntegrationPill.textContent = "Checking";
+    els.zohoIntegrationPill.className = "status-pill pill-default";
+  } else if (!status.configured) {
+    els.zohoIntegrationStatus.textContent = "Zoho Sign OAuth must be configured before Smart Documents can be created.";
+    els.zohoIntegrationPill.textContent = "Setup needed";
+    els.zohoIntegrationPill.className = "status-pill pill-inspection";
+  } else if (status.connected) {
+    els.zohoIntegrationStatus.textContent = `Zoho Sign connected for ${status.email || currentOwner().email}`;
+    els.zohoIntegrationPill.textContent = "Connected";
+    els.zohoIntegrationPill.className = "status-pill pill-won";
+  } else {
+    els.zohoIntegrationStatus.textContent = `Connect Zoho Sign for ${status.email || currentOwner().email}`;
+    els.zohoIntegrationPill.textContent = "Not connected";
+    els.zohoIntegrationPill.className = "status-pill pill-default";
+  }
+  if (els.connectZohoSignButton) {
+    els.connectZohoSignButton.classList.toggle("hidden", status.connected);
+    els.connectZohoSignButton.disabled = status.loading || !status.configured;
+  }
+  if (els.disconnectZohoSignButton) {
+    els.disconnectZohoSignButton.classList.toggle("hidden", !status.connected);
+    els.disconnectZohoSignButton.disabled = status.loading;
+  }
+}
+
+async function refreshZohoIntegrationStatus(force = false) {
+  if (zohoIntegrationState.loading || (zohoIntegrationState.loaded && !force)) return;
+  zohoIntegrationState.loading = true;
+  renderZohoIntegrationCard();
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/zoho/status", { headers, signal: AbortSignal.timeout(15000) });
+    const result = await response.json().catch(() => ({}));
+    zohoIntegrationState = {
+      loaded: true, loading: false, configured: response.ok && result.configured === true,
+      connected: response.ok && result.connected === true, email: result.email || currentOwner().email,
+      dataCenter: result.dataCenter || "",
+    };
+  } catch {
+    zohoIntegrationState = { loaded: true, loading: false, configured: false, connected: false, email: currentOwner().email, dataCenter: "" };
+  }
+  renderZohoIntegrationCard();
+}
+
+async function connectZohoSign() {
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/zoho/connect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !/^https:\/\/accounts\.(?:zoho\.(?:com|eu|in|jp|com\.au|sa|uk|sg|ae)|zohocloud\.ca)\/oauth\/v2\/auth\?/.test(result.authorizationUrl || "")) throw new Error(result.error || "Zoho Sign connection could not start.");
+    window.location.assign(result.authorizationUrl);
+  } catch (error) { showToast(error.message || "Zoho Sign connection could not start"); }
+}
+
+async function disconnectZohoSign() {
+  if (!window.confirm("Disconnect Zoho Sign from JobCrest? Existing Zoho drafts will remain in Zoho Sign.")) return;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/zoho/disconnect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error("Zoho Sign could not be disconnected.");
+    zohoIntegrationState = { ...zohoIntegrationState, loaded: true, loading: false, connected: false };
+    renderZohoIntegrationCard();
+    showToast("Zoho Sign disconnected");
+  } catch (error) { showToast(error.message); }
+}
+
 function renderCompanyForm() {
   const form = els.companyForm;
   state.company = normalizeCompany(state.company);
@@ -7771,6 +8620,11 @@ function renderCompanyForm() {
     els.companyLogoPreview.src = state.company.logoDataUrl || "icon.svg";
     els.companyLogoPreview.classList.toggle("logo-placeholder", !state.company.logoDataUrl);
   }
+  if (typeof renderGoogleIntegrationCard === "function") renderGoogleIntegrationCard();
+  if (typeof refreshGoogleIntegrationStatus === "function") void refreshGoogleIntegrationStatus();
+  if (typeof refreshGoogleDriveStatus === "function") void refreshGoogleDriveStatus();
+  if (typeof renderZohoIntegrationCard === "function") renderZohoIntegrationCard();
+  if (typeof refreshZohoIntegrationStatus === "function") void refreshZohoIntegrationStatus();
   renderDocumentCategoriesSettings();
 }
 
@@ -8510,8 +9364,8 @@ function pdfImageFormat(dataUrl = "") {
 }
 
 function pdfDrawPageTopRule(doc) {
-  doc.setFillColor(17, 17, 17);
-  doc.rect(0, 0, PDF_PAGE_WIDTH, 14, "F");
+  doc.setFillColor(166, 105, 119);
+  doc.rect(0, 0, PDF_PAGE_WIDTH, 8, "F");
 }
 
 function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) {
@@ -8523,14 +9377,11 @@ function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) {
     doc.text("ESTIMATE DETAIL (CONTINUED)", left, cursor.y);
     cursor.y += 12;
   }
-  // Bottom border only (clean minimal header)
-  doc.setDrawColor(12, 23, 48);
-  doc.setLineWidth(1.5);
-  doc.line(left, cursor.y + 20, right, cursor.y + 20);
-  doc.setLineWidth(0.5);
+  doc.setFillColor(55, 55, 60);
+  doc.rect(left, cursor.y, tableWidth, 22, "F");
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8);
-  doc.setTextColor(100, 116, 139);
+  doc.setTextColor(255, 255, 255);
   doc.text("PRODUCT / WORK ITEM", left + 8, cursor.y + 14);
   doc.text("QTY", 352, cursor.y + 14, { align: "right" });
   doc.text("UNIT", 362, cursor.y + 14);
@@ -8575,9 +9426,9 @@ async function downloadEstimatePdf(options = {}) {
     author: company.name,
   });
 
-  // ── Dark header band ──────────────────────────────────────
-  doc.setFillColor(12, 23, 48);
-  doc.rect(0, 0, PDF_PAGE_WIDTH, 90, "F");
+  // ── Refined proposal header ───────────────────────────────
+  doc.setFillColor(166, 105, 119);
+  doc.rect(0, 0, PDF_PAGE_WIDTH, 8, "F");
 
   // Logo or initial mark
   let brandTextX = left;
@@ -8587,7 +9438,7 @@ async function downloadEstimatePdf(options = {}) {
       brandTextX = left + 60;
     } catch { brandTextX = left; }
   } else {
-    doc.setFillColor(15, 95, 232);
+    doc.setFillColor(166, 105, 119);
     doc.roundedRect(left, 20, 36, 36, 4, 4, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
@@ -8599,13 +9450,13 @@ async function downloadEstimatePdf(options = {}) {
   // Company name
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
-  doc.setTextColor(255, 255, 255);
+  doc.setTextColor(55, 55, 60);
   doc.text(company.name || "Company", brandTextX, 34);
 
   // Company sub-info
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
-  doc.setTextColor(148, 163, 184);
+  doc.setTextColor(100, 100, 105);
   const companySubLines = [
     officeAddress ? officeAddress.split("\n")[0] : "",
     [company.phone, company.email].filter(Boolean).join("  ·  "),
@@ -8615,38 +9466,26 @@ async function downloadEstimatePdf(options = {}) {
     doc.text(line, brandTextX, 46 + i * 10);
   });
 
-  // ESTIMATE label (right side)
+  // Proposal title and metadata (right side)
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(26);
-  doc.setTextColor(255, 255, 255);
-  doc.text("ESTIMATE", right, 34, { align: "right" });
+  doc.setFontSize(17);
+  doc.setTextColor(55, 55, 60);
+  doc.text("CONSTRUCTION ESTIMATE", right, 31, { align: "right" });
+  doc.setFontSize(9);
+  doc.setTextColor(166, 105, 119);
+  doc.text("PROPOSAL & SCOPE OF WORK", right, 44, { align: "right" });
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.setTextColor(148, 163, 184);
-  doc.text([estimate.estimateNumber, estimate.projectNumber].filter(Boolean).join("  |  "), right, 48, { align: "right" });
-  doc.text(`Issued: ${formatDate(estimate.issueDate)}`, right, 59, { align: "right" });
-  doc.text(`Valid through: ${formatDate(estimate.validUntil)}`, right, 70, { align: "right" });
+  doc.setTextColor(100, 100, 105);
+  doc.text([estimate.estimateNumber, estimate.projectNumber].filter(Boolean).join("  |  "), right, 57, { align: "right" });
+  doc.text(`Issued ${formatDate(estimate.issueDate)}  |  Valid through ${formatDate(estimate.validUntil)}`, right, 69, { align: "right" });
+  doc.text(`Status: ${estimate.status || "Draft"}`, right, 81, { align: "right" });
 
-  // Status pill
-  const statusPillColors = {
-    Draft: [51, 65, 85], Sent: [29, 158, 117], Won: [31, 157, 85],
-    Rejected: [184, 67, 61], Invoiced: [15, 95, 232],
-  };
-  const pillRgb = statusPillColors[estimate.status] || statusPillColors.Draft;
-  doc.setFillColor(...pillRgb);
-  const statusText = estimate.status || "Draft";
-  doc.setFontSize(8);
-  const pillW = doc.getTextWidth(statusText) + 14;
-  doc.roundedRect(right - pillW, 76, pillW, 12, 3, 3, "F");
-  doc.setTextColor(220, 240, 255);
-  doc.text(statusText, right - pillW / 2, 84.5, { align: "center" });
-
-  // Accent bar
-  doc.setFillColor(15, 95, 232);
-  doc.rect(0, 90, PDF_PAGE_WIDTH * 0.55, 3, "F");
-  doc.setFillColor(15, 159, 152);
-  doc.rect(PDF_PAGE_WIDTH * 0.55, 90, PDF_PAGE_WIDTH * 0.45, 3, "F");
+  doc.setDrawColor(166, 105, 119);
+  doc.setLineWidth(1.2);
+  doc.line(left, 92, right, 92);
+  doc.setLineWidth(0.5);
 
   cursor.y = 108;
 
@@ -8655,8 +9494,8 @@ async function downloadEstimatePdf(options = {}) {
   const boxH = 88;
   const col2X = midX;
 
-  doc.setFillColor(246, 250, 255);
-  doc.setDrawColor(214, 227, 243);
+  doc.setFillColor(250, 247, 248);
+  doc.setDrawColor(224, 208, 212);
   doc.roundedRect(left, boxTop, tableWidth / 2 - 8, boxH, 3, 3, "FD");
   doc.roundedRect(col2X, boxTop, tableWidth / 2 - 8, boxH, 3, 3, "FD");
 
@@ -8668,7 +9507,7 @@ async function downloadEstimatePdf(options = {}) {
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
-  doc.setTextColor(12, 23, 48);
+  doc.setTextColor(55, 55, 60);
   doc.text(contact.name || "No customer", left + 10, boxTop + 27);
 
   doc.setFont("helvetica", "normal");
@@ -8691,7 +9530,7 @@ async function downloadEstimatePdf(options = {}) {
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
-  doc.setTextColor(12, 23, 48);
+  doc.setTextColor(55, 55, 60);
   doc.text(estimate.projectTitle || "Project estimate", col2X + 10, boxTop + 27);
 
   doc.setFont("helvetica", "normal");
@@ -8709,15 +9548,26 @@ async function downloadEstimatePdf(options = {}) {
 
   cursor.y = boxTop + boxH + 16;
 
+  // ── Investment highlight ─────────────────────────────────
+  doc.setFillColor(166, 105, 119);
+  doc.roundedRect(left, cursor.y, tableWidth, 44, 3, 3, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.text("TOTAL ESTIMATED INVESTMENT", left + 14, cursor.y + 18);
+  doc.setFontSize(18);
+  doc.text(money.format(totals.total), right - 14, cursor.y + 27, { align: "right" });
+  cursor.y += 58;
+
   // ── Scope summary ─────────────────────────────────────────
   if (estimate.scopeSummary) {
     pdfAddPageIfNeeded(doc, cursor, 48);
-    doc.setFillColor(232, 242, 255);
-    doc.setDrawColor(15, 95, 232);
+    doc.setFillColor(250, 247, 248);
+    doc.setDrawColor(166, 105, 119);
     const scopeLines = doc.splitTextToSize(estimate.scopeSummary, tableWidth - 28);
     const scopeH = scopeLines.length * 11 + 20;
     doc.rect(left, cursor.y, 3, scopeH, "F");
-    doc.setFillColor(232, 242, 255);
+    doc.setFillColor(250, 247, 248);
     doc.rect(left + 3, cursor.y, tableWidth - 3, scopeH, "F");
 
     doc.setFont("helvetica", "bold");
@@ -8726,7 +9576,7 @@ async function downloadEstimatePdf(options = {}) {
     doc.text("PROJECT SCOPE", left + 12, cursor.y + 12);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    doc.setTextColor(12, 23, 48);
+    doc.setTextColor(55, 55, 60);
     doc.text(scopeLines, left + 12, cursor.y + 23);
     cursor.y += scopeH + 14;
   }
@@ -8744,14 +9594,14 @@ async function downloadEstimatePdf(options = {}) {
     const addedPage = pdfAddPageIfNeeded(doc, cursor, rowH + 52);
     if (addedPage) pdfDrawEstimateTableHeader(doc, cursor, left, right, { continued: true });
 
-    doc.setDrawColor(214, 227, 243);
+    doc.setDrawColor(224, 208, 212);
     doc.setFillColor(255, 255, 255);
     doc.rect(left, cursor.y, tableWidth, rowH, "FD");
 
     // Subtle zebra on alternating rows handled via fill above
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
-    doc.setTextColor(12, 23, 48);
+    doc.setTextColor(55, 55, 60);
     doc.text(titleLines, left + 8, cursor.y + 13);
 
     if (descLines.length) {
@@ -8766,7 +9616,7 @@ async function downloadEstimatePdf(options = {}) {
     doc.setTextColor(100, 116, 139);
     doc.text(number(item.quantity).toLocaleString("en-US"), 352, cursor.y + 13, { align: "right" });
     doc.text(item.unit || "ea", 362, cursor.y + 13);
-    doc.setTextColor(12, 23, 48);
+    doc.setTextColor(55, 55, 60);
     doc.text(money.format(number(item.rate)), 468, cursor.y + 13, { align: "right" });
     doc.setFont("helvetica", "bold");
     doc.text(money.format(number(item.quantity) * number(item.rate)), right - 8, cursor.y + 13, { align: "right" });
@@ -8782,7 +9632,7 @@ async function downloadEstimatePdf(options = {}) {
   const totalRows = [
     ["Subtotal", money.format(totals.subtotal), false],
     [`Tax (${number(estimate.taxRate)}%)`, money.format(totals.tax), false],
-    ["Deposit", `\u2212${money.format(number(estimate.deposit))}`, false],
+    ["Deposit", `-${money.format(number(estimate.deposit))}`, false],
     ["Total", money.format(totals.total), true],
     ["Balance due on completion", money.format(totals.balance), false],
   ];
@@ -8791,7 +9641,7 @@ async function downloadEstimatePdf(options = {}) {
     if (isGrand) {
       doc.setDrawColor(12, 23, 48);
       doc.setLineWidth(1.5);
-      doc.line(tlX, cursor.y - 4, tvX, cursor.y - 4);
+      doc.line(tlX, cursor.y - 10, tvX, cursor.y - 10);
       doc.setLineWidth(0.5);
     }
     doc.setFont("helvetica", isGrand ? "bold" : "normal");
@@ -8801,6 +9651,43 @@ async function downloadEstimatePdf(options = {}) {
     doc.setTextColor(isGrand ? 12 : 12, isGrand ? 23 : 23, isGrand ? 48 : 48);
     doc.text(value, tvX, cursor.y, { align: "right" });
     cursor.y += isGrand ? 20 : 14;
+  });
+
+  // ── Payment schedule ─────────────────────────────────────
+  cursor.y += 12;
+  pdfAddPageIfNeeded(doc, cursor, 96);
+  const depositAmount = Math.max(0, Math.min(number(estimate.deposit), totals.total));
+  const remainingAmount = Math.max(totals.total - depositAmount, 0);
+  const depositPercent = totals.total > 0 ? Math.round((depositAmount / totals.total) * 100) : 0;
+  const remainingPercent = Math.max(100 - depositPercent, 0);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(55, 55, 60);
+  doc.text("PAYMENT SCHEDULE", left, cursor.y);
+  cursor.y += 10;
+  doc.setFillColor(55, 55, 60);
+  doc.rect(left, cursor.y, tableWidth, 20, "F");
+  doc.setFontSize(8);
+  doc.setTextColor(255, 255, 255);
+  doc.text("MILESTONE", left + 8, cursor.y + 13);
+  doc.text("PERCENT", 398, cursor.y + 13, { align: "right" });
+  doc.text("AMOUNT", right - 8, cursor.y + 13, { align: "right" });
+  cursor.y += 20;
+  const paymentRows = depositAmount > 0
+    ? [["Initial deposit upon acceptance", `${depositPercent}%`, money.format(depositAmount)], ["Remaining balance due on completion", `${remainingPercent}%`, money.format(remainingAmount)]]
+    : [["Full balance due according to the terms below", "100%", money.format(totals.total)]];
+  paymentRows.forEach(([label, percent, amount], index) => {
+    doc.setFillColor(index % 2 ? 255 : 250, index % 2 ? 255 : 247, index % 2 ? 255 : 248);
+    doc.setDrawColor(224, 208, 212);
+    doc.rect(left, cursor.y, tableWidth, 24, "FD");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(55, 55, 60);
+    doc.text(label, left + 8, cursor.y + 15);
+    doc.text(percent, 398, cursor.y + 15, { align: "right" });
+    doc.setFont("helvetica", "bold");
+    doc.text(amount, right - 8, cursor.y + 15, { align: "right" });
+    cursor.y += 24;
   });
 
   // ── Notes & Terms ─────────────────────────────────────────
@@ -8819,9 +9706,21 @@ async function downloadEstimatePdf(options = {}) {
     pdfTextBlock(doc, termsText, left, cursor, tableWidth, { lineHeight: 10, after: 18 });
   }
 
-  // ── Signature lines ───────────────────────────────────────
-  pdfAddPageIfNeeded(doc, cursor, 60);
+  // ── Acceptance ────────────────────────────────────────────
+  pdfAddPageIfNeeded(doc, cursor, 104);
   cursor.y += 10;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(55, 55, 60);
+  doc.text("ACCEPTANCE OF PROPOSAL", left, cursor.y);
+  cursor.y += 14;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(70, 70, 75);
+  const acceptance = "I authorize the work described in this proposal and agree to the pricing, payment schedule, and terms shown above. Changes to this scope require written approval.";
+  const acceptanceLines = doc.splitTextToSize(acceptance, tableWidth);
+  doc.text(acceptanceLines, left, cursor.y);
+  cursor.y += acceptanceLines.length * 10 + 12;
   doc.setDrawColor(31, 41, 55);
   doc.setLineWidth(0.75);
   doc.line(left, cursor.y + 32, left + 200, cursor.y + 32);
@@ -9190,6 +10089,18 @@ function bindEvents() {
     const permission = actionPermissions[action];
     if (permission && !requireAction(permission)) return;
     if (action === "download-document") await downloadManagedDocument(actionButton.dataset.documentId);
+    if (action === "sync-google-drive-document") {
+      const outcome = await syncDocumentsToGoogleDrive([actionButton.dataset.documentId], { force: true });
+      showToast(outcome.synced ? "Drive copy completed" : outcome.skipped ? "Company Drive is not configured yet" : "Drive copy needs attention");
+    }
+    if (action === "prepare-zoho-smart-document") {
+      const { record } = findManagedDocument(actionButton.dataset.documentId);
+      if (record) openZohoSignDialog(record);
+    }
+    if (action === "open-smart-document") {
+      const { record } = findManagedDocument(actionButton.dataset.documentId);
+      if (record) await openSmartDocumentDialog(record);
+    }
     if (action === "open-estimate-lead") {
       await openEstimateLeadOverview(contactId);
       return;
@@ -9504,6 +10415,10 @@ function bindEvents() {
   els.manualPaymentForm?.addEventListener("submit", saveManualPayment);
   els.clearManualPaymentForm?.addEventListener("click", () => fillManualPaymentForm());
   els.leadEmailForm.addEventListener("submit", submitLeadEmail);
+  els.leadEmailTemplate?.addEventListener("change", (event) => {
+    const contact = getSelectedContact();
+    if (contact) applyLeadEmailTemplate(contact, selectedLeadJob(contact), event.target.value);
+  });
   els.leadEmailJobSelect?.addEventListener("change", (event) => {
     const contact = getSelectedContact();
     if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
@@ -9513,6 +10428,7 @@ function bindEvents() {
     renderLeadDetail();
   });
   els.copyLeadEmailButton.addEventListener("click", copyLeadEmail);
+  els.refreshLeadEmailThreadsButton?.addEventListener("click", refreshLeadEmailThreads);
   els.uploadCompanyDocumentButton.addEventListener("click", () => {
     if (!requireAction("manageDocuments")) return;
     els.companyDocumentInput.value = "";
@@ -9546,6 +10462,34 @@ function bindEvents() {
   });
   els.removeCompanyLogoButton.addEventListener("click", removeCompanyLogo);
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
+  els.connectGoogleWorkspaceButton?.addEventListener("click", connectGoogleWorkspace);
+  els.disconnectGoogleWorkspaceButton?.addEventListener("click", disconnectGoogleWorkspace);
+  els.connectZohoSignButton?.addEventListener("click", connectZohoSign);
+  els.disconnectZohoSignButton?.addEventListener("click", disconnectZohoSign);
+  els.zohoSignForm?.addEventListener("submit", prepareZohoSmartDocument);
+  els.closeZohoSignDialog?.addEventListener("click", () => els.zohoSignDialog.close());
+  els.cancelZohoSignDialog?.addEventListener("click", () => els.zohoSignDialog.close());
+  els.addSmartDocumentField?.addEventListener("click", () => {
+    const responses = smartDocumentResponseValues();
+    const fields = smartDocumentFieldRows();
+    fields.push({ id: uid("smart-field"), label: `Field ${fields.length + 1}`, type: "text", required: false, sourceName: "", placeholder: "" });
+    renderSmartDocumentEditor(fields, responses);
+  });
+  els.smartDocumentFields?.addEventListener("change", refreshSmartDocumentResponses);
+  els.smartDocumentFields?.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-remove-smart-field]");
+    if (!remove) return;
+    const responses = smartDocumentResponseValues();
+    const fields = smartDocumentFieldRows().filter((field) => field.id !== remove.dataset.removeSmartField);
+    if (!fields.length) return setSaveState(els.smartDocumentSaveStatus, "A Smart Document needs at least one field.", "error");
+    renderSmartDocumentEditor(fields, responses);
+  });
+  els.saveSmartDocumentTemplate?.addEventListener("click", () => saveNativeSmartDocument("template"));
+  els.saveSmartDocumentDraft?.addEventListener("click", () => saveNativeSmartDocument("draft"));
+  els.completeSmartDocument?.addEventListener("click", () => saveNativeSmartDocument("completed"));
+  els.emailSmartDocument?.addEventListener("click", emailNativeSmartDocument);
+  els.closeSmartDocumentDialog?.addEventListener("click", closeSmartDocumentDialog);
+  els.smartDocumentDialog?.addEventListener("cancel", (event) => { event.preventDefault(); closeSmartDocumentDialog(); });
 
   els.calPrevMonth?.addEventListener("click", () => {
     calendarMonthOffset--;
@@ -9936,6 +10880,27 @@ async function startApp() {
   hydrateIcons();
   bindEvents();
   render();
+  const integrationResult = new URLSearchParams(window.location.search).get("google");
+  if (integrationResult) {
+    googleIntegrationState.loaded = false;
+    if (integrationResult === "connected") showToast("Google Calendar connected successfully");
+    else if (integrationResult === "google_email_mismatch") showToast("Connect the Google account that matches your CRM email");
+    else if (integrationResult === "google_consent_denied") showToast("Google Calendar connection was cancelled");
+    else showToast("Google Calendar connection could not be completed");
+    const cleaned = new URL(window.location.href);
+    cleaned.searchParams.delete("google");
+    window.history.replaceState({}, "", `${cleaned.pathname}${cleaned.search}${cleaned.hash}`);
+  }
+  const zohoIntegrationResult = new URLSearchParams(window.location.search).get("zoho");
+  if (zohoIntegrationResult) {
+    zohoIntegrationState.loaded = false;
+    if (zohoIntegrationResult === "connected") showToast("Zoho Sign connected successfully");
+    else if (zohoIntegrationResult === "zoho_consent_denied") showToast("Zoho Sign connection was cancelled");
+    else showToast("Zoho Sign connection could not be completed");
+    const cleaned = new URL(window.location.href);
+    cleaned.searchParams.delete("zoho");
+    window.history.replaceState({}, "", `${cleaned.pathname}${cleaned.search}${cleaned.hash}`);
+  }
   // Add-on modules can finish downloading long before durable CRM records have
   // hydrated. Give them a deterministic startup signal instead of making them
   // guess when the core application is ready from a short polling window.

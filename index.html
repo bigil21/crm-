@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=61" />
+    <link rel="stylesheet" href="styles.css?v=62" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -651,6 +651,17 @@
               </div>
               <div class="job-email-layout">
               <form id="leadEmailForm" class="conversation-form email-form">
+                <label>
+                  Email Template
+                  <select id="leadEmailTemplate" name="template">
+                    <option value="follow-up">General Follow-up</option>
+                    <option value="inspection">Inspection Confirmation</option>
+                    <option value="estimate">Estimate Follow-up</option>
+                    <option value="deposit">Deposit Reminder</option>
+                    <option value="production">Production Update</option>
+                    <option value="review">Review Request</option>
+                  </select>
+                </label>
                 <div class="form-grid two">
                   <label>
                     From
@@ -676,7 +687,11 @@
                   </button>
                   <button class="primary-button" type="submit">
                     <span aria-hidden="true" data-icon="mail"></span>
-                    Open Email
+                    <span id="leadEmailSubmitLabel">Open Email</span>
+                  </button>
+                  <button class="secondary-button" type="button" id="refreshLeadEmailThreadsButton">
+                    <span aria-hidden="true" data-icon="refresh"></span>
+                    Check Replies
                   </button>
                 </div>
                 <p class="save-state-message" id="leadEmailSaveStatus" role="status" aria-live="polite"></p>
@@ -705,6 +720,10 @@
                     <span aria-hidden="true" data-icon="upload"></span>
                     Upload Document
                   </button>
+                  <label class="smart-doc-upload-option hidden" title="After a single file is saved, open the Zoho Sign preparation form">
+                    <input id="leadDocumentSmartAfterUpload" type="checkbox" />
+                    Prepare in Zoho Sign
+                  </label>
                 </div>
                 <input class="file-input-hidden" id="leadDocumentInput" type="file" multiple />
               </div>
@@ -785,7 +804,7 @@
             <div>
               <p class="eyebrow">Estimate workspace</p>
               <h2>Create, review, and send</h2>
-              <p>Focus on one estimate at a time. The customer-facing layout and PDF remain unchanged.</p>
+            <p>Focus on one estimate at a time with a polished customer-facing proposal and PDF.</p>
             </div>
             <div class="estimate-workspace-actions">
               <button class="secondary-button" type="button" id="toggleEstimateHistoryButton" aria-expanded="false">
@@ -1077,6 +1096,10 @@
                 <span aria-hidden="true" data-icon="upload"></span>
                 Upload Document
               </button>
+              <label class="smart-doc-upload-option hidden" title="After a single file is saved, open the Zoho Sign preparation form">
+                <input id="companyDocumentSmartAfterUpload" type="checkbox" />
+                Prepare in Zoho Sign
+              </label>
               <input class="file-input-hidden" id="companyDocumentInput" type="file" multiple />
             </div>
           </div>
@@ -1169,6 +1192,64 @@
         </section>
 
         <section class="view-panel hidden" id="companyView">
+          <section class="surface integrations-settings" aria-labelledby="integrationsTitle">
+            <div class="view-toolbar">
+              <div>
+                <p class="eyebrow">Connected services</p>
+                <h2 id="integrationsTitle">Integrations</h2>
+                <p class="section-description">Connect your work account once. JobCrest keeps the CRM record authoritative and syncs supported activity to that account.</p>
+              </div>
+            </div>
+            <div class="integration-grid">
+              <article class="integration-card">
+                <div class="integration-card-head">
+                  <div class="integration-provider-mark google-provider-mark" aria-hidden="true">G</div>
+                  <div>
+                    <h3>Google Workspace</h3>
+                    <p id="googleIntegrationStatus">Checking connection…</p>
+                  </div>
+                  <span class="status-pill pill-default" id="googleIntegrationPill">Checking</span>
+                </div>
+                <div class="integration-products" aria-label="Google Workspace products">
+                  <span class="integration-product active">Calendar</span>
+                  <span class="integration-product active">Gmail</span>
+                  <span class="integration-product active">Drive</span>
+                  <span class="integration-product planned">Docs</span>
+                  <span class="integration-product planned">Sheets</span>
+                  <span class="integration-product planned">Groups</span>
+                </div>
+                <p class="integration-help">Calendar and job-specific Gmail are active. Each employee connects the Google account matching their CRM email.</p>
+                <p class="integration-help" id="googleDriveIntegrationStatus">Company Drive storage is not configured.</p>
+                <div class="detail-actions">
+                  <button class="primary-button" type="button" id="connectGoogleWorkspaceButton">Connect Google Workspace</button>
+                  <button class="ghost-button danger hidden" type="button" id="disconnectGoogleWorkspaceButton">Disconnect</button>
+                </div>
+              </article>
+              <article class="integration-card hidden" aria-hidden="true">
+                <div class="integration-card-head">
+                  <div class="integration-provider-mark zoho-provider-mark" aria-hidden="true">Z</div>
+                  <div>
+                    <h3>Zoho</h3>
+                    <p id="zohoIntegrationStatus">Checking connection…</p>
+                  </div>
+                  <span class="status-pill pill-default" id="zohoIntegrationPill">Checking</span>
+                </div>
+                <div class="integration-products" aria-label="Zoho products">
+                  <span class="integration-product active">CRM import</span>
+                  <span class="integration-product active">Sign</span>
+                  <span class="integration-product planned">Calendar</span>
+                  <span class="integration-product planned">WorkDrive</span>
+                  <span class="integration-product planned">Writer</span>
+                  <span class="integration-product planned">Sheet</span>
+                </div>
+                <p class="integration-help">Zoho Sign turns a saved CRM file into a draft Smart Document, then opens Zoho's field editor before anything is sent.</p>
+                <div class="detail-actions">
+                  <button class="primary-button" type="button" id="connectZohoSignButton">Connect Zoho Sign</button>
+                  <button class="ghost-button danger hidden" type="button" id="disconnectZohoSignButton">Disconnect</button>
+                </div>
+              </article>
+            </div>
+          </section>
           <div class="view-toolbar">
             <div>
               <p class="eyebrow">Business profile</p>
@@ -1387,6 +1468,89 @@
       </form>
     </dialog>
 
+    <dialog class="contact-dialog smart-doc-dialog hidden" id="zohoSignDialog">
+      <form method="dialog" id="zohoSignForm">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Zoho Sign</p>
+            <h2>Prepare Smart Document</h2>
+            <p class="section-description" id="zohoSignDocumentName"></p>
+          </div>
+          <button class="icon-button" type="button" id="closeZohoSignDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button>
+        </div>
+        <input type="hidden" name="documentId" />
+        <div class="form-grid two">
+          <label>Recipient Name<input name="recipientName" required autocomplete="name" maxlength="200" /></label>
+          <label>Recipient Email<input name="recipientEmail" required type="email" autocomplete="email" maxlength="254" /></label>
+          <label>Expires After
+            <select name="expirationDays">
+              <option value="7">7 days</option>
+              <option value="10" selected>10 days</option>
+              <option value="14">14 days</option>
+              <option value="30">30 days</option>
+            </select>
+          </label>
+        </div>
+        <label>Message<textarea name="notes" rows="3" maxlength="2000">Please review and sign this document.</textarea></label>
+        <p class="smart-doc-note">JobCrest creates a Zoho Sign draft and opens the field editor. The document is not emailed until you place the fields and send it from Zoho.</p>
+        <p class="save-state-message" id="zohoSignSaveStatus" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" id="cancelZohoSignDialog">Cancel</button>
+          <button class="primary-button" type="submit" id="prepareZohoSignButton">Create Smart Document</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="smart-document-workspace" id="smartDocumentDialog">
+      <form method="dialog" id="smartDocumentForm">
+        <header class="smart-document-header">
+          <div>
+            <p class="eyebrow">JobCrest Smart Document</p>
+            <h2 id="smartDocumentTitle">Fill Document</h2>
+            <p class="section-description" id="smartDocumentMeta"></p>
+          </div>
+          <button class="icon-button" type="button" id="closeSmartDocumentDialog" aria-label="Close Smart Document"><span aria-hidden="true" data-icon="x"></span></button>
+        </header>
+        <input type="hidden" name="documentId" />
+        <div class="smart-document-layout">
+          <section class="smart-document-preview" aria-label="Original document preview">
+            <iframe id="smartDocumentPreview" title="Original document preview"></iframe>
+            <div class="empty-state hidden" id="smartDocumentPreviewFallback">Preview is unavailable for this file type. The original remains saved with the job.</div>
+          </section>
+          <section class="smart-document-editor">
+            <div class="smart-document-builder">
+              <div class="section-heading compact-heading">
+                <div><p class="eyebrow">Form Setup</p><h3>Fields representatives complete</h3></div>
+                <button class="secondary-button" type="button" id="addSmartDocumentField"><span aria-hidden="true" data-icon="plus"></span>Add Field</button>
+              </div>
+              <div id="smartDocumentFields" class="smart-document-fields"></div>
+            </div>
+            <div class="smart-document-fill">
+              <div class="section-heading compact-heading">
+                <div><p class="eyebrow">Fill Document</p><h3>Document responses</h3></div>
+              </div>
+              <div id="smartDocumentResponses" class="smart-document-responses"></div>
+            </div>
+            <section class="smart-document-email hidden" id="smartDocumentEmailPanel">
+              <div class="section-heading compact-heading"><div><p class="eyebrow">Email</p><h3>Send completed PDF</h3></div></div>
+              <div class="form-grid two">
+                <label>Recipient Email<input name="emailTo" type="email" maxlength="254" autocomplete="email" /></label>
+                <label>Subject<input name="emailSubject" maxlength="500" /></label>
+              </div>
+              <label>Message<textarea name="emailMessage" rows="4" maxlength="10000"></textarea></label>
+            </section>
+          </section>
+        </div>
+        <p class="save-state-message" id="smartDocumentSaveStatus" role="status" aria-live="polite"></p>
+        <footer class="smart-document-actions">
+          <button class="secondary-button" type="button" id="saveSmartDocumentTemplate">Save Fields</button>
+          <button class="secondary-button" type="button" id="saveSmartDocumentDraft">Save Draft</button>
+          <button class="primary-button" type="button" id="completeSmartDocument">Save Completed PDF</button>
+          <button class="primary-button hidden" type="button" id="emailSmartDocument"><span aria-hidden="true" data-icon="send"></span>Email Completed PDF</button>
+        </footer>
+      </form>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="auth-config.js?v=24" defer></script>
@@ -1399,7 +1563,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=141" defer></script>
+    <script src="app.js?v=142" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

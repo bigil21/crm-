@@ -1,6 +1,25 @@
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+const crypto = require("node:crypto");
+const {
+  createOAuthState, verifyOAuthState, createAuthorizationUrl, exchangeAuthorizationCode,
+  refreshAccessToken, fetchGoogleIdentity, encryptSecret, decryptSecret, upsertCalendarEvent, deleteCalendarEvent,
+  GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE, sendGmailMessage, fetchGmailThread,
+} = require(path.join(__dirname, "google-workspace"));
+const {
+  safeDriveId, exchangeServiceAccountToken, ensureDocumentFolder, uploadDocument: uploadGoogleDriveDocument,
+} = require(path.join(__dirname, "google-drive"));
+const {
+  ZOHO_SIGN_SCOPES, createAuthorizationUrl: createZohoAuthorizationUrl,
+  exchangeAuthorizationCode: exchangeZohoAuthorizationCode,
+  refreshAccessToken: refreshZohoAccessToken, createSmartDocument, createEmbeddedSendUrl,
+} = require(path.join(__dirname, "zoho-sign"));
+const {
+  normalizeFields: normalizeSmartDocumentFields,
+  normalizeResponses: normalizeSmartDocumentResponses,
+  renderCompletedDocument,
+} = require(path.join(__dirname, "smart-documents"));
 
 const root = __dirname;
 const envPaths = process.env.CRM_SKIP_ENV_FILES === "true" ? [] : [path.join(root, ".env"), path.join(root, ".env.local")];
@@ -183,6 +202,693 @@ function isApiAdmin(user = {}) {
       String(user.app_metadata?.role || "").toLowerCase() === "admin" ||
       configuredAdminEmails().includes(String(user.email || "").toLowerCase()),
   );
+}
+
+function canManageAssignedCalendar(user = {}) {
+  return isApiAdmin(user) || ["office_manager", "sales_manager", "operations_manager"]
+    .includes(String(user.app_metadata?.role || "").toLowerCase());
+}
+
+const localOAuthConnections = new Map();
+
+function googleWorkspaceConfig() {
+  const clientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
+  const clientSecret = String(process.env.GOOGLE_CLIENT_SECRET || "").trim();
+  const redirectUri = String(process.env.GOOGLE_REDIRECT_URI || "").trim();
+  const stateSecret = String(process.env.GOOGLE_OAUTH_STATE_SECRET || "");
+  const encryptionKey = String(process.env.INTEGRATION_TOKEN_ENCRYPTION_KEY || "");
+  let redirect;
+  try {
+    redirect = new URL(redirectUri);
+    const loopback = ["localhost", "127.0.0.1"].includes(redirect.hostname);
+    if ((!loopback && redirect.protocol !== "https:") || (loopback && !["http:", "https:"].includes(redirect.protocol)) || redirect.username || redirect.password || redirect.hash) return null;
+  } catch { return null; }
+  if (!clientId || !clientSecret || stateSecret.length < 32 || !/^[A-Za-z0-9+/]{43}=$/.test(encryptionKey)) return null;
+  return { clientId, clientSecret, redirectUri: redirect.toString(), stateSecret, encryptionKey };
+}
+
+function googleDriveConfig() {
+  const clientEmail = String(process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || "").trim().toLowerCase();
+  const privateKey = String(process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY || "").replaceAll("\\n", "\n").trim();
+  const rootFolderId = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim();
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.iam\.gserviceaccount\.com$/.test(clientEmail) || !privateKey.includes("BEGIN PRIVATE KEY")) return null;
+  try { safeDriveId(rootFolderId, "drive_root"); } catch { return null; }
+  return { clientEmail, privateKey, rootFolderId };
+}
+
+function integrationStoreConfig() {
+  if (!authenticationRequired()) return { local: true, companyId: process.env.SUPABASE_STATE_ID || "coastal-crest" };
+  const config = squareWorkerConfig();
+  return config ? { ...config, local: false } : null;
+}
+
+function integrationStoreKey(companyId, provider, email) {
+  return `${companyId}:${provider}:${String(email).toLowerCase()}`;
+}
+
+function integrationServiceHeaders(config, extra = {}) {
+  return {
+    apikey: config.key,
+    ...(!config.key.startsWith("sb_secret_") ? { Authorization: `Bearer ${config.key}` } : {}),
+    ...extra,
+  };
+}
+
+async function getProviderConnection(store, provider, email) {
+  const normalized = String(email || "").toLowerCase();
+  if (!/^(google|zoho)$/.test(provider)) throw new Error("invalid_integration_provider");
+  if (store.local) return localOAuthConnections.get(integrationStoreKey(store.companyId, provider, normalized)) || null;
+  const url = new URL(`${store.origin}/rest/v1/crm_oauth_connections`);
+  url.searchParams.set("select", "company_state_id,provider,crm_user_id,crm_email,provider_email,provider_subject,encrypted_refresh_token,scopes,updated_at");
+  url.searchParams.set("company_state_id", `eq.${store.companyId}`);
+  url.searchParams.set("provider", `eq.${provider}`);
+  url.searchParams.set("crm_email", `eq.${normalized}`);
+  url.searchParams.set("revoked_at", "is.null");
+  url.searchParams.set("limit", "2");
+  const response = await fetch(url, { signal: AbortSignal.timeout(15000), headers: integrationServiceHeaders(store) });
+  const rows = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(rows) || rows.length > 1) throw new Error("integration_store_unavailable");
+  return rows[0] || null;
+}
+
+async function putProviderConnection(store, provider, connection) {
+  if (!/^(google|zoho)$/.test(provider)) throw new Error("invalid_integration_provider");
+  if (store.local) {
+    localOAuthConnections.set(integrationStoreKey(store.companyId, provider, connection.crm_email), { ...connection, company_state_id: store.companyId, provider });
+    return;
+  }
+  const response = await fetch(`${store.origin}/rest/v1/crm_oauth_connections?on_conflict=company_state_id,provider,crm_email`, {
+    method: "POST", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" }),
+    body: JSON.stringify({ ...connection, company_state_id: store.companyId, provider, revoked_at: null, updated_at: new Date().toISOString() }),
+  });
+  if (!response.ok) throw new Error("integration_store_unavailable");
+}
+
+async function revokeProviderConnection(store, provider, email) {
+  const normalized = String(email || "").toLowerCase();
+  if (!/^(google|zoho)$/.test(provider)) throw new Error("invalid_integration_provider");
+  if (store.local) {
+    localOAuthConnections.delete(integrationStoreKey(store.companyId, provider, normalized));
+    return;
+  }
+  const url = new URL(`${store.origin}/rest/v1/crm_oauth_connections`);
+  url.searchParams.set("company_state_id", `eq.${store.companyId}`);
+  url.searchParams.set("provider", `eq.${provider}`);
+  url.searchParams.set("crm_email", `eq.${normalized}`);
+  const response = await fetch(url, {
+    method: "PATCH", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/json", Prefer: "return=minimal" }),
+    body: JSON.stringify({ revoked_at: new Date().toISOString(), encrypted_refresh_token: "" }),
+  });
+  if (!response.ok) throw new Error("integration_store_unavailable");
+}
+
+const getGoogleConnection = (store, email) => getProviderConnection(store, "google", email);
+const putGoogleConnection = (store, connection) => putProviderConnection(store, "google", connection);
+const revokeGoogleConnection = (store, email) => revokeProviderConnection(store, "google", email);
+
+async function handleGoogleStatus(req, res, user) {
+  const config = googleWorkspaceConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) {
+    sendJson(res, 200, { configured: false, connected: false, email: String(user.email || "").toLowerCase() }); return;
+  }
+  const connection = await getGoogleConnection(store, user.email);
+  const scopes = new Set(connection?.scopes || []);
+  sendJson(res, 200, {
+    configured: true, connected: Boolean(connection), email: String(user.email || "").toLowerCase(),
+    providerEmail: connection?.provider_email || "", calendar: Boolean(connection),
+    gmailSend: scopes.has(GOOGLE_GMAIL_SEND_SCOPE), gmailRead: scopes.has(GOOGLE_GMAIL_READ_SCOPE),
+  });
+}
+
+async function handleGoogleConnect(req, res, user) {
+  const config = googleWorkspaceConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendJson(res, 503, { error: "Google Workspace is not configured." }); return; }
+  const identity = { sub: user.id || "local-admin", email: user.email, company: store.companyId };
+  const state = createOAuthState(identity, config.stateSecret);
+  sendJson(res, 200, { authorizationUrl: createAuthorizationUrl(config, identity, state) });
+}
+
+async function handleGoogleCallback(url, res) {
+  const config = googleWorkspaceConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendRedirect(res, "/?google=not-configured"); return; }
+  try {
+    if (url.searchParams.get("error")) throw new Error("google_consent_denied");
+    const identity = verifyOAuthState(url.searchParams.get("state"), config.stateSecret);
+    if (identity.company !== store.companyId) throw new Error("invalid_oauth_state");
+    const tokens = await exchangeAuthorizationCode(fetch, config, url.searchParams.get("code"));
+    const googleIdentity = await fetchGoogleIdentity(fetch, tokens.access_token);
+    if (googleIdentity.email !== identity.email) throw new Error("google_email_mismatch");
+    const existing = await getGoogleConnection(store, identity.email);
+    const refreshToken = tokens.refresh_token || (existing ? decryptSecret(existing.encrypted_refresh_token, config.encryptionKey) : "");
+    if (!refreshToken) throw new Error("google_refresh_token_missing");
+    await putGoogleConnection(store, {
+      crm_user_id: identity.sub, crm_email: identity.email, provider_email: googleIdentity.email,
+      provider_subject: googleIdentity.subject, encrypted_refresh_token: encryptSecret(refreshToken, config.encryptionKey),
+      scopes: [...new Set([
+        ...(existing?.scopes || []),
+        ...String(tokens.scope || "").split(/\s+/).filter(Boolean),
+      ])],
+    });
+    sendRedirect(res, "/?google=connected");
+  } catch (error) {
+    const code = ["google_email_mismatch", "google_consent_denied"].includes(error.message) ? error.message : "connection_failed";
+    sendRedirect(res, `/?google=${encodeURIComponent(code)}`);
+  }
+}
+
+async function handleGoogleDisconnect(req, res, user) {
+  const store = integrationStoreConfig();
+  if (!store) { sendJson(res, 503, { error: "Integration storage is not configured." }); return; }
+  await revokeGoogleConnection(store, user.email);
+  sendJson(res, 200, { disconnected: true });
+}
+
+async function handleGoogleCalendarEvent(req, res, user) {
+  const config = googleWorkspaceConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendJson(res, 503, { error: "Google Workspace is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid task data." }); return; }
+  const targetEmail = String(payload?.ownerEmail || user.email || "").trim().toLowerCase();
+  if (!targetEmail.endsWith(`@${allowedEmailDomain.toLowerCase()}`) || (targetEmail !== String(user.email || "").toLowerCase() && !canManageAssignedCalendar(user))) {
+    sendJson(res, 403, { error: "You cannot write to this representative's calendar." }); return;
+  }
+  const connection = await getGoogleConnection(store, targetEmail);
+  if (!connection) { sendJson(res, 409, { error: "The assigned representative has not connected Google Calendar.", code: "google_not_connected" }); return; }
+  try {
+    const refreshToken = decryptSecret(connection.encrypted_refresh_token, config.encryptionKey);
+    const tokens = await refreshAccessToken(fetch, config, refreshToken);
+    const result = await upsertCalendarEvent(fetch, tokens.access_token, payload.task || {}, payload.contact || null, process.env.CRM_TIME_ZONE || "America/New_York");
+    sendJson(res, 200, { synced: true, ownerEmail: targetEmail, ...result });
+  } catch (error) {
+    sendJson(res, 502, { error: error.message === "google_calendar_write_failed" ? "Google Calendar rejected the event." : "Google Calendar could not be updated." });
+  }
+}
+
+async function handleGoogleCalendarDelete(req, res, user) {
+  const config = googleWorkspaceConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendJson(res, 503, { error: "Google Workspace is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid event data." }); return; }
+  const targetEmail = String(payload?.ownerEmail || user.email || "").trim().toLowerCase();
+  if (!targetEmail.endsWith(`@${allowedEmailDomain.toLowerCase()}`) || (targetEmail !== String(user.email || "").toLowerCase() && !canManageAssignedCalendar(user))) {
+    sendJson(res, 403, { error: "You cannot remove events from this representative's calendar." }); return;
+  }
+  const connection = await getGoogleConnection(store, targetEmail);
+  if (!connection) { sendJson(res, 409, { error: "The assigned representative has not connected Google Calendar.", code: "google_not_connected" }); return; }
+  try {
+    const refreshToken = decryptSecret(connection.encrypted_refresh_token, config.encryptionKey);
+    const tokens = await refreshAccessToken(fetch, config, refreshToken);
+    await deleteCalendarEvent(fetch, tokens.access_token, payload?.eventId);
+    sendJson(res, 200, { deleted: true, ownerEmail: targetEmail });
+  } catch (error) {
+    sendJson(res, 502, { error: error.message === "google_calendar_delete_failed" ? "Google Calendar rejected the event removal." : "Google Calendar could not remove the event." });
+  }
+}
+
+async function googleAccessForUser(user, requiredScope) {
+  const config = googleWorkspaceConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) throw new Error("google_not_configured");
+  const connection = await getGoogleConnection(store, user.email);
+  if (!connection) throw new Error("google_not_connected");
+  if (!(connection.scopes || []).includes(requiredScope)) throw new Error("google_scope_missing");
+  const refreshToken = decryptSecret(connection.encrypted_refresh_token, config.encryptionKey);
+  const tokens = await refreshAccessToken(fetch, config, refreshToken);
+  return { accessToken: tokens.access_token, connection };
+}
+
+async function handleGoogleGmailSend(req, res, user) {
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid email data." }); return; }
+  try {
+    const { accessToken, connection } = await googleAccessForUser(user, GOOGLE_GMAIL_SEND_SCOPE);
+    const result = await sendGmailMessage(fetch, accessToken, {
+      fromEmail: connection.provider_email,
+      toEmail: payload?.toEmail,
+      subject: payload?.subject,
+      message: payload?.message,
+      threadId: payload?.threadId || "",
+    });
+    sendJson(res, 200, { sent: true, fromEmail: connection.provider_email, sentAt: new Date().toISOString(), ...result });
+  } catch (error) {
+    const status = ["invalid_email", "invalid_subject", "invalid_message", "invalid_gmail_thread"].includes(error.message) ? 400
+      : ["google_not_connected", "google_scope_missing"].includes(error.message) ? 409 : error.message === "google_not_configured" ? 503 : 502;
+    const messages = {
+      google_not_configured: "Google Workspace is not configured.",
+      google_not_connected: "Connect Google Workspace before sending from Gmail.",
+      google_scope_missing: "Reconnect Google Workspace to approve Gmail access.",
+      invalid_email: "Enter a valid customer email address.",
+      invalid_subject: "Enter a valid email subject.",
+      invalid_message: "Enter an email message under 500 KB.",
+      invalid_gmail_thread: "The Gmail thread is invalid.",
+      gmail_send_failed: "Gmail rejected the message.",
+    };
+    sendJson(res, status, { error: messages[error.message] || "Gmail could not send the message.", code: error.message });
+  }
+}
+
+async function handleGoogleGmailThreads(req, res, user) {
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid thread request." }); return; }
+  const threadIds = [...new Set(Array.isArray(payload?.threadIds) ? payload.threadIds : [])].slice(0, 20);
+  if (!threadIds.length) { sendJson(res, 400, { error: "Choose at least one Gmail thread." }); return; }
+  try {
+    const { accessToken, connection } = await googleAccessForUser(user, GOOGLE_GMAIL_READ_SCOPE);
+    const threads = [];
+    for (const threadId of threadIds) {
+      threads.push({ threadId, messages: await fetchGmailThread(fetch, accessToken, threadId, connection.provider_email) });
+    }
+    sendJson(res, 200, { synced: true, threads });
+  } catch (error) {
+    const status = error.message === "invalid_gmail_thread" ? 400
+      : ["google_not_connected", "google_scope_missing"].includes(error.message) ? 409 : error.message === "google_not_configured" ? 503 : 502;
+    const message = error.message === "google_scope_missing" ? "Reconnect Google Workspace to approve Gmail reply access."
+      : error.message === "google_not_connected" ? "Connect Google Workspace before checking Gmail replies."
+      : error.message === "invalid_gmail_thread" ? "The Gmail thread is invalid."
+      : "Gmail replies could not be refreshed.";
+    sendJson(res, status, { error: message, code: error.message });
+  }
+}
+
+const ZOHO_DATA_CENTERS = {
+  com: ["https://accounts.zoho.com", "https://sign.zoho.com"],
+  eu: ["https://accounts.zoho.eu", "https://sign.zoho.eu"],
+  in: ["https://accounts.zoho.in", "https://sign.zoho.in"],
+  jp: ["https://accounts.zoho.jp", "https://sign.zoho.jp"],
+  "com.au": ["https://accounts.zoho.com.au", "https://sign.zoho.com.au"],
+  "zohocloud.ca": ["https://accounts.zohocloud.ca", "https://sign.zohocloud.ca"],
+  sa: ["https://accounts.zoho.sa", "https://sign.zoho.sa"],
+  uk: ["https://accounts.zoho.uk", "https://sign.zoho.uk"],
+  sg: ["https://accounts.zoho.sg", "https://sign.zoho.sg"],
+  ae: ["https://accounts.zoho.ae", "https://sign.zoho.ae"],
+};
+
+function zohoSignConfig() {
+  const clientId = String(process.env.ZOHO_CLIENT_ID || "").trim();
+  const clientSecret = String(process.env.ZOHO_CLIENT_SECRET || "").trim();
+  const redirectUri = String(process.env.ZOHO_REDIRECT_URI || "").trim();
+  const stateSecret = String(process.env.ZOHO_OAUTH_STATE_SECRET || "");
+  const encryptionKey = String(process.env.INTEGRATION_TOKEN_ENCRYPTION_KEY || "");
+  const dataCenter = String(process.env.ZOHO_DATA_CENTER || "com").trim().toLowerCase();
+  const origins = ZOHO_DATA_CENTERS[dataCenter];
+  let redirect;
+  try {
+    redirect = new URL(redirectUri);
+    const loopback = ["localhost", "127.0.0.1"].includes(redirect.hostname);
+    if ((!loopback && redirect.protocol !== "https:") || (loopback && !["http:", "https:"].includes(redirect.protocol)) || redirect.username || redirect.password || redirect.hash) return null;
+  } catch { return null; }
+  if (!origins || !clientId || !clientSecret || stateSecret.length < 32 || !/^[A-Za-z0-9+/]{43}=$/.test(encryptionKey)) return null;
+  return { clientId, clientSecret, redirectUri: redirect.toString(), stateSecret, encryptionKey, accountsOrigin: origins[0], signApiOrigin: origins[1], signWebOrigin: origins[1], dataCenter };
+}
+
+async function handleZohoStatus(req, res, user) {
+  const config = zohoSignConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendJson(res, 200, { configured: false, connected: false, email: String(user.email || "").toLowerCase() }); return; }
+  const connection = await getProviderConnection(store, "zoho", user.email);
+  sendJson(res, 200, { configured: true, connected: Boolean(connection), email: String(user.email || "").toLowerCase(), sign: Boolean(connection), dataCenter: config.dataCenter });
+}
+
+async function handleZohoConnect(req, res, user) {
+  const config = zohoSignConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendJson(res, 503, { error: "Zoho Sign is not configured." }); return; }
+  const identity = { sub: user.id || "local-admin", email: user.email, company: store.companyId };
+  const state = createOAuthState(identity, config.stateSecret);
+  sendJson(res, 200, { authorizationUrl: createZohoAuthorizationUrl(config, state) });
+}
+
+async function handleZohoCallback(url, res) {
+  const config = zohoSignConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendRedirect(res, "/?zoho=not-configured"); return; }
+  try {
+    if (url.searchParams.get("error")) throw new Error("zoho_consent_denied");
+    const identity = verifyOAuthState(url.searchParams.get("state"), config.stateSecret);
+    if (identity.company !== store.companyId) throw new Error("invalid_oauth_state");
+    const tokens = await exchangeZohoAuthorizationCode(fetch, config, url.searchParams.get("code"));
+    const existing = await getProviderConnection(store, "zoho", identity.email);
+    const refreshToken = tokens.refresh_token || (existing ? decryptSecret(existing.encrypted_refresh_token, config.encryptionKey) : "");
+    if (!refreshToken) throw new Error("zoho_refresh_token_missing");
+    await putProviderConnection(store, "zoho", {
+      crm_user_id: identity.sub, crm_email: identity.email, provider_email: identity.email,
+      provider_subject: `zoho-sign:${identity.sub}`, encrypted_refresh_token: encryptSecret(refreshToken, config.encryptionKey),
+      scopes: String(tokens.scope || ZOHO_SIGN_SCOPES.join(",")).split(/[\s,]+/).filter(Boolean),
+    });
+    sendRedirect(res, "/?zoho=connected");
+  } catch (error) {
+    sendRedirect(res, `/?zoho=${encodeURIComponent(error.message === "zoho_consent_denied" ? error.message : "connection_failed")}`);
+  }
+}
+
+async function handleZohoDisconnect(req, res, user) {
+  const store = integrationStoreConfig();
+  if (!store) { sendJson(res, 503, { error: "Integration storage is not configured." }); return; }
+  await revokeProviderConnection(store, "zoho", user.email);
+  sendJson(res, 200, { disconnected: true });
+}
+
+async function getTrustedRecord(store, recordType, recordId) {
+  if (store.local) throw new Error("shared_document_required");
+  if (!["contact", "job", "document"].includes(recordType)) throw new Error("invalid_record_type");
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(String(recordId || ""))) throw new Error(`invalid_${recordType}_id`);
+  const url = new URL(`${store.origin}/rest/v1/crm_records`);
+  url.searchParams.set("select", "id,lead_id,job_id,owner_id,data,version");
+  url.searchParams.set("company_state_id", `eq.${store.companyId}`);
+  url.searchParams.set("record_type", `eq.${recordType}`);
+  url.searchParams.set("id", `eq.${recordId}`);
+  url.searchParams.set("deleted_at", "is.null");
+  url.searchParams.set("limit", "2");
+  const response = await fetch(url, { signal: AbortSignal.timeout(15000), headers: integrationServiceHeaders(store) });
+  const rows = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(rows)) throw new Error(`${recordType}_store_unavailable`);
+  if (rows.length !== 1 || !rows[0]?.data || typeof rows[0].data !== "object") throw new Error(`${recordType}_not_found`);
+  return rows[0];
+}
+
+const getTrustedDocumentRecord = (store, documentId) => getTrustedRecord(store, "document", documentId);
+
+function canAccessTrustedRecord(user, record) {
+  return canManageAssignedCalendar(user) || String(record?.owner_id || "") === String(user?.id || "");
+}
+
+async function downloadTrustedDocument(store, record, { maxBytes = 25 * 1024 * 1024, tooLargeCode = "zoho_sign_file_too_large" } = {}) {
+  const storagePath = String(record.data.storagePath || "");
+  const segments = storagePath.split("/");
+  if (!storagePath.startsWith(`${store.companyId}/`) || segments.some((part) => !part || part === "." || part === "..")) throw new Error("shared_document_required");
+  const path = segments.map(encodeURIComponent).join("/");
+  const response = await fetch(`${store.origin}/storage/v1/object/authenticated/crm-documents/${path}`, {
+    signal: AbortSignal.timeout(30000), headers: integrationServiceHeaders(store),
+  });
+  const announced = Number(response.headers.get("content-length") || 0);
+  if (!response.ok) throw new Error("document_download_failed");
+  if (announced > maxBytes) throw new Error(tooLargeCode);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > maxBytes) throw new Error(tooLargeCode);
+  return { name: record.data.name, type: record.data.type, size: bytes.length, bytes };
+}
+
+function trustedStoragePath(store, storagePath) {
+  const value = String(storagePath || "");
+  const segments = value.split("/");
+  if (!value.startsWith(`${store.companyId}/`) || segments.some((part) => !part || part === "." || part === ".." || !/^[A-Za-z0-9._:-]+$/.test(part))) {
+    throw new Error("invalid_smart_document_storage_path");
+  }
+  return { value, encoded: segments.map(encodeURIComponent).join("/") };
+}
+
+async function downloadTrustedStorageObject(store, storagePath, maxBytes = 25 * 1024 * 1024) {
+  const pathInfo = trustedStoragePath(store, storagePath);
+  const response = await fetch(`${store.origin}/storage/v1/object/authenticated/crm-documents/${pathInfo.encoded}`, {
+    signal: AbortSignal.timeout(30000), headers: integrationServiceHeaders(store),
+  });
+  const announced = Number(response.headers.get("content-length") || 0);
+  if (!response.ok || announced > maxBytes) throw new Error("smart_document_download_failed");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > maxBytes) throw new Error("smart_document_download_failed");
+  return bytes;
+}
+
+async function uploadSmartDocumentPdf(store, record, completed) {
+  const segments = [
+    store.companyId,
+    String(record.lead_id || "company"),
+    String(record.job_id || "shared"),
+    String(record.data.categoryId || "other"),
+    record.id,
+    "smart",
+    `${crypto.randomUUID()}.pdf`,
+  ];
+  if (segments.some((part) => !/^[A-Za-z0-9._:-]+$/.test(part))) throw new Error("invalid_smart_document_storage_path");
+  const storagePath = segments.join("/");
+  const response = await fetch(`${store.origin}/storage/v1/object/crm-documents/${segments.map(encodeURIComponent).join("/")}`, {
+    method: "POST", signal: AbortSignal.timeout(60000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/pdf", "x-upsert": "false" }),
+    body: completed.bytes,
+  });
+  if (!response.ok) throw new Error("smart_document_upload_failed");
+  return { storagePath, name: completed.name, size: completed.bytes.length, type: "application/pdf" };
+}
+
+function smartDocumentPayload(existing, fields, responses, status, user, completedFile = null) {
+  const revision = Math.max(0, Number(existing?.revision) || 0) + 1;
+  const now = new Date().toISOString();
+  const result = {
+    fields,
+    responses,
+    status,
+    revision,
+    createdAt: existing?.createdAt || now,
+    createdBy: existing?.createdBy || user.id,
+    updatedAt: now,
+    updatedBy: user.id,
+  };
+  if (existing?.completedFile) result.completedFile = existing.completedFile;
+  if (Array.isArray(existing?.previousCompletions)) result.previousCompletions = existing.previousCompletions.slice(-9);
+  if (completedFile) {
+    if (result.completedFile) result.previousCompletions = [...(result.previousCompletions || []), result.completedFile].slice(-10);
+    result.completedFile = { ...completedFile, completedAt: now, completedBy: user.id };
+    result.completedAt = now;
+    result.completedBy = user.id;
+  }
+  if (existing?.lastEmailedAt) {
+    result.lastEmailedAt = existing.lastEmailedAt;
+    result.lastEmailedTo = existing.lastEmailedTo;
+    result.lastEmailMessageId = existing.lastEmailMessageId;
+  }
+  return result;
+}
+
+async function saveTrustedSmartDocument(store, user, record, smartDocument) {
+  const response = await fetch(`${store.origin}/rest/v1/rpc/crm_save_smart_document`, {
+    method: "POST", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ p_company: store.companyId, p_document_id: record.id, p_smart_document: smartDocument, p_actor: user.id }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result?.saved || result.document_id !== record.id || result.status !== smartDocument.status) throw new Error("smart_document_record_unconfirmed");
+  return result;
+}
+
+async function handleSmartDocumentSave(req, res, user) {
+  const store = integrationStoreConfig();
+  if (!store || store.local) { sendJson(res, 503, { error: "Shared document storage is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Smart Document data." }); return; }
+  try {
+    const record = await getTrustedDocumentRecord(store, payload?.documentId);
+    if (!canAccessTrustedRecord(user, record)) throw new Error("document_not_found");
+    const fields = normalizeSmartDocumentFields(payload?.fields);
+    const requestedStatus = payload?.status === "completed" ? "completed" : payload?.status === "template" ? "template" : "draft";
+    const responses = normalizeSmartDocumentResponses(fields, payload?.responses, { requireComplete: requestedStatus === "completed" });
+    let completedFile = null;
+    let filledSourceFields = [];
+    if (requestedStatus === "completed") {
+      const source = await downloadTrustedDocument(store, record, { maxBytes: 25 * 1024 * 1024, tooLargeCode: "smart_document_source_too_large" });
+      const completed = await renderCompletedDocument(source, { fields, responses }, { name: user.email, email: user.email });
+      completedFile = await uploadSmartDocumentPdf(store, record, completed);
+      filledSourceFields = completed.filledSourceFields;
+    }
+    const smartDocument = smartDocumentPayload(record.data.smartDocument, fields, responses, requestedStatus, user, completedFile);
+    const saved = await saveTrustedSmartDocument(store, user, record, smartDocument);
+    sendJson(res, 200, { saved: true, status: requestedStatus, revision: smartDocument.revision, completedFile: smartDocument.completedFile || null, filledSourceFields, recordVersion: saved.version });
+  } catch (error) {
+    const badRequest = ["invalid_smart_document_fields", "duplicate_smart_document_field", "invalid_smart_document_field_type", "invalid_smart_document_text", "invalid_smart_document_email", "invalid_smart_document_number", "invalid_smart_document_date", "smart_document_required_field_missing"].includes(error.message);
+    const messages = {
+      document_not_found: "The saved CRM document could not be found or is not assigned to you.",
+      smart_document_required_field_missing: "Complete every required field before saving the completed document.",
+      smart_document_pdf_unreadable: "This PDF is encrypted or cannot be filled. Upload an unlocked PDF and try again.",
+      smart_document_source_too_large: "Smart Documents support source files up to 25 MB.",
+      smart_document_upload_failed: "The completed PDF could not be stored.",
+      smart_document_record_unconfirmed: "The completed file was created, but its CRM record could not be confirmed. Do not retry until an administrator reviews it.",
+    };
+    sendJson(res, badRequest ? 400 : error.message === "document_not_found" ? 404 : 502, { error: messages[error.message] || "The Smart Document could not be saved.", code: error.message });
+  }
+}
+
+async function handleSmartDocumentEmail(req, res, user) {
+  const store = integrationStoreConfig();
+  if (!store || store.local) { sendJson(res, 503, { error: "Shared document storage is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Smart Document email." }); return; }
+  try {
+    const record = await getTrustedDocumentRecord(store, payload?.documentId);
+    if (!canAccessTrustedRecord(user, record)) throw new Error("document_not_found");
+    const smartDocument = record.data.smartDocument;
+    const completedFile = smartDocument?.completedFile;
+    if (smartDocument?.status !== "completed" || !completedFile?.storagePath) throw new Error("smart_document_not_completed");
+    const bytes = await downloadTrustedStorageObject(store, completedFile.storagePath, 20 * 1024 * 1024);
+    const { accessToken, connection } = await googleAccessForUser(user, GOOGLE_GMAIL_SEND_SCOPE);
+    const sent = await sendGmailMessage(fetch, accessToken, {
+      fromEmail: connection.provider_email,
+      toEmail: payload?.toEmail,
+      subject: payload?.subject,
+      message: payload?.message,
+      attachment: { bytes, name: completedFile.name, type: "application/pdf" },
+    });
+    const emailReceipt = {
+      ...smartDocument,
+      revision: Math.max(0, Number(smartDocument.revision) || 0) + 1,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user.id,
+      lastEmailedAt: new Date().toISOString(),
+      lastEmailedTo: String(payload?.toEmail || "").trim().toLowerCase(),
+      lastEmailMessageId: sent.messageId,
+    };
+    await saveTrustedSmartDocument(store, user, record, emailReceipt);
+    sendJson(res, 200, { sent: true, fromEmail: connection.provider_email, toEmail: emailReceipt.lastEmailedTo, sentAt: emailReceipt.lastEmailedAt, ...sent });
+  } catch (error) {
+    const badRequest = ["invalid_email", "invalid_subject", "invalid_message", "invalid_gmail_attachment"].includes(error.message);
+    const messages = {
+      document_not_found: "The saved CRM document could not be found or is not assigned to you.",
+      smart_document_not_completed: "Save the completed Smart Document before emailing it.",
+      google_not_connected: "Connect Google Workspace in Settings before emailing documents.",
+      google_scope_missing: "Reconnect Google Workspace to approve Gmail sending.",
+      invalid_gmail_attachment: "The completed PDF is too large for direct Gmail delivery.",
+      gmail_send_failed: "Gmail rejected the message.",
+    };
+    const status = badRequest ? 400 : ["google_not_connected", "google_scope_missing", "smart_document_not_completed"].includes(error.message) ? 409 : error.message === "document_not_found" ? 404 : 502;
+    sendJson(res, status, { error: messages[error.message] || "The completed Smart Document could not be emailed.", code: error.message });
+  }
+}
+
+async function attachZohoRequest(store, user, documentId, smartDocument) {
+  const response = await fetch(`${store.origin}/rest/v1/rpc/crm_attach_zoho_sign`, {
+    method: "POST", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ p_company: store.companyId, p_document_id: documentId, p_request_id: smartDocument.requestId, p_status: smartDocument.status, p_recipient_email: smartDocument.recipientEmail, p_actor: user.id }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result?.saved || result.request_id !== smartDocument.requestId) throw new Error("zoho_sign_record_unconfirmed");
+  return result;
+}
+
+async function handleZohoSmartDocument(req, res, user) {
+  const config = zohoSignConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store) { sendJson(res, 503, { error: "Zoho Sign is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Smart Document request." }); return; }
+  const connection = await getProviderConnection(store, "zoho", user.email);
+  if (!connection) { sendJson(res, 409, { error: "Connect Zoho Sign in Settings before preparing a Smart Document.", code: "zoho_not_connected" }); return; }
+  try {
+    const record = await getTrustedDocumentRecord(store, payload?.documentId);
+    if (!canAccessTrustedRecord(user, record)) throw new Error("document_not_found");
+    const refreshToken = decryptSecret(connection.encrypted_refresh_token, config.encryptionKey);
+    const tokens = await refreshZohoAccessToken(fetch, config, refreshToken);
+    let requestId = String(record.data?.zohoSign?.requestId || "");
+    let smartDocument = null;
+    if (!requestId) {
+      const document = await downloadTrustedDocument(store, record);
+      smartDocument = await createSmartDocument(fetch, config, tokens.access_token, document, {
+        name: payload?.recipientName, email: payload?.recipientEmail, notes: payload?.notes,
+        expirationDays: payload?.expirationDays, requestName: record.data.name,
+      });
+      await attachZohoRequest(store, user, record.id, smartDocument);
+      requestId = smartDocument.requestId;
+    }
+    const sendUrl = await createEmbeddedSendUrl(fetch, config, tokens.access_token, requestId);
+    sendJson(res, 200, { prepared: true, created: Boolean(smartDocument), requestId, status: smartDocument?.status || record.data?.zohoSign?.status || "draft", recipientEmail: smartDocument?.recipientEmail || record.data?.zohoSign?.recipientEmail || "", sendUrl });
+  } catch (error) {
+    const messages = {
+      shared_document_required: "The document must finish saving to shared storage before it can become a Smart Document.",
+      document_not_found: "The saved CRM document could not be found.",
+      unsupported_zoho_sign_file: "Zoho Sign does not support this file type.",
+      zoho_sign_file_too_large: "Zoho Sign accepts files up to 25 MB.",
+      zoho_sign_record_unconfirmed: "The Zoho draft was created, but JobCrest could not safely attach it. Do not retry yet; an administrator should review the request.",
+    };
+    sendJson(res, 502, { error: messages[error.message] || "Zoho Sign could not prepare this document.", code: error.message });
+  }
+}
+
+async function attachGoogleDriveDocument(store, user, record, driveFile, folders) {
+  const webViewLink = String(driveFile.webViewLink || "");
+  if (!/^https:\/\/drive\.google\.com\//.test(webViewLink)) throw new Error("google_drive_link_invalid");
+  const documentVersion = Math.max(1, Number(record.data.versionNumber || record.data.version) || 1);
+  const response = await fetch(`${store.origin}/rest/v1/rpc/crm_attach_google_drive_document`, {
+    method: "POST", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      p_company: store.companyId, p_document_id: record.id, p_file_id: driveFile.id, p_web_view_link: webViewLink,
+      p_lead_folder_id: folders.leadFolderId || "", p_job_folder_id: folders.jobFolderId || "",
+      p_category_folder_id: folders.categoryFolderId, p_document_version: documentVersion, p_actor: user.id,
+    }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result?.saved || result.file_id !== driveFile.id || result.document_version !== documentVersion) throw new Error("google_drive_record_unconfirmed");
+  return { webViewLink, documentVersion };
+}
+
+async function handleGoogleDriveStatus(req, res) {
+  const config = googleDriveConfig();
+  const store = integrationStoreConfig();
+  sendJson(res, 200, { configured: Boolean(config && store && !store.local), companyOwned: true, automaticCopies: true });
+}
+
+async function handleGoogleDriveDocument(req, res, user) {
+  const config = googleDriveConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store || store.local) { sendJson(res, 503, { error: "Google Drive shared storage is not configured.", code: "google_drive_not_configured" }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Drive document request." }); return; }
+  try {
+    const record = await getTrustedDocumentRecord(store, payload?.documentId);
+    if (!canAccessTrustedRecord(user, record)) throw new Error("document_not_found");
+    const currentVersion = Math.max(1, Number(record.data.versionNumber || record.data.version) || 1);
+    const existing = record.data.googleDrive;
+    if (existing?.fileId && Number(existing.versionNumber) === currentVersion && /^https:\/\/drive\.google\.com\//.test(existing.webViewLink || "")) {
+      sendJson(res, 200, { synced: true, reused: true, fileId: existing.fileId, webViewLink: existing.webViewLink, googleDrive: existing }); return;
+    }
+
+    const companyDocument = record.lead_id === "company";
+    let lead = null;
+    let job = null;
+    if (!companyDocument) {
+      lead = await getTrustedRecord(store, "contact", record.lead_id);
+      job = await getTrustedRecord(store, "job", record.job_id);
+      if (job.lead_id !== record.lead_id || !canAccessTrustedRecord(user, lead) || !canAccessTrustedRecord(user, job)) throw new Error("document_not_found");
+    }
+    const accessToken = await exchangeServiceAccountToken(fetch, config);
+    const folders = await ensureDocumentFolder(fetch, accessToken, config.rootFolderId, {
+      companyDocument,
+      leadId: record.lead_id,
+      leadNumber: lead?.data?.leadNumber || "",
+      leadName: lead?.data?.name || "Customer",
+      jobId: record.job_id,
+      projectNumber: job?.data?.projectNumber || "",
+      jobName: job?.data?.name || "Job",
+      categoryId: record.data.categoryId || record.data.category || "other",
+      categoryName: record.data.category || "Other",
+    });
+    const document = await downloadTrustedDocument(store, record, { maxBytes: 50 * 1024 * 1024, tooLargeCode: "google_drive_file_too_large" });
+    const driveFile = await uploadGoogleDriveDocument(fetch, accessToken, folders.categoryFolderId, document, { documentId: record.id, versionNumber: currentVersion });
+    const attached = await attachGoogleDriveDocument(store, user, record, driveFile, folders);
+    sendJson(res, 200, {
+      synced: true, reused: driveFile.reused === true, fileId: driveFile.id, webViewLink: attached.webViewLink,
+      googleDrive: { fileId: driveFile.id, webViewLink: attached.webViewLink, ...folders, versionNumber: currentVersion, syncedAt: new Date().toISOString(), syncedBy: user.id },
+    });
+  } catch (error) {
+    const messages = {
+      shared_document_required: "The document must finish saving to shared CRM storage before it can be copied to Drive.",
+      document_not_found: "The saved CRM document could not be found.",
+      job_not_found: "The document's job could not be found.",
+      contact_not_found: "The document's lead could not be found.",
+      google_drive_file_too_large: "Google Drive copies are limited to 50 MB in JobCrest.",
+      google_drive_duplicate_folder: "More than one matching Drive folder exists. An administrator must resolve the duplicate folders.",
+      google_drive_duplicate_document: "More than one matching Drive file exists. An administrator must resolve the duplicate copies.",
+      google_drive_record_unconfirmed: "The file reached Drive, but JobCrest could not safely attach the link. Do not retry until an administrator reviews it.",
+    };
+    const status = ["document_not_found", "job_not_found", "contact_not_found"].includes(error.message) ? 404
+      : ["invalid_document_id", "invalid_drive_id"].includes(error.message) ? 400 : 502;
+    sendJson(res, status, { error: messages[error.message] || "Google Drive could not copy this document.", code: error.message });
+  }
 }
 
 async function requireApiAdmin(req, res, handler) {
@@ -702,7 +1408,78 @@ const server = http.createServer((req, res) => {
       cloudSyncConfigured: Boolean(config.url && config.anonKey && process.env.SUPABASE_SYNC_ENABLED === "true"),
       storageMode: config.url ? "supabase" : "local",
       squareConfigured: Boolean(squareToken() && squareWebhookKey()),
+      googleWorkspaceConfigured: Boolean(googleWorkspaceConfig() && integrationStoreConfig()),
+      googleDriveConfigured: Boolean(googleDriveConfig() && integrationStoreConfig() && !integrationStoreConfig()?.local),
+      zohoSignConfigured: Boolean(zohoSignConfig() && integrationStoreConfig()),
     });
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/callback" && req.method === "GET") {
+    handleGoogleCallback(url, res);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/status" && req.method === "GET") {
+    requireApiUser(req, res, handleGoogleStatus);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/connect" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleConnect);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/disconnect" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleDisconnect);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/calendar/event" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleCalendarEvent);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/calendar/event" && req.method === "DELETE") {
+    requireApiUser(req, res, handleGoogleCalendarDelete);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/gmail/send" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleGmailSend);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/gmail/threads" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleGmailThreads);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/drive/status" && req.method === "GET") {
+    requireApiUser(req, res, handleGoogleDriveStatus);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/drive/document" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleDriveDocument);
+    return;
+  }
+  if (url.pathname === "/api/smart-documents/save" && req.method === "POST") {
+    requireApiUser(req, res, handleSmartDocumentSave);
+    return;
+  }
+  if (url.pathname === "/api/smart-documents/email" && req.method === "POST") {
+    requireApiUser(req, res, handleSmartDocumentEmail);
+    return;
+  }
+  if (url.pathname === "/api/integrations/zoho/callback" && req.method === "GET") {
+    handleZohoCallback(url, res);
+    return;
+  }
+  if (url.pathname === "/api/integrations/zoho/status" && req.method === "GET") {
+    requireApiUser(req, res, handleZohoStatus);
+    return;
+  }
+  if (url.pathname === "/api/integrations/zoho/connect" && req.method === "POST") {
+    requireApiUser(req, res, handleZohoConnect);
+    return;
+  }
+  if (url.pathname === "/api/integrations/zoho/disconnect" && req.method === "POST") {
+    requireApiUser(req, res, handleZohoDisconnect);
+    return;
+  }
+  if (url.pathname === "/api/integrations/zoho/sign/request" && req.method === "POST") {
+    requireApiUser(req, res, handleZohoSmartDocument);
     return;
   }
   if (url.pathname === "/api/square/create-invoice" && req.method === "POST") {
