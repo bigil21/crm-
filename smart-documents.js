@@ -1,7 +1,7 @@
 const { PDFDocument, StandardFonts, rgb, PDFTextField, PDFCheckBox, PDFDropdown, PDFOptionList, PDFRadioGroup } = require("pdf-lib");
 
 const FIELD_TYPES = new Set(["text", "textarea", "date", "number", "email", "checkbox"]);
-const MAX_FIELDS = 80;
+const MAX_FIELDS = 300;
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
 function safeId(value, field = "identifier") {
@@ -25,6 +25,18 @@ function normalizeFields(input) {
     ids.add(id);
     const type = String(field?.type || "text");
     if (!FIELD_TYPES.has(type)) throw new Error("invalid_smart_document_field_type");
+    const page = Number(field?.page || 1);
+    const rawPlacement = [field?.x, field?.y, field?.width, field?.height];
+    const placementPresent = rawPlacement.map((value) => value !== null && value !== undefined && value !== "");
+    const [x, y, width, height] = rawPlacement.map(Number);
+    const fontSize = Number(field?.fontSize || 10);
+    const hasPlacement = placementPresent.every(Boolean) && [x, y, width, height].every(Number.isFinite);
+    if (!Number.isInteger(page) || page < 1 || page > 500 ||
+        (hasPlacement && (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1.001 || y + height > 1.001)) ||
+        (!hasPlacement && placementPresent.some(Boolean)) ||
+        !Number.isFinite(fontSize) || fontSize < 6 || fontSize > 72) {
+      throw new Error("invalid_smart_document_field_placement");
+    }
     return {
       id,
       label: safeText(field?.label, 120, { required: true }),
@@ -32,6 +44,13 @@ function normalizeFields(input) {
       required: Boolean(field?.required),
       sourceName: safeText(field?.sourceName, 200),
       placeholder: safeText(field?.placeholder, 250),
+      page,
+      x: hasPlacement ? Number(x.toFixed(6)) : null,
+      y: hasPlacement ? Number(y.toFixed(6)) : null,
+      width: hasPlacement ? Number(width.toFixed(6)) : null,
+      height: hasPlacement ? Number(height.toFixed(6)) : null,
+      fontSize: Number(fontSize.toFixed(2)),
+      detected: Boolean(field?.detected),
     };
   });
 }
@@ -111,6 +130,38 @@ function applyExistingPdfFields(pdf, fields, responses) {
   return filled;
 }
 
+function drawPlacedField(pdf, field, response, font) {
+  if (![field.x, field.y, field.width, field.height].every(Number.isFinite)) return false;
+  const page = pdf.getPages()[field.page - 1];
+  if (!page) return false;
+  const { width: pageWidth, height: pageHeight } = page.getSize();
+  const x = field.x * pageWidth;
+  const width = Math.max(8, field.width * pageWidth);
+  const height = Math.max(8, field.height * pageHeight);
+  const y = pageHeight - (field.y * pageHeight) - height;
+  const fontSize = Math.min(field.fontSize, Math.max(6, height * 0.64));
+  page.drawRectangle({ x, y, width, height, color: rgb(1, 1, 1), opacity: 0.92 });
+  if (field.type === "checkbox") {
+    const box = Math.min(height - 2, width, 14);
+    page.drawRectangle({ x: x + 1, y: y + Math.max(1, (height - box) / 2), width: box, height: box, borderWidth: 0.8, borderColor: rgb(0.12, 0.16, 0.22) });
+    if (response === true) {
+      const bottom = y + Math.max(1, (height - box) / 2);
+      page.drawLine({ start: { x: x + 3, y: bottom + box * 0.48 }, end: { x: x + box * 0.42, y: bottom + 3 }, thickness: 1.6, color: rgb(0.03, 0.25, 0.16) });
+      page.drawLine({ start: { x: x + box * 0.42, y: bottom + 3 }, end: { x: x + box - 2, y: bottom + box - 2 }, thickness: 1.6, color: rgb(0.03, 0.25, 0.16) });
+    }
+    return true;
+  }
+  const text = responseText(field, response);
+  if (!text) return true;
+  const lines = wrapText(text, font, fontSize, Math.max(6, width - 4));
+  const lineHeight = fontSize * 1.12;
+  const maxLines = Math.max(1, Math.floor((height - 3) / lineHeight));
+  lines.slice(0, maxLines).forEach((line, index) => {
+    page.drawText(line, { x: x + 2, y: y + height - fontSize - 2 - (index * lineHeight), size: fontSize, font, color: rgb(0.03, 0.05, 0.08), maxWidth: width - 4 });
+  });
+  return true;
+}
+
 async function renderCompletedDocument(document, template, actor = {}) {
   const source = safeSourceDocument(document);
   const fields = normalizeFields(template?.fields);
@@ -122,36 +173,30 @@ async function renderCompletedDocument(document, template, actor = {}) {
     catch { throw new Error("smart_document_pdf_unreadable"); }
   } else {
     pdf = await PDFDocument.create();
+    try {
+      const image = /png/i.test(source.type) ? await pdf.embedPng(source.bytes) : /jpe?g/i.test(source.type) ? await pdf.embedJpg(source.bytes) : null;
+      if (!image) throw new Error("unsupported");
+      const scale = Math.min(612 / image.width, 792 / image.height, 1);
+      const width = image.width * scale;
+      const height = image.height * scale;
+      const page = pdf.addPage([Math.max(1, width), Math.max(1, height)]);
+      page.drawImage(image, { x: 0, y: 0, width, height });
+      sourceEmbedded = true;
+    } catch {
+      throw new Error("smart_document_source_requires_pdf_or_image");
+    }
   }
   const filledSourceFields = sourceEmbedded ? applyExistingPdfFields(pdf, fields, responses) : [];
   const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  let page = pdf.addPage([612, 792]);
-  let y = 738;
-  const addPage = () => { page = pdf.addPage([612, 792]); y = 738; };
-  page.drawText("JobCrest Smart Document", { x: 48, y, size: 19, font: bold, color: rgb(0.05, 0.16, 0.31) });
-  y -= 27;
-  page.drawText(source.name, { x: 48, y, size: 10, font, color: rgb(0.35, 0.4, 0.48) });
-  y -= 22;
-  if (!sourceEmbedded) {
-    page.drawText("The original non-PDF file remains saved with this job. This PDF contains its completed Smart Document responses.", { x: 48, y, size: 9, font, color: rgb(0.45, 0.2, 0.1) });
-    y -= 28;
+  const filledSet = new Set(filledSourceFields.map((name) => name.trim().toLowerCase()));
+  fields.forEach((field) => {
+    if (field.sourceName && filledSet.has(field.sourceName.trim().toLowerCase())) return;
+    drawPlacedField(pdf, field, responses[field.id], font);
+  });
+  if (sourceEmbedded && filledSourceFields.length) {
+    try { pdf.getForm().flatten(); } catch { /* Placed fields still remain authoritative. */ }
   }
-  for (const field of fields) {
-    const value = responseText(field, responses[field.id]) || "—";
-    const valueLines = wrapText(value, font, 10, 500);
-    const height = 34 + Math.max(1, valueLines.length) * 13;
-    if (y - height < 54) addPage();
-    page.drawText(field.label, { x: 48, y, size: 9, font: bold, color: rgb(0.18, 0.22, 0.28) });
-    y -= 15;
-    valueLines.forEach((line) => { page.drawText(line || " ", { x: 48, y, size: 10, font, color: rgb(0.05, 0.07, 0.1) }); y -= 13; });
-    page.drawLine({ start: { x: 48, y: y - 2 }, end: { x: 564, y: y - 2 }, thickness: 0.5, color: rgb(0.82, 0.85, 0.89) });
-    y -= 17;
-  }
-  if (y < 100) addPage();
-  const completedBy = safeText(actor.name || actor.email || "JobCrest representative", 200, { required: true });
-  page.drawText(`Completed by ${completedBy}`, { x: 48, y: 72, size: 8, font, color: rgb(0.4, 0.44, 0.5) });
-  page.drawText(`Completed ${new Date().toISOString()}`, { x: 48, y: 58, size: 8, font, color: rgb(0.4, 0.44, 0.5) });
+  safeText(actor.name || actor.email || "JobCrest representative", 200, { required: true });
   const bytes = Buffer.from(await pdf.save());
   const baseName = source.name.replace(/\.[^.]+$/, "").slice(0, 190) || "document";
   return { bytes, name: `${baseName} - Completed.pdf`, fields, responses, filledSourceFields };

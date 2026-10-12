@@ -45,7 +45,11 @@ const publicAssets = new Set([
   "/index.html", "/login.html", "/logout.html", "/reset-session.html",
   "/styles.css", "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/sw.js",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js",
-  "/vendor/jspdf.umd.min.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png",
+  "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png",
+]);
+const publicAssetFiles = new Map([
+  ["/vendor/pdf.min.mjs", path.join(root, "node_modules", "pdfjs-dist", "build", "pdf.min.mjs")],
+  ["/vendor/pdf.worker.min.mjs", path.join(root, "node_modules", "pdfjs-dist", "build", "pdf.worker.min.mjs")],
 ]);
 
 function authenticationRequired() {
@@ -56,6 +60,7 @@ const types = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
   ".svg": "image/svg+xml; charset=utf-8",
@@ -1537,8 +1542,9 @@ const server = http.createServer((req, res) => {
     send(res, 404, "Not found");
     return;
   }
-  const filePath = path.normalize(path.join(root, requested));
-  const relativePath = path.relative(root, filePath);
+  const filePath = publicAssetFiles.get(requested) || path.normalize(path.join(root, requested));
+  const containmentRoot = publicAssetFiles.has(requested) ? path.join(root, "node_modules", "pdfjs-dist", "build") : root;
+  const relativePath = path.relative(containmentRoot, filePath);
 
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     send(res, 403, "Forbidden");

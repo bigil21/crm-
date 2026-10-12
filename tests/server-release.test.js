@@ -40,7 +40,7 @@ for (const url of ['/server.js', '/.env', '/.env.local', '/.git/config', '/squar
 
 const publicRoutes = ['/', '/login', '/logout', '/reset-session.html', '/index.html', '/login.html', '/logout.html',
   '/app.js?v=124', '/auth.js', '/login.js', '/logout.js', '/sw.js', '/styles.css', '/manifest.webmanifest',
-  '/icon.svg', '/icon-192.png', '/icon-512.png', '/vendor/jspdf.umd.min.js', '/production-flow-v64.js',
+  '/icon.svg', '/icon-192.png', '/icon-512.png', '/vendor/jspdf.umd.min.js', '/vendor/pdf.min.mjs', '/vendor/pdf.worker.min.mjs', '/production-flow-v64.js',
   '/workflow-checklists-v65.js', '/project-conversations-v67.js'];
 for (const url of publicRoutes) test(`current application asset remains available: ${url}`, async () => {
   const h = server(); const r = await h.request(url); assert.equal(r.status, 200); assert.ok(r.body.length);

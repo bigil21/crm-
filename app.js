@@ -554,6 +554,11 @@ let googleIntegrationState = { loaded: false, loading: false, configured: false,
 let googleDriveState = { loaded: false, loading: false, configured: false };
 let zohoIntegrationState = { loaded: false, loading: false, configured: false, connected: false, email: "", dataCenter: "" };
 let smartDocumentPreviewObjectUrl = "";
+let smartDocumentPdf = null;
+let smartDocumentPdfModule = null;
+let smartDocumentPlacementTool = "";
+let selectedSmartDocumentFieldId = "";
+let smartDocumentRenderToken = 0;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -765,6 +770,10 @@ const els = {
   smartDocumentMeta: document.querySelector("#smartDocumentMeta"),
   smartDocumentPreview: document.querySelector("#smartDocumentPreview"),
   smartDocumentPreviewFallback: document.querySelector("#smartDocumentPreviewFallback"),
+  smartDocumentPages: document.querySelector("#smartDocumentPages"),
+  smartDocumentCanvasHelp: document.querySelector("#smartDocumentCanvasHelp"),
+  analyzeSmartDocument: document.querySelector("#analyzeSmartDocument"),
+  deleteSelectedSmartField: document.querySelector("#deleteSelectedSmartField"),
   smartDocumentFields: document.querySelector("#smartDocumentFields"),
   smartDocumentResponses: document.querySelector("#smartDocumentResponses"),
   smartDocumentEmailPanel: document.querySelector("#smartDocumentEmailPanel"),
@@ -1047,13 +1056,20 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     estimateId: document.estimateId || "",
     smartDocument: document.smartDocument && Array.isArray(document.smartDocument.fields)
       ? {
-          fields: document.smartDocument.fields.slice(0, 80).map((field, index) => ({
+          fields: document.smartDocument.fields.slice(0, 300).map((field, index) => ({
             id: String(field?.id || `field-${index + 1}`),
             label: String(field?.label || `Field ${index + 1}`),
             type: ["text", "textarea", "date", "number", "email", "checkbox"].includes(field?.type) ? field.type : "text",
             required: Boolean(field?.required),
             sourceName: String(field?.sourceName || ""),
             placeholder: String(field?.placeholder || ""),
+            page: Math.max(1, Math.round(number(field?.page) || 1)),
+            x: field?.x !== null && field?.x !== undefined && field?.x !== "" && Number.isFinite(Number(field.x)) ? Math.max(0, Math.min(1, Number(field.x))) : null,
+            y: field?.y !== null && field?.y !== undefined && field?.y !== "" && Number.isFinite(Number(field.y)) ? Math.max(0, Math.min(1, Number(field.y))) : null,
+            width: field?.width !== null && field?.width !== undefined && field?.width !== "" && Number.isFinite(Number(field.width)) ? Math.max(0.01, Math.min(1, Number(field.width))) : null,
+            height: field?.height !== null && field?.height !== undefined && field?.height !== "" && Number.isFinite(Number(field.height)) ? Math.max(0.01, Math.min(1, Number(field.height))) : null,
+            fontSize: Math.max(6, Math.min(72, number(field?.fontSize) || 10)),
+            detected: Boolean(field?.detected),
           })),
           responses: document.smartDocument.responses && typeof document.smartDocument.responses === "object" ? { ...document.smartDocument.responses } : {},
           status: ["template", "draft", "completed"].includes(document.smartDocument.status) ? document.smartDocument.status : "template",
@@ -5810,7 +5826,8 @@ function supportsZohoSmartDocument(record) {
 }
 
 function supportsNativeSmartDocument(record) {
-  return record?.kind !== "photo" && number(record?.size) > 0 && number(record.size) <= 25 * 1024 * 1024 && Boolean(record.storagePath || record.dataUrl);
+  const supportedFormat = /(?:application\/pdf|image\/(?:png|jpeg))/i.test(record?.type || "") || /\.(?:pdf|png|jpe?g)$/i.test(record?.name || "");
+  return supportedFormat && number(record?.size) > 0 && number(record.size) <= 25 * 1024 * 1024 && Boolean(record.storagePath || record.dataUrl);
 }
 
 function nativeSmartDocumentButton(record) {
@@ -5819,7 +5836,7 @@ function nativeSmartDocumentButton(record) {
   const label = status === "completed" ? "Open Completed Doc" : status ? "Continue Smart Doc" : "Create Smart Doc";
   const title = supported
     ? "Create, fill, save, and email this document without leaving JobCrest"
-    : "Finish saving this file to shared storage before creating a Smart Document";
+    : "Smart Documents currently support saved PDF, PNG, and JPEG files up to 25 MB";
   return `<button class="secondary-button smart-document-button" type="button" data-action="open-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}"><span aria-hidden="true" data-icon="edit"></span>${label}</button>`;
 }
 
@@ -6880,6 +6897,13 @@ function smartDocumentFieldRows() {
     required: Boolean(row.querySelector('[name="fieldRequired"]')?.checked),
     sourceName: row.querySelector('[name="fieldSourceName"]')?.value.trim() || "",
     placeholder: "",
+    page: Math.max(1, Math.round(number(row.querySelector('[name="fieldPage"]')?.value) || 1)),
+    x: row.querySelector('[name="fieldX"]')?.value === "" ? null : number(row.querySelector('[name="fieldX"]')?.value),
+    y: row.querySelector('[name="fieldY"]')?.value === "" ? null : number(row.querySelector('[name="fieldY"]')?.value),
+    width: row.querySelector('[name="fieldWidth"]')?.value === "" ? null : number(row.querySelector('[name="fieldWidth"]')?.value),
+    height: row.querySelector('[name="fieldHeight"]')?.value === "" ? null : number(row.querySelector('[name="fieldHeight"]')?.value),
+    fontSize: Math.max(6, Math.min(72, number(row.querySelector('[name="fieldFontSize"]')?.value) || 10)),
+    detected: row.dataset.smartDetected === "true",
   }));
 }
 
@@ -6899,9 +6923,10 @@ function smartDocumentInput(field, value) {
 }
 
 function renderSmartDocumentEditor(fields, responses = {}) {
-  const safeFields = fields.length ? fields.slice(0, 80) : defaultSmartDocumentFields(findManagedDocument(els.smartDocumentForm?.elements.documentId.value).lead);
+  const safeFields = (fields || []).slice(0, 300);
+  if (selectedSmartDocumentFieldId && !safeFields.some((field) => field.id === selectedSmartDocumentFieldId)) selectedSmartDocumentFieldId = "";
   els.smartDocumentFields.innerHTML = safeFields.map((field) => `
-    <div class="smart-document-field-row" data-smart-field-id="${escapeHtml(field.id)}">
+    <div class="smart-document-field-row${field.id === selectedSmartDocumentFieldId ? " selected" : ""}" data-smart-field-id="${escapeHtml(field.id)}" data-smart-detected="${field.detected ? "true" : "false"}">
       <input name="fieldLabel" value="${escapeHtml(field.label)}" maxlength="120" aria-label="Field label" placeholder="Field label" />
       <select name="fieldType" aria-label="Field type">
         ${[["text","Text"],["textarea","Long text"],["date","Date"],["number","Number"],["email","Email"],["checkbox","Checkbox"]].map(([value, label]) => `<option value="${value}" ${field.type === value ? "selected" : ""}>${label}</option>`).join("")}
@@ -6909,12 +6934,22 @@ function renderSmartDocumentEditor(fields, responses = {}) {
       <label class="smart-document-required"><input name="fieldRequired" type="checkbox" ${field.required ? "checked" : ""} />Required</label>
       <button class="mini-button" type="button" data-remove-smart-field="${escapeHtml(field.id)}" aria-label="Remove ${escapeHtml(field.label)}"><span aria-hidden="true" data-icon="trash"></span></button>
       <input class="smart-document-source-name" name="fieldSourceName" value="${escapeHtml(field.sourceName || "")}" maxlength="200" aria-label="Matching PDF field name" placeholder="Matching PDF field name (optional)" />
+      <span class="smart-document-field-location">Page ${Math.max(1, Math.round(number(field.page) || 1))}${field.detected ? " · detected" : ""}</span>
+      <label class="smart-document-font-size">Text size <input name="fieldFontSize" type="number" min="6" max="72" step="1" value="${Math.max(6, Math.min(72, number(field.fontSize) || 10))}" /></label>
+      <input name="fieldPage" type="hidden" value="${Math.max(1, Math.round(number(field.page) || 1))}" />
+      <input name="fieldX" type="hidden" value="${Number.isFinite(Number(field.x)) ? escapeHtml(field.x) : ""}" />
+      <input name="fieldY" type="hidden" value="${Number.isFinite(Number(field.y)) ? escapeHtml(field.y) : ""}" />
+      <input name="fieldWidth" type="hidden" value="${Number.isFinite(Number(field.width)) ? escapeHtml(field.width) : ""}" />
+      <input name="fieldHeight" type="hidden" value="${Number.isFinite(Number(field.height)) ? escapeHtml(field.height) : ""}" />
     </div>`).join("");
+  if (!safeFields.length) els.smartDocumentFields.innerHTML = '<div class="smart-document-empty-fields">No fields yet. Analyze the document or choose a field type and click the page.</div>';
   els.smartDocumentResponses.innerHTML = safeFields.map((field) => {
     const initial = Object.prototype.hasOwnProperty.call(responses, field.id) ? responses[field.id] : field.defaultValue || (field.type === "checkbox" ? false : "");
     return `<div class="smart-document-response"><label><span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>${smartDocumentInput(field, initial)}</label></div>`;
   }).join("");
   hydrateIcons(els.smartDocumentFields);
+  renderSmartDocumentOverlays(safeFields, responses);
+  updateSmartDocumentSelection(selectedSmartDocumentFieldId);
 }
 
 function refreshSmartDocumentResponses() {
@@ -6923,8 +6958,283 @@ function refreshSmartDocumentResponses() {
   renderSmartDocumentEditor(fields, responses);
 }
 
-async function smartDocumentPreviewUrl(record) {
-  const completedPath = record.smartDocument?.completedFile?.storagePath || "";
+function isPlacedSmartField(field) {
+  return [field?.x, field?.y, field?.width, field?.height].every((value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)));
+}
+
+function setSmartFieldGeometry(fieldId, geometry) {
+  const row = els.smartDocumentFields?.querySelector(`[data-smart-field-id="${CSS.escape(fieldId)}"]`);
+  if (!row) return;
+  const values = { fieldPage: geometry.page, fieldX: geometry.x, fieldY: geometry.y, fieldWidth: geometry.width, fieldHeight: geometry.height };
+  Object.entries(values).forEach(([name, value]) => { const input = row.querySelector(`[name="${name}"]`); if (input) input.value = Number(value).toFixed(name === "fieldPage" ? 0 : 6); });
+  const label = row.querySelector(".smart-document-field-location");
+  if (label) label.textContent = `Page ${geometry.page}${row.dataset.smartDetected === "true" ? " · detected" : ""}`;
+}
+
+function syncSmartOverlayValue(fieldId, value) {
+  const response = els.smartDocumentResponses?.querySelector(`[data-smart-response-id="${CSS.escape(fieldId)}"]`);
+  if (!response) return;
+  if (response.type === "checkbox") response.checked = Boolean(value);
+  else response.value = String(value ?? "");
+}
+
+function smartOverlayControl(field, value) {
+  const common = `data-smart-overlay-input="${escapeHtml(field.id)}" aria-label="${escapeHtml(field.label)}"`;
+  if (field.type === "checkbox") return `<input ${common} type="checkbox" ${value ? "checked" : ""} />`;
+  if (field.type === "textarea") return `<textarea ${common} style="font-size:${escapeHtml(field.fontSize || 10)}px">${escapeHtml(value || "")}</textarea>`;
+  const type = ["date", "number", "email"].includes(field.type) ? field.type : "text";
+  return `<input ${common} type="${type}" value="${escapeHtml(value || "")}" style="font-size:${escapeHtml(field.fontSize || 10)}px" ${type === "number" ? 'step="any"' : ""} />`;
+}
+
+function updateSmartDocumentSelection(fieldId = "") {
+  const exists = Boolean(fieldId && els.smartDocumentFields?.querySelector(`[data-smart-field-id="${CSS.escape(fieldId)}"]`));
+  selectedSmartDocumentFieldId = exists ? fieldId : "";
+  els.smartDocumentPages?.querySelectorAll("[data-smart-overlay-id]").forEach((overlay) => {
+    const selected = overlay.dataset.smartOverlayId === selectedSmartDocumentFieldId;
+    overlay.classList.toggle("selected", selected);
+    overlay.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+  els.smartDocumentFields?.querySelectorAll("[data-smart-field-id]").forEach((row) => row.classList.toggle("selected", row.dataset.smartFieldId === selectedSmartDocumentFieldId));
+  if (els.deleteSelectedSmartField) {
+    els.deleteSelectedSmartField.disabled = !selectedSmartDocumentFieldId;
+    els.deleteSelectedSmartField.title = selectedSmartDocumentFieldId ? "Delete the highlighted field" : "Select a field on the document to delete it";
+  }
+}
+
+function deleteSelectedSmartDocumentField() {
+  if (!selectedSmartDocumentFieldId) return setSaveState(els.smartDocumentSaveStatus, "Select a field bubble on the document first.", "error");
+  const fieldId = selectedSmartDocumentFieldId;
+  const responses = smartDocumentResponseValues();
+  delete responses[fieldId];
+  const fields = smartDocumentFieldRows().filter((field) => field.id !== fieldId);
+  selectedSmartDocumentFieldId = "";
+  renderSmartDocumentEditor(fields, responses);
+  if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Field deleted. Select another field to move, resize, or delete it.";
+}
+
+function enableSmartOverlayManipulation(overlay, field) {
+  const page = overlay.closest(".smart-document-page");
+  if (!page) return;
+  const applyGeometry = (geometry) => {
+    Object.assign(field, geometry);
+    overlay.style.left = `${geometry.x * 100}%`; overlay.style.top = `${geometry.y * 100}%`;
+    overlay.style.width = `${geometry.width * 100}%`; overlay.style.height = `${geometry.height * 100}%`;
+    setSmartFieldGeometry(field.id, geometry);
+  };
+  const begin = (event, resizing) => {
+    if (event.button !== 0) return;
+    event.preventDefault(); event.stopPropagation();
+    updateSmartDocumentSelection(field.id);
+    const activePage = overlay.closest(".smart-document-page") || page;
+    if (!activePage?.isConnected) return;
+    const bounds = activePage.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    const start = { x: event.clientX, y: event.clientY, left: number(field.x), top: number(field.y), width: number(field.width), height: number(field.height) };
+    overlay.setPointerCapture?.(event.pointerId);
+    const move = (next) => {
+      const dx = (next.clientX - start.x) / bounds.width;
+      const dy = (next.clientY - start.y) / bounds.height;
+      const geometry = resizing
+        ? { page: field.page, x: start.left, y: start.top, width: Math.max(0.035, Math.min(1 - start.left, start.width + dx)), height: Math.max(0.025, Math.min(1 - start.top, start.height + dy)) }
+        : { page: field.page, x: Math.max(0, Math.min(1 - start.width, start.left + dx)), y: Math.max(0, Math.min(1 - start.height, start.top + dy)), width: start.width, height: start.height };
+      applyGeometry(geometry);
+    };
+    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+  };
+  const moveHandle = overlay.querySelector(".smart-field-drag-handle");
+  const resizeHandle = overlay.querySelector(".smart-field-resize-handle");
+  moveHandle?.addEventListener("pointerdown", (event) => begin(event, false));
+  resizeHandle?.addEventListener("pointerdown", (event) => begin(event, true));
+  moveHandle?.addEventListener("keydown", (event) => {
+    if (!event.key.startsWith("Arrow")) return;
+    event.preventDefault(); updateSmartDocumentSelection(field.id);
+    const step = event.shiftKey ? 0.02 : 0.005;
+    const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+    const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+    applyGeometry({ page: field.page, x: Math.max(0, Math.min(1 - field.width, field.x + dx)), y: Math.max(0, Math.min(1 - field.height, field.y + dy)), width: field.width, height: field.height });
+  });
+  resizeHandle?.addEventListener("keydown", (event) => {
+    if (!event.key.startsWith("Arrow")) return;
+    event.preventDefault(); updateSmartDocumentSelection(field.id);
+    const step = event.shiftKey ? 0.02 : 0.005;
+    const dw = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+    const dh = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+    applyGeometry({ page: field.page, x: field.x, y: field.y, width: Math.max(0.035, Math.min(1 - field.x, field.width + dw)), height: Math.max(0.025, Math.min(1 - field.y, field.height + dh)) });
+  });
+}
+
+function renderSmartDocumentOverlays(fields = smartDocumentFieldRows(), responses = smartDocumentResponseValues()) {
+  els.smartDocumentPages?.querySelectorAll(".smart-document-overlay-layer").forEach((layer) => { layer.innerHTML = ""; });
+  fields.filter(isPlacedSmartField).forEach((field) => {
+    const page = els.smartDocumentPages?.querySelector(`[data-smart-page="${field.page}"]`);
+    const layer = page?.querySelector(".smart-document-overlay-layer");
+    if (!layer) return;
+    const overlay = document.createElement("div");
+    overlay.className = `smart-field-overlay${field.id === selectedSmartDocumentFieldId ? " selected" : ""}`;
+    overlay.dataset.smartOverlayId = field.id;
+    overlay.setAttribute("role", "group");
+    overlay.setAttribute("aria-label", `${field.label} field`);
+    overlay.setAttribute("aria-selected", field.id === selectedSmartDocumentFieldId ? "true" : "false");
+    overlay.style.cssText = `left:${field.x * 100}%;top:${field.y * 100}%;width:${field.width * 100}%;height:${field.height * 100}%`;
+    overlay.innerHTML = `<button class="smart-field-drag-handle" type="button" title="Drag to move ${escapeHtml(field.label)}; use arrow keys for precise movement" aria-label="Move ${escapeHtml(field.label)}">${escapeHtml(field.label)}</button>${smartOverlayControl(field, responses[field.id])}<button class="smart-field-resize-handle" type="button" title="Drag to resize; use arrow keys for precise sizing" aria-label="Resize ${escapeHtml(field.label)}"></button>`;
+    const control = overlay.querySelector("[data-smart-overlay-input]");
+    overlay.addEventListener("pointerdown", () => updateSmartDocumentSelection(field.id));
+    overlay.addEventListener("focusin", () => updateSmartDocumentSelection(field.id));
+    control?.addEventListener("input", () => syncSmartOverlayValue(field.id, control.type === "checkbox" ? control.checked : control.value));
+    control?.addEventListener("change", () => syncSmartOverlayValue(field.id, control.type === "checkbox" ? control.checked : control.value));
+    layer.append(overlay);
+    enableSmartOverlayManipulation(overlay, field);
+  });
+}
+
+function defaultSmartFieldSize(type) {
+  if (type === "checkbox") return { width: 0.055, height: 0.04 };
+  if (type === "textarea") return { width: 0.42, height: 0.1 };
+  return { width: type === "date" || type === "number" ? 0.22 : 0.32, height: 0.045 };
+}
+
+function addPlacedSmartField(type, pageNumber, x, y, { label = "", sourceName = "", detected = false, width, height } = {}) {
+  const responses = smartDocumentResponseValues();
+  const fields = smartDocumentFieldRows();
+  if (fields.length >= 300) throw new Error("This Smart Document already has the 300-field maximum.");
+  const size = defaultSmartFieldSize(type);
+  const finalWidth = Math.max(0.025, Math.min(1 - x, width || size.width));
+  const finalHeight = Math.max(0.02, Math.min(1 - y, height || size.height));
+  const field = { id: uid("smart-field"), label: label || `${type === "checkbox" ? "Checkbox" : "Field"} ${fields.length + 1}`, type, required: false, sourceName, placeholder: "", page: pageNumber, x, y, width: finalWidth, height: finalHeight, fontSize: 10, detected };
+  fields.push(field);
+  selectedSmartDocumentFieldId = field.id;
+  renderSmartDocumentEditor(fields, responses);
+  els.smartDocumentFields?.querySelector(`[data-smart-field-id="${CSS.escape(field.id)}"]`)?.scrollIntoView({ block: "nearest" });
+  return field;
+}
+
+function smartFieldTypeFromAnnotation(annotation) {
+  if (annotation.fieldType === "Btn") return "checkbox";
+  const name = `${annotation.fieldName || ""} ${annotation.alternativeText || ""}`.toLowerCase();
+  if (/date/.test(name)) return "date";
+  if (/email/.test(name)) return "email";
+  if (/amount|price|total|quantity|number/.test(name)) return "number";
+  return annotation.multiLine ? "textarea" : "text";
+}
+
+function smartFieldOverlaps(fields, candidate) {
+  return fields.some((field) => field.page === candidate.page && isPlacedSmartField(field) &&
+    Math.abs((field.x + field.width / 2) - (candidate.x + candidate.width / 2)) < Math.max(0.025, candidate.width * 0.35) &&
+    Math.abs((field.y + field.height / 2) - (candidate.y + candidate.height / 2)) < Math.max(0.018, candidate.height * 0.55));
+}
+
+async function analyzeSmartDocumentPages() {
+  if (!smartDocumentPdf || !els.smartDocumentPages) return setSaveState(els.smartDocumentSaveStatus, "Open a PDF before analyzing it.", "error");
+  els.analyzeSmartDocument.disabled = true;
+  setSaveState(els.smartDocumentSaveStatus, "Analyzing every page for form fields, labels, and blank lines…", "saving");
+  try {
+    const responses = smartDocumentResponseValues();
+    const fields = smartDocumentFieldRows();
+    const labelPattern = /(?:^|\b)(name|customer|company|address|city|state|zip|phone|email|date|description|item|material|quantity|qty|price|rate|amount|total|signature|initials?|notes?)\b/i;
+    for (const pageElement of els.smartDocumentPages.querySelectorAll(".smart-document-page")) {
+      const page = pageElement._pdfPage;
+      const viewport = pageElement._pdfViewport;
+      const pageNumber = number(pageElement.dataset.smartPage);
+      const pageWidth = viewport.width; const pageHeight = viewport.height;
+      const annotations = await page.getAnnotations({ intent: "display" });
+      annotations.filter((item) => item.subtype === "Widget" && Array.isArray(item.rect)).forEach((annotation) => {
+        const rect = viewport.convertToViewportRectangle(annotation.rect);
+        const left = Math.max(0, Math.min(rect[0], rect[2])); const top = Math.max(0, Math.min(rect[1], rect[3]));
+        const candidate = { page: pageNumber, x: left / pageWidth, y: top / pageHeight, width: Math.max(18, Math.abs(rect[2] - rect[0])) / pageWidth, height: Math.max(16, Math.abs(rect[3] - rect[1])) / pageHeight };
+        if (smartFieldOverlaps(fields, candidate)) return;
+        const name = String(annotation.fieldName || annotation.alternativeText || `Field ${fields.length + 1}`).slice(0, 120);
+        fields.push({ id: uid("smart-field"), label: name, type: smartFieldTypeFromAnnotation(annotation), required: annotation.required === true, sourceName: String(annotation.fieldName || "").slice(0, 200), placeholder: "", ...candidate, fontSize: 10, detected: true });
+      });
+      const text = await page.getTextContent();
+      text.items.forEach((item) => {
+        const label = String(item.str || "").trim();
+        const blankRun = /_{3,}|\.{5,}/.test(label);
+        if (!blankRun && !(label.endsWith(":") && labelPattern.test(label))) return;
+        const transform = smartDocumentPdfModule.Util.transform(viewport.transform, item.transform);
+        const itemX = transform[4]; const itemTop = transform[5] - Math.abs(transform[3] || item.height || 12);
+        const renderedWidth = Math.max(1, Math.abs((item.width || 0) * viewport.scale));
+        const inlineBlanks = [...label.matchAll(/([A-Za-z][A-Za-z ]{0,32}?):\s*(_{3,}|\.{5,})/g)];
+        if (inlineBlanks.length > 1) {
+          const pixelsPerCharacter = renderedWidth / Math.max(1, label.length);
+          inlineBlanks.forEach((match) => {
+            const cleanLabel = String(match[1] || "").trim().slice(0, 120);
+            if (!labelPattern.test(cleanLabel)) return;
+            const blank = String(match[2] || "");
+            const blankOffset = Number(match.index || 0) + String(match[0] || "").indexOf(blank);
+            const x = Math.max(0, Math.min(0.96, (itemX + blankOffset * pixelsPerCharacter) / pageWidth));
+            const width = Math.max(0.06, Math.min(0.36, Math.max(24, blank.length * pixelsPerCharacter) / pageWidth));
+            const type = /date/i.test(cleanLabel) ? "date" : /amount|price|total|qty|quantity|rate/i.test(cleanLabel) ? "number" : /email/i.test(cleanLabel) ? "email" : "text";
+            const candidate = { page: pageNumber, x, y: Math.max(0, itemTop / pageHeight), width: Math.min(width, 0.98 - x), height: Math.max(defaultSmartFieldSize(type).height, 18 / pageHeight) };
+            if (!smartFieldOverlaps(fields, candidate)) fields.push({ id: uid("smart-field"), label: cleanLabel, type, required: false, sourceName: "", placeholder: "", ...candidate, fontSize: 10, detected: true });
+          });
+          return;
+        }
+        let x = blankRun ? itemX / pageWidth : Math.min(0.92, (itemX + renderedWidth + 6) / pageWidth);
+        let y = Math.max(0, itemTop / pageHeight);
+        const available = Math.max(0.08, 0.98 - x);
+        const size = defaultSmartFieldSize(/date/i.test(label) ? "date" : /amount|price|total|qty|quantity|rate/i.test(label) ? "number" : /email/i.test(label) ? "email" : "text");
+        const candidate = { page: pageNumber, x, y, width: Math.min(size.width, available), height: Math.max(size.height, 18 / pageHeight) };
+        if (smartFieldOverlaps(fields, candidate)) return;
+        const cleanLabel = (label.replace(/[:_.]+\s*$/g, "").trim() || `Field ${fields.length + 1}`).slice(0, 120);
+        fields.push({ id: uid("smart-field"), label: cleanLabel, type: /date/i.test(cleanLabel) ? "date" : /amount|price|total|qty|quantity|rate/i.test(cleanLabel) ? "number" : /email/i.test(cleanLabel) ? "email" : "text", required: false, sourceName: "", placeholder: "", ...candidate, fontSize: 10, detected: true });
+      });
+    }
+    renderSmartDocumentEditor(fields.slice(0, 300), responses);
+    setSaveState(els.smartDocumentSaveStatus, `${fields.length} fillable fields are mapped across the original document. Review, move, resize, or add fields before saving.`, "success");
+  } catch (error) {
+    setSaveState(els.smartDocumentSaveStatus, error.message || "The document could not be analyzed.", "error");
+  } finally { els.analyzeSmartDocument.disabled = false; }
+}
+
+async function renderSmartDocumentCanvas(url, record) {
+  const token = ++smartDocumentRenderToken;
+  els.smartDocumentPages.innerHTML = "";
+  smartDocumentPdf = null;
+  if (!url) throw new Error("preview_unavailable");
+  if (/pdf/i.test(record.type || "") || /\.pdf$/i.test(record.name || "")) {
+    smartDocumentPdfModule ||= await import("/vendor/pdf.min.mjs?v=1");
+    smartDocumentPdfModule.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.mjs?v=1";
+    const loadingTask = smartDocumentPdfModule.getDocument({ url });
+    const pdf = await loadingTask.promise;
+    if (token !== smartDocumentRenderToken) { await pdf.destroy(); return; }
+    smartDocumentPdf = pdf;
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1.35 });
+      const wrapper = document.createElement("div");
+      wrapper.className = "smart-document-page"; wrapper.dataset.smartPage = pageNumber;
+      wrapper.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+      wrapper.innerHTML = `<canvas aria-label="Document page ${pageNumber}"></canvas><div class="smart-document-overlay-layer"></div><span class="smart-document-page-number">Page ${pageNumber}</span>`;
+      wrapper._pdfPage = page; wrapper._pdfViewport = viewport;
+      els.smartDocumentPages.append(wrapper);
+      const canvas = wrapper.querySelector("canvas");
+      const ratio = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
+      canvas.style.width = `${viewport.width}px`; canvas.style.height = `${viewport.height}px`;
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport, transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0] }).promise;
+    }
+  } else if (/^image\//i.test(record.type || "")) {
+    const wrapper = document.createElement("div"); wrapper.className = "smart-document-page smart-document-image-page"; wrapper.dataset.smartPage = "1";
+    wrapper.innerHTML = `<img src="${escapeHtml(url)}" alt="Original document" /><div class="smart-document-overlay-layer"></div><span class="smart-document-page-number">Page 1</span>`;
+    els.smartDocumentPages.append(wrapper);
+  } else throw new Error("preview_unavailable");
+  els.smartDocumentPages.querySelectorAll(".smart-document-page").forEach((page) => page.addEventListener("click", (event) => {
+    if (!smartDocumentPlacementTool || event.target.closest(".smart-field-overlay")) return;
+    if (!(event.target.matches("canvas, img") || event.target.classList.contains("smart-document-overlay-layer"))) return;
+    const bounds = page.getBoundingClientRect();
+    const size = defaultSmartFieldSize(smartDocumentPlacementTool);
+    const x = Math.max(0, Math.min(1 - size.width, (event.clientX - bounds.left) / bounds.width));
+    const y = Math.max(0, Math.min(1 - size.height, (event.clientY - bounds.top) / bounds.height));
+    addPlacedSmartField(smartDocumentPlacementTool, number(page.dataset.smartPage), x, y);
+    smartDocumentPlacementTool = "";
+    document.querySelectorAll("[data-smart-tool]").forEach((button) => button.classList.remove("active"));
+    if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Field placed. Fill it directly, drag its blue title to move it, or use the lower-right handle to resize it.";
+  }));
+}
+
+async function smartDocumentPreviewUrl(record, { original = false } = {}) {
+  const completedPath = original ? "" : record.smartDocument?.completedFile?.storagePath || "";
   const storagePath = completedPath || record.storagePath || "";
   if (storagePath && cloudClient?.storage) {
     const { data, error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).createSignedUrl(storagePath, 900);
@@ -6940,11 +7250,12 @@ async function openSmartDocumentDialog(record) {
   const { lead } = findManagedDocument(record.id);
   const job = lead ? contactJobs(lead).find((item) => item.id === record.jobId) : null;
   const smart = record.smartDocument;
+  selectedSmartDocumentFieldId = "";
   els.smartDocumentForm.reset();
   els.smartDocumentForm.elements.documentId.value = record.id;
   els.smartDocumentTitle.textContent = smart ? record.name : `Create Smart Document from ${record.name}`;
   els.smartDocumentMeta.textContent = [lead?.name, job?.name, smart ? `${smart.status} · revision ${smart.revision}` : "New Smart Document"].filter(Boolean).join(" · ");
-  const fields = smart?.fields?.length ? smart.fields : defaultSmartDocumentFields(lead);
+  const fields = smart?.fields?.length ? smart.fields : [];
   const responses = smart?.responses || Object.fromEntries(fields.filter((field) => field.defaultValue !== undefined).map((field) => [field.id, field.defaultValue]));
   renderSmartDocumentEditor(fields, responses);
   els.smartDocumentForm.elements.emailTo.value = smart?.lastEmailedTo || lead?.email || "";
@@ -6957,15 +7268,21 @@ async function openSmartDocumentDialog(record) {
   if (smartDocumentPreviewObjectUrl) URL.revokeObjectURL(smartDocumentPreviewObjectUrl);
   smartDocumentPreviewObjectUrl = "";
   els.smartDocumentPreview.removeAttribute("src");
-  els.smartDocumentPreview.classList.remove("hidden");
+  els.smartDocumentPreview.classList.add("hidden");
+  els.smartDocumentPages.innerHTML = "";
   els.smartDocumentPreviewFallback.classList.add("hidden");
   els.smartDocumentDialog.showModal();
   try {
-    const previewUrl = await smartDocumentPreviewUrl(record);
-    if (!previewUrl || !/pdf|image|text\/plain/i.test(`${record.type} ${smart?.completedFile?.type || ""}`)) throw new Error("preview_unavailable");
-    els.smartDocumentPreview.src = previewUrl;
+    const previewUrl = await smartDocumentPreviewUrl(record, { original: true });
+    await renderSmartDocumentCanvas(previewUrl, record);
+    renderSmartDocumentOverlays(fields, responses);
+    els.analyzeSmartDocument.disabled = !smartDocumentPdf;
+    els.analyzeSmartDocument.title = smartDocumentPdf ? "Detect fields, labels, and blank lines across every PDF page" : "Automatic detection is available for PDF documents; fields can still be placed manually on this image";
+    els.smartDocumentCanvasHelp.textContent = fields.length
+      ? "Fill values directly on the original pages. Drag the field title to move it and use the lower-right handle to resize it."
+      : "Select Analyze Document to detect fields on every page, or choose a field type and click anywhere on a page.";
   } catch {
-    els.smartDocumentPreview.classList.add("hidden");
+    els.smartDocumentPages.innerHTML = "";
     els.smartDocumentPreviewFallback.classList.remove("hidden");
   }
 }
@@ -6973,6 +7290,8 @@ async function openSmartDocumentDialog(record) {
 function smartDocumentPayloadFromEditor(status) {
   const fields = smartDocumentFieldRows();
   if (!fields.length || fields.some((field) => !field.label)) throw new Error("Add a label for every Smart Document field.");
+  const unplaced = fields.find((field) => !isPlacedSmartField(field));
+  if (unplaced) throw new Error(`Place ${unplaced.label} on the document before saving.`);
   const ids = new Set(fields.map((field) => field.id));
   if (ids.size !== fields.length) throw new Error("Each Smart Document field must be unique.");
   const responses = smartDocumentResponseValues();
@@ -6986,6 +7305,7 @@ function smartDocumentPayloadFromEditor(status) {
 function setSmartDocumentButtonsDisabled(disabled) {
   [els.addSmartDocumentField, els.saveSmartDocumentTemplate, els.saveSmartDocumentDraft, els.completeSmartDocument, els.emailSmartDocument]
     .forEach((button) => { if (button) button.disabled = disabled; });
+  if (els.deleteSelectedSmartField) els.deleteSelectedSmartField.disabled = disabled || !selectedSmartDocumentFieldId;
 }
 
 async function saveNativeSmartDocument(status) {
@@ -7009,7 +7329,7 @@ async function saveNativeSmartDocument(status) {
       els.emailSmartDocument.classList.toggle("hidden", !completed);
       if (completed) {
         const previewUrl = await smartDocumentPreviewUrl(record).catch(() => "");
-        if (previewUrl) { els.smartDocumentPreview.classList.remove("hidden"); els.smartDocumentPreviewFallback.classList.add("hidden"); els.smartDocumentPreview.src = previewUrl; }
+        if (previewUrl) { els.smartDocumentPreviewFallback.classList.add("hidden"); await renderSmartDocumentCanvas(previewUrl, { ...record, type: "application/pdf", name: result.completedFile?.name || record.name }); renderSmartDocumentOverlays([], {}); }
       }
     }
     setSaveState(els.smartDocumentSaveStatus, status === "completed" ? "Completed PDF saved to this job. It is ready to email." : status === "template" ? "Smart Document fields saved." : "Draft responses saved.", "success");
@@ -7059,6 +7379,11 @@ async function emailNativeSmartDocument() {
 function closeSmartDocumentDialog() {
   els.smartDocumentDialog?.close();
   els.smartDocumentPreview?.removeAttribute("src");
+  els.smartDocumentPages && (els.smartDocumentPages.innerHTML = "");
+  smartDocumentPdf?.destroy?.();
+  smartDocumentPdf = null;
+  smartDocumentPlacementTool = "";
+  selectedSmartDocumentFieldId = "";
   if (smartDocumentPreviewObjectUrl) URL.revokeObjectURL(smartDocumentPreviewObjectUrl);
   smartDocumentPreviewObjectUrl = "";
 }
@@ -10470,19 +10795,51 @@ function bindEvents() {
   els.closeZohoSignDialog?.addEventListener("click", () => els.zohoSignDialog.close());
   els.cancelZohoSignDialog?.addEventListener("click", () => els.zohoSignDialog.close());
   els.addSmartDocumentField?.addEventListener("click", () => {
-    const responses = smartDocumentResponseValues();
-    const fields = smartDocumentFieldRows();
-    fields.push({ id: uid("smart-field"), label: `Field ${fields.length + 1}`, type: "text", required: false, sourceName: "", placeholder: "" });
-    renderSmartDocumentEditor(fields, responses);
+    smartDocumentPlacementTool = "text";
+    document.querySelectorAll("[data-smart-tool]").forEach((button) => button.classList.toggle("active", button.dataset.smartTool === "text"));
+    if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Click the exact location on a document page where the new text field should appear.";
   });
+  els.analyzeSmartDocument?.addEventListener("click", analyzeSmartDocumentPages);
+  els.deleteSelectedSmartField?.addEventListener("click", deleteSelectedSmartDocumentField);
+  document.querySelectorAll("[data-smart-tool]").forEach((button) => button.addEventListener("click", () => {
+    smartDocumentPlacementTool = button.dataset.smartTool;
+    document.querySelectorAll("[data-smart-tool]").forEach((item) => item.classList.toggle("active", item === button));
+    if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = `Click the exact location on a page for the new ${button.textContent.trim().toLowerCase()} field.`;
+  }));
   els.smartDocumentFields?.addEventListener("change", refreshSmartDocumentResponses);
+  els.smartDocumentFields?.addEventListener("input", (event) => {
+    const row = event.target.closest("[data-smart-field-id]");
+    if (!row) return;
+    const fieldId = row.dataset.smartFieldId;
+    if (event.target.name === "fieldLabel") {
+      const label = event.target.value || "Untitled field";
+      const overlayHandle = els.smartDocumentPages?.querySelector(`[data-smart-overlay-id="${CSS.escape(fieldId)}"] .smart-field-drag-handle`);
+      if (overlayHandle) { overlayHandle.textContent = label; overlayHandle.title = `Drag to move ${label}; use arrow keys for precise movement`; overlayHandle.setAttribute("aria-label", `Move ${label}`); }
+      const responseLabel = els.smartDocumentResponses?.querySelector(`[data-smart-response-id="${CSS.escape(fieldId)}"]`)?.closest("label")?.querySelector("span");
+      if (responseLabel) responseLabel.textContent = `${label}${row.querySelector('[name="fieldRequired"]')?.checked ? " *" : ""}`;
+    }
+    if (event.target.name === "fieldFontSize") {
+      const control = els.smartDocumentPages?.querySelector(`[data-smart-overlay-id="${CSS.escape(fieldId)}"] [data-smart-overlay-input]`);
+      if (control) control.style.fontSize = `${Math.max(6, Math.min(72, number(event.target.value) || 10))}px`;
+    }
+  });
   els.smartDocumentFields?.addEventListener("click", (event) => {
+    const selectedRow = event.target.closest("[data-smart-field-id]");
+    if (selectedRow) updateSmartDocumentSelection(selectedRow.dataset.smartFieldId);
     const remove = event.target.closest("[data-remove-smart-field]");
     if (!remove) return;
     const responses = smartDocumentResponseValues();
     const fields = smartDocumentFieldRows().filter((field) => field.id !== remove.dataset.removeSmartField);
-    if (!fields.length) return setSaveState(els.smartDocumentSaveStatus, "A Smart Document needs at least one field.", "error");
+    if (selectedSmartDocumentFieldId === remove.dataset.removeSmartField) selectedSmartDocumentFieldId = "";
     renderSmartDocumentEditor(fields, responses);
+  });
+  els.smartDocumentResponses?.addEventListener("input", (event) => {
+    const control = event.target.closest("[data-smart-response-id]");
+    if (!control) return;
+    const overlay = els.smartDocumentPages?.querySelector(`[data-smart-overlay-id="${CSS.escape(control.dataset.smartResponseId)}"] [data-smart-overlay-input]`);
+    if (!overlay) return;
+    if (overlay.type === "checkbox") overlay.checked = control.checked;
+    else overlay.value = control.value;
   });
   els.saveSmartDocumentTemplate?.addEventListener("click", () => saveNativeSmartDocument("template"));
   els.saveSmartDocumentDraft?.addEventListener("click", () => saveNativeSmartDocument("draft"));

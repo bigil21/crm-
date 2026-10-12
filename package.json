@@ -16,6 +16,7 @@
     "@electric-sql/pglite": "0.5.8"
   },
   "dependencies": {
-    "pdf-lib": "1.17.1"
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.4.299"
   }
 }

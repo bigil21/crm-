@@ -1,8 +1,8 @@
-const CACHE_NAME = "jobcrest-crm-v146";
+const CACHE_NAME = "jobcrest-crm-v148";
 const PUBLIC_ASSET_PATHS = new Set([
   "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/styles.css",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js",
-  "/vendor/jspdf.umd.min.js", "/icon.svg", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest",
+  "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/icon.svg", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest",
 ]);
 
 self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));

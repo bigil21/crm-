@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=62" />
+    <link rel="stylesheet" href="styles.css?v=64" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1513,21 +1513,35 @@
         </header>
         <input type="hidden" name="documentId" />
         <div class="smart-document-layout">
-          <section class="smart-document-preview" aria-label="Original document preview">
-            <iframe id="smartDocumentPreview" title="Original document preview"></iframe>
-            <div class="empty-state hidden" id="smartDocumentPreviewFallback">Preview is unavailable for this file type. The original remains saved with the job.</div>
+          <section class="smart-document-preview" aria-label="Fillable document canvas">
+            <div class="smart-document-canvas-toolbar" aria-label="Smart Document tools">
+              <button class="primary-button" type="button" id="analyzeSmartDocument"><span aria-hidden="true" data-icon="search"></span>Analyze Document</button>
+              <span class="smart-tool-divider" aria-hidden="true"></span>
+              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="text">Text</button>
+              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="textarea">Long Text</button>
+              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="date">Date</button>
+              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="number">Number</button>
+              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="checkbox">Checkbox</button>
+              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="email">Email</button>
+              <span class="smart-tool-divider" aria-hidden="true"></span>
+              <button class="secondary-button smart-field-delete" type="button" id="deleteSelectedSmartField" disabled title="Select a field on the document to delete it"><span aria-hidden="true" data-icon="trash"></span>Delete Field</button>
+            </div>
+            <p class="smart-document-canvas-help" id="smartDocumentCanvasHelp">Analyze the original PDF to detect existing fields and blank lines, or choose a field type and click anywhere on a page.</p>
+            <div class="smart-document-pages" id="smartDocumentPages"></div>
+            <iframe class="hidden" id="smartDocumentPreview" title="Original document preview"></iframe>
+            <div class="empty-state hidden" id="smartDocumentPreviewFallback">This document cannot be converted on the canvas. Upload a PDF, PNG, or JPEG copy to build a Smart Document.</div>
           </section>
           <section class="smart-document-editor">
             <div class="smart-document-builder">
               <div class="section-heading compact-heading">
-                <div><p class="eyebrow">Form Setup</p><h3>Fields representatives complete</h3></div>
+                <div><p class="eyebrow">Field Setup</p><h3>Fields on the document</h3></div>
                 <button class="secondary-button" type="button" id="addSmartDocumentField"><span aria-hidden="true" data-icon="plus"></span>Add Field</button>
               </div>
               <div id="smartDocumentFields" class="smart-document-fields"></div>
             </div>
             <div class="smart-document-fill">
               <div class="section-heading compact-heading">
-                <div><p class="eyebrow">Fill Document</p><h3>Document responses</h3></div>
+                <div><p class="eyebrow">Fill Document</p><h3>Values appear on the original pages</h3></div>
               </div>
               <div id="smartDocumentResponses" class="smart-document-responses"></div>
             </div>
@@ -1563,7 +1577,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=142" defer></script>
+    <script src="app.js?v=144" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

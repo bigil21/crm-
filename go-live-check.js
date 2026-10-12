@@ -59,6 +59,7 @@ const checks = [
   ["Smart Document drafts and completed PDFs use authenticated server routes", server.includes('/api/smart-documents/save') && server.includes('handleSmartDocumentSave') && app.includes('/api/smart-documents/save')],
   ["completed Smart Documents email as Gmail attachments", server.includes('/api/smart-documents/email') && server.includes('attachment: { bytes') && app.includes('/api/smart-documents/email')],
   ["Smart Document metadata is service-only and row locked", fs.readFileSync(path.join(__dirname, "supabase/migrations/20261012041248_native_smart_documents.sql"), "utf8").includes("for update") && fs.readFileSync(path.join(__dirname, "supabase/migrations/20261012041248_native_smart_documents.sql"), "utf8").includes("to service_role")],
+  ["Smart Documents map fillable fields directly onto original pages", index.includes('id="analyzeSmartDocument"') && index.includes('id="smartDocumentPages"') && app.includes('renderSmartDocumentOverlays') && app.includes('/vendor/pdf.min.mjs')],
   ["AI feature removed", !index.includes("ai-assistant") && !app.includes("/api/assistant") && !server.includes("/api/assistant")],
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],

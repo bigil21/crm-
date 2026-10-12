@@ -57,7 +57,7 @@ for (const url of ['/server.js', '/.env', '/.git/config', '/square-payments.json
     assert.equal((await backend().request(url)).status, 404);
   });
 }
-for (const url of ['/', '/login', '/logout', '/app.js?v=999', '/record-writes.js', '/company-settings-writes.js', '/draft-recovery.js', '/session-guard.js', '/sw.js', '/vendor/jspdf.umd.min.js']) {
+for (const url of ['/', '/login', '/logout', '/app.js?v=999', '/record-writes.js', '/company-settings-writes.js', '/draft-recovery.js', '/session-guard.js', '/sw.js', '/vendor/jspdf.umd.min.js', '/vendor/pdf.min.mjs', '/vendor/pdf.worker.min.mjs']) {
   test(`public asset remains available: ${url}`, async () => {
     assert.equal((await backend().request(url)).status, 200);
   });
