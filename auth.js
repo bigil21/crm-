@@ -24,7 +24,48 @@
   );
   const config = { ...fallbackConfig, ...cleanRuntimeConfig };
   const CRM_STORAGE_KEY = "roofline-crm-v1";
+  const AUTH_STORAGE_KEY_PATTERN = /^(?:sb-|.*supabase\.auth(?:\.token)?)/;
   let editorSessionGuard = null;
+  let authStoragePrepared = false;
+
+  function removeAuthKeys(storage) {
+    if (!storage) return;
+    const keys = [];
+    try {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index) || "";
+        if (AUTH_STORAGE_KEY_PATTERN.test(key)) keys.push(key);
+      }
+      keys.forEach((key) => storage.removeItem(key));
+    } catch {
+      // A blocked storage area behaves like an empty signed-out session.
+    }
+  }
+
+  function isExternalCrmEntry() {
+    if (!["/", "/index.html"].includes(location.pathname)) return false;
+    try {
+      return Boolean(document.referrer && new URL(document.referrer).origin !== location.origin);
+    } catch {
+      return false;
+    }
+  }
+
+  function prepareAuthStorage() {
+    if (authStoragePrepared) return;
+    authStoragePrepared = true;
+    // Retire the previous cross-browser-session tokens. New credentials live
+    // only in this tab's sessionStorage and disappear when the tab/session ends.
+    try { removeAuthKeys(window.localStorage); } catch { /* Persistent storage may be blocked. */ }
+    if (isExternalCrmEntry()) {
+      try { removeAuthKeys(window.sessionStorage); } catch { /* The visit remains signed out. */ }
+    }
+  }
+
+  function browserSessionStorage() {
+    try { return window.sessionStorage; }
+    catch { return undefined; }
+  }
 
   function bindEditorSession(user) {
     if (editorSessionGuard || !isAuthRequired() || !user?.id) return;
@@ -107,10 +148,12 @@
 
   function createClient() {
     if (!hasConfig() || !window.supabase?.createClient) return null;
+    prepareAuthStorage();
     if (!window.__rooflineSupabase) {
       window.__rooflineSupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
         auth: {
           persistSession: true,
+          storage: browserSessionStorage(),
           autoRefreshToken: true,
           detectSessionInUrl: true,
         },

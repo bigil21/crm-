@@ -53,6 +53,8 @@ const checks = [
   ["safe redirect validation", login.includes("sanitizeRedirect")],
   ["password recovery flow", login.includes("resetPasswordForEmail") && login.includes("updateUser({ password })")],
   ["failed sign-in preserves existing session", !/Signing in\.\.\."\);\s*await signOutCurrentSession\(\)/.test(login)],
+  ["browser logins expire with the tab and external entries require sign-in", auth.includes("storage: browserSessionStorage()") && auth.includes("removeAuthKeys(window.localStorage)") && auth.includes("isExternalCrmEntry()")],
+  ["recovery notices can be closed without discarding recovery data", app.includes("addNoticeCloseButton(panel, dismissalKey") && app.includes('close.textContent = "×"') && app.includes("noticeWasDismissed(dismissalKey)")],
   ["AI feature removed", !index.includes("ai-assistant") && !app.includes("/api/assistant") && !server.includes("/api/assistant")],
   ["Square publish status is honest", app.includes("Published in Square") && !app.includes("Sent to Square</span>")],
   ["Square email fallback", app.includes("Email payment link") && app.includes("Copy payment link")],

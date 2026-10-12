@@ -1119,6 +1119,37 @@ function normalizeLineItem(item) {
 }
 
 let draftRecoveryStore = null;
+const DISMISSED_NOTICE_PREFIX = "jobcrest.crm.dismissed-notice:";
+
+function noticeWasDismissed(key, storage = localStorage) {
+  try { return storage.getItem(`${DISMISSED_NOTICE_PREFIX}${key}`) === "1"; }
+  catch { return false; }
+}
+
+function addNoticeCloseButton(panel, key, { storage = localStorage, label = "Close this notice" } = {}) {
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "crm-notice-close";
+  close.setAttribute("aria-label", label);
+  close.title = label;
+  close.textContent = "×";
+  close.addEventListener("click", () => {
+    try { storage.setItem(`${DISMISSED_NOTICE_PREFIX}${key}`, "1"); } catch { /* Closing still works for this page. */ }
+    panel.remove();
+  });
+  panel.appendChild(close);
+  return close;
+}
+
+function recoveryNoticeKey(entries) {
+  let hash = 2166136261;
+  const value = entries.map((entry) => `${entry.key}:${entry.raw}`).sort().join("|");
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `draft-recovery:${entries.length}:${(hash >>> 0).toString(16)}`;
+}
 
 function hasPendingCompanyChanges() {
   return canAction("manageCompany") && (Boolean(state.companyFormDraft) ||
@@ -1135,20 +1166,27 @@ function checkpointPendingDraft(serializedState) {
 
 function showDraftStorageWarning() {
   if (document.getElementById("crmDraftStorageWarning")) return;
+  const dismissalKey = "draft-storage-warning";
+  if (noticeWasDismissed(dismissalKey, sessionStorage)) return;
   const notice = document.createElement("aside");
   notice.id = "crmDraftStorageWarning";
   notice.setAttribute("role", "alert");
-  notice.style.cssText = "position:fixed;top:12px;left:16px;right:16px;z-index:100001;background:#fff4de;color:#34250b;padding:16px;border:2px solid #b87912;border-radius:12px";
-  notice.textContent = "This browser cannot keep a recovery copy. Shared saving will still be attempted. Keep this tab open until your changes are saved; closing it during a connection problem could lose unsaved work.";
+  notice.style.cssText = "position:fixed;top:12px;left:16px;right:16px;z-index:100001;background:#fff4de;color:#34250b;padding:16px 52px 16px 16px;border:2px solid #b87912;border-radius:12px";
+  const message = document.createElement("span");
+  message.textContent = "This browser cannot keep a recovery copy. Shared saving will still be attempted. Keep this tab open until your changes are saved; closing it during a connection problem could lose unsaved work.";
+  notice.appendChild(message);
+  addNoticeCloseButton(notice, dismissalKey, { storage: sessionStorage, label: "Close recovery warning" });
   document.body.appendChild(notice);
 }
 
 function showPreviousDraftRecovery(entries) {
   if (!entries.length) return;
+  const dismissalKey = recoveryNoticeKey(entries);
+  if (noticeWasDismissed(dismissalKey)) return;
   const panel = document.createElement("aside");
   panel.id = "crmPreviousDraftRecovery";
   panel.setAttribute("role", "alert");
-  panel.style.cssText = "position:fixed;top:16px;left:16px;right:16px;z-index:100002;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px";
+  panel.style.cssText = "position:fixed;top:16px;left:16px;right:16px;z-index:100002;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px 52px 16px 16px";
   const message = document.createElement("p");
   message.textContent = "Unfinished work from an earlier session is available. The shared CRM has not been overwritten. Download the recovery copy and compare it with the current records before reapplying missing edits. The file contains private customer data.";
   const download = document.createElement("button");
@@ -1176,6 +1214,7 @@ function showPreviousDraftRecovery(entries) {
     else message.textContent = "The browser could not remove the device copies. Keep your downloaded file secure.";
   });
   panel.append(message, download, reviewed);
+  addNoticeCloseButton(panel, dismissalKey, { label: "Close earlier-work notice" });
   document.body.appendChild(panel);
 }
 

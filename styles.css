@@ -5024,3 +5024,27 @@ textarea:focus {
     margin: 0.45in;
   }
 }
+.crm-notice-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(52, 37, 11, 0.25);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #34250b;
+  font: 700 24px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.crm-notice-close:hover,
+.crm-notice-close:focus-visible {
+  background: #fff;
+  border-color: #8a5a0a;
+  outline: 2px solid rgba(184, 121, 18, 0.25);
+  outline-offset: 2px;
+}

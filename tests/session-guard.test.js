@@ -29,11 +29,17 @@ for (const [description, event, session] of [
 }
 test('shared requests are blocked after cross-tab logout, while sign-in remains available', async () => {
   let clientOptions, callback, calls = 0, invalidated = 0;
+  const memory = () => { const data = new Map(); return { get length() { return data.size; }, key: i => [...data.keys()][i] || null,
+    getItem: key => data.get(key) || null, setItem: (key, value) => data.set(key, value), removeItem: key => data.delete(key) }; };
+  const localStorage = memory(); const sessionStorage = memory();
+  localStorage.setItem('sb-synthetic-auth-token', 'legacy-persistent-session');
   const context = vm.createContext({ URL, console,
     fetch: async () => { calls++; return { ok: true }; },
     CustomEvent: class { constructor(type) { this.type = type; } },
-    document: { readyState: 'loading', addEventListener() {} },
+    document: { readyState: 'loading', referrer: '', addEventListener() {} },
+    location: { pathname: '/', origin: 'https://synthetic.example' },
     window: {
+      localStorage, sessionStorage,
       ROOFLINE_SUPABASE_CONFIG: { supabaseUrl: 'https://synthetic.example', supabaseAnonKey: 'not-a-key', authRequired: true },
       CrmSessionGuard: { create }, dispatchEvent: () => invalidated++,
       supabase: { createClient: (_url, _key, options) => {
@@ -44,6 +50,9 @@ test('shared requests are blocked after cross-tab logout, while sign-in remains 
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../auth.js'), 'utf8'), context);
   context.window.RooflineAuth.bindEditorSession(user);
+  assert.equal(clientOptions.auth.storage, sessionStorage);
+  assert.equal(clientOptions.auth.persistSession, true);
+  assert.equal(localStorage.getItem('sb-synthetic-auth-token'), null);
   await clientOptions.global.fetch('https://synthetic.example/rest/v1/crm_records');
   callback('SIGNED_OUT', null);
   for (const endpoint of ['rest/v1/rpc/crm_commit_records', 'rest/v1/crm_state', 'storage/v1/object/crm-documents/file']) {
