@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { PGlite } = require('@electric-sql/pglite');
-const migration = fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261012052521_smart_document_completed_copies.sql'),'utf8');
+const migration = fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261012052946_smart_document_copy_email_receipts.sql'),'utf8');
 const actor='00000000-0000-4000-8000-000000000001';
 
 test('completion publishes a separate copy in the same company or job category, retaining the original bytes', async () => {
@@ -40,6 +40,11 @@ test('completion publishes a separate copy in the same company or job category, 
       const template=(await db.query("select data from public.crm_records where id=$1",[id])).rows[0].data.smartDocument;
       assert.equal(template.status,'template');
       assert.deepEqual(template.responses,{});
+      const emailReceipt={...result.completed_document.smartDocument,lastEmailedTo:'test@example.com'};
+      const receipt=(await db.query('select public.crm_save_smart_document($1,$2,$3::jsonb,$4::uuid) result',['coastal-crest',result.completed_document_id,JSON.stringify(emailReceipt),actor])).rows[0].result;
+      assert.equal(receipt.completed_document_id,result.completed_document_id,'email receipt targets the existing copy');
+      assert.equal((await db.query("select count(*)::integer n from public.crm_records where data->>'source'='smart-document-completion' and lead_id=$1",[lead])).rows[0].n,1,'email receipt does not create another copy');
+      assert.equal(receipt.smart_document.responses.name,'Test Client');
       await db.exec('set role service_role');
       smart.completedFile.storagePath=`coastal-crest/${id}/smart/second.pdf`;
       assert.notEqual((await save(smart)).completed_document_id,result.completed_document_id);
