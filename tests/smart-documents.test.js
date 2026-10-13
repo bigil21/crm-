@@ -131,6 +131,9 @@ test('lead and job document cards expose native Smart Document actions', () => {
   assert.match(app, /name="fieldBold"/);
   assert.match(app, /application\/x-jobcrest-smart-field/);
   assert.match(app, /overlay\.addEventListener\("dblclick"/);
+  assert.match(app, /\["text", "textarea"\]\.includes\(field\.type\).*<textarea/);
+  assert.match(app, /function growSmartOverlayToContent/);
+  assert.match(app, /requestAnimationFrame\(\(\) => growSmartOverlayToContent\(overlay\)\)/);
   assert.match(app, /pdf\.min\.mjs/);
   assert.match(app, /renderSmartDocumentOverlays/);
   assert.match(app, /deleteSelectedSmartDocumentField/);
@@ -140,6 +143,7 @@ test('lead and job document cards expose native Smart Document actions', () => {
   assert.match(app, /signature.*initials/);
   assert.match(page, /id="deleteSelectedSmartField"/);
   assert.match(styles, /\.smart-field-overlay\.selected/);
+  assert.match(styles, /overflow-wrap: anywhere/);
   assert.match(page, /Save Completed PDF/);
   assert.match(page, /Email Completed PDF/);
 });

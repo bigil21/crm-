@@ -6972,7 +6972,7 @@ function smartDocumentResponseValues() {
 
 function smartDocumentInput(field, value) {
   const common = `data-smart-response-id="${escapeHtml(field.id)}" ${field.required ? "required" : ""}`;
-  if (field.type === "textarea") return `<textarea ${common} rows="4" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}">${escapeHtml(value || "")}</textarea>`;
+  if (["text", "textarea"].includes(field.type)) return `<textarea ${common} rows="${field.type === "textarea" ? 4 : 2}" wrap="soft" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}">${escapeHtml(value || "")}</textarea>`;
   if (["checkbox", "radio"].includes(field.type)) return `<span class="checkbox-input"><input ${common} type="${field.type}" ${value ? "checked" : ""} /><span>${field.type === "radio" ? "Selected" : "Yes, confirmed"}</span></span>`;
   const inputType = ["date", "number", "email"].includes(field.type) ? field.type : "text";
   return `<input ${common} type="${inputType}" value="${escapeHtml(value || "")}" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}" ${inputType === "number" ? 'step="any"' : ""} />`;
@@ -7051,7 +7051,7 @@ function smartOverlayControl(field, value) {
   const common = `data-smart-overlay-input="${escapeHtml(field.id)}" aria-label="${escapeHtml(field.label)}"`;
   if (["checkbox", "radio"].includes(field.type)) return `<input ${common} type="${field.type}" ${value ? "checked" : ""} />`;
   const style = `font-family:${field.fontFamily === "Times Roman" ? "Georgia,serif" : field.fontFamily === "Courier" ? "'Courier New',monospace" : "Arial,sans-serif"};font-size:${escapeHtml(field.fontSize || 10)}px;font-weight:${field.bold ? 700 : 400};font-style:${field.italic ? "italic" : "normal"};text-decoration:${field.underline ? "underline" : "none"};color:${escapeHtml(field.textColor || "#071525")};background:${escapeHtml(field.highlightColor || "transparent")};text-align:${escapeHtml(field.textAlign || "left")}`;
-  if (field.type === "textarea") return `<textarea ${common} style="${style}">${escapeHtml(value || "")}</textarea>`;
+  if (["text", "textarea"].includes(field.type)) return `<textarea ${common} wrap="soft" style="${style}">${escapeHtml(value || "")}</textarea>`;
   const type = ["date", "number", "email"].includes(field.type) ? field.type : "text";
   return `<input ${common} type="${type}" value="${escapeHtml(value || "")}" style="${style}" ${type === "number" ? 'step="any"' : ""} />`;
 }
@@ -7098,6 +7098,8 @@ function enableSmartOverlayManipulation(overlay, field) {
     overlay.style.width = `${geometry.width * 100}%`; overlay.style.height = `${geometry.height * 100}%`;
     setSmartFieldGeometry(field.id, geometry);
   };
+  overlay._smartField = field;
+  overlay._applySmartGeometry = applyGeometry;
   const begin = (event, resizing) => {
     if (event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
@@ -7141,6 +7143,26 @@ function enableSmartOverlayManipulation(overlay, field) {
   });
 }
 
+function growSmartOverlayToContent(overlay) {
+  const control = overlay?.querySelector?.("textarea[data-smart-overlay-input]");
+  const page = overlay?.closest?.(".smart-document-page");
+  const field = overlay?._smartField;
+  const applyGeometry = overlay?._applySmartGeometry;
+  if (!control || !page || !field || typeof applyGeometry !== "function") return;
+  const bounds = page.getBoundingClientRect();
+  if (!bounds.height) return;
+  const minimumHeight = defaultSmartFieldSize(field.type).height;
+  const previousInlineHeight = control.style.height;
+  control.style.height = "0px";
+  const contentHeight = control.scrollHeight;
+  control.style.height = previousInlineHeight;
+  const desiredHeight = Math.max(minimumHeight, (contentHeight + 6) / bounds.height);
+  if (desiredHeight <= field.height + (2 / bounds.height)) return;
+  const height = Math.min(1, desiredHeight);
+  const y = Math.min(field.y, Math.max(0, 1 - height));
+  applyGeometry({ page: field.page, x: field.x, y, width: field.width, height: Math.min(height, 1 - y) });
+}
+
 function renderSmartDocumentOverlays(fields = smartDocumentFieldRows(), responses = smartDocumentResponseValues()) {
   els.smartDocumentPages?.querySelectorAll(".smart-document-overlay-layer").forEach((layer) => { layer.innerHTML = ""; });
   fields.filter(isPlacedSmartField).forEach((field) => {
@@ -7159,10 +7181,14 @@ function renderSmartDocumentOverlays(fields = smartDocumentFieldRows(), response
     overlay.addEventListener("pointerdown", () => updateSmartDocumentSelection(field.id));
     overlay.addEventListener("focusin", () => updateSmartDocumentSelection(field.id));
     overlay.addEventListener("dblclick", (event) => { event.preventDefault(); event.stopPropagation(); focusSmartDocumentFieldProperties(field.id); });
-    control?.addEventListener("input", () => syncSmartOverlayValue(field.id, ["checkbox", "radio"].includes(control.type) ? control.checked : control.value));
+    control?.addEventListener("input", () => {
+      syncSmartOverlayValue(field.id, ["checkbox", "radio"].includes(control.type) ? control.checked : control.value);
+      growSmartOverlayToContent(overlay);
+    });
     control?.addEventListener("change", () => syncSmartOverlayValue(field.id, ["checkbox", "radio"].includes(control.type) ? control.checked : control.value));
     layer.append(overlay);
     enableSmartOverlayManipulation(overlay, field);
+    requestAnimationFrame(() => growSmartOverlayToContent(overlay));
   });
 }
 
@@ -11156,6 +11182,7 @@ function bindEvents() {
     if (!overlay) return;
     if (["checkbox", "radio"].includes(overlay.type)) overlay.checked = control.checked;
     else overlay.value = control.value;
+    growSmartOverlayToContent(overlay.closest("[data-smart-overlay-id]"));
   });
   els.saveSmartDocumentTemplate?.addEventListener("click", () => saveNativeSmartDocument("template"));
   els.saveSmartDocumentDraft?.addEventListener("click", () => saveNativeSmartDocument("draft"));

@@ -102,7 +102,20 @@ function responseText(field, value) {
 function wrapText(text, font, size, width) {
   const lines = [];
   String(text || "").split(/\r?\n/).forEach((paragraph) => {
-    const words = paragraph.split(/\s+/).filter(Boolean);
+    const words = paragraph.split(/\s+/).filter(Boolean).flatMap((word) => {
+      if (font.widthOfTextAtSize(word, size) <= width) return [word];
+      const pieces = [];
+      let piece = "";
+      [...word].forEach((character) => {
+        const candidate = `${piece}${character}`;
+        if (piece && font.widthOfTextAtSize(candidate, size) > width) {
+          pieces.push(piece);
+          piece = character;
+        } else piece = candidate;
+      });
+      if (piece) pieces.push(piece);
+      return pieces;
+    });
     if (!words.length) { lines.push(""); return; }
     let line = "";
     words.forEach((word) => {
