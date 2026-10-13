@@ -19,6 +19,7 @@ test('Smart Document validation preserves typed fields and enforces required res
   assert.throws(() => normalizeFields([{ id: 'bad', label: 'Bad', type: 'text', page: 1, x: .9, y: .2, width: .2, height: .04 }]), /invalid_smart_document_field_placement/);
   assert.equal(normalizeFields([{ id: 'sign', label: 'Signature', type: 'signature', page: 1, x: .1, y: .8, width: .3, height: .05 }])[0].type, 'signature');
   assert.equal(normalizeFields([{ id: 'initial', label: 'Initials', type: 'initials', page: 1, x: .7, y: .8, width: .1, height: .05 }])[0].type, 'initials');
+  assert.equal(normalizeFields([{ id: 'choice', label: 'Choice', type: 'radio', page: 1, x: .7, y: .7, width: .04, height: .04 }])[0].type, 'radio');
 });
 
 test('completed Smart Document fills the original PDF field without appending a questionnaire page', async () => {
@@ -55,6 +56,22 @@ test('positioned Smart Document values are embedded on their original page', asy
   assert.match(text.items.map(item => item.str).join(' '), /Architectural shingles/);
   assert.equal(rendered.numPages, 1);
   await loadingTask.destroy();
+});
+
+test('Smart Document formatting is normalized and rendered into the completed PDF', async () => {
+  const [field] = normalizeFields([{ id: 'formatted', label: 'Formatted', type: 'text', page: 1, x: .1, y: .1, width: .5, height: .08, fontSize: 16, fontFamily: 'Times Roman', bold: true, italic: true, underline: true, textColor: '#123456', highlightColor: '#fff19a', textAlign: 'center' }]);
+  assert.deepEqual({ fontFamily: field.fontFamily, bold: field.bold, italic: field.italic, underline: field.underline, textColor: field.textColor, highlightColor: field.highlightColor, textAlign: field.textAlign }, {
+    fontFamily: 'Times Roman', bold: true, italic: true, underline: true, textColor: '#123456', highlightColor: '#fff19a', textAlign: 'center',
+  });
+  const source = await PDFDocument.create();
+  source.addPage([612, 792]);
+  const bytes = Buffer.from(await source.save());
+  const result = await renderCompletedDocument(
+    { name: 'Formatted.pdf', type: 'application/pdf', size: bytes.length, bytes },
+    { fields: [field], responses: { formatted: 'Bold centered text' } },
+    { name: 'Sales Representative' },
+  );
+  assert.ok(result.bytes.length > bytes.length);
 });
 
 test('Smart Document RPC is service-only, row-locked, and bounded', () => {
@@ -106,6 +123,14 @@ test('lead and job document cards expose native Smart Document actions', () => {
   assert.match(page, /id="smartDocumentDialog"/);
   assert.match(page, /id="analyzeSmartDocument"/);
   assert.match(page, /id="smartDocumentPages"/);
+  assert.match(page, /id="smartDocumentThumbnails"/);
+  assert.match(page, /id="smartDocumentZoomIn"/);
+  assert.match(page, /draggable="true" data-smart-tool="signature"/);
+  assert.match(page, /data-smart-tool="radio"/);
+  assert.match(page, /data-smart-label="Stamp"/);
+  assert.match(app, /name="fieldBold"/);
+  assert.match(app, /application\/x-jobcrest-smart-field/);
+  assert.match(app, /overlay\.addEventListener\("dblclick"/);
   assert.match(app, /pdf\.min\.mjs/);
   assert.match(app, /renderSmartDocumentOverlays/);
   assert.match(app, /deleteSelectedSmartDocumentField/);

@@ -557,9 +557,11 @@ let smartDocumentPreviewObjectUrl = "";
 let smartDocumentPdf = null;
 let smartDocumentPdfModule = null;
 let smartDocumentPlacementTool = "";
+let smartDocumentPlacementLabel = "";
 let selectedSmartDocumentFieldId = "";
 let smartDocumentRenderToken = 0;
 let smartDocumentAnalysisPdf = null;
+let smartDocumentZoom = 1;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -772,6 +774,15 @@ const els = {
   smartDocumentPreview: document.querySelector("#smartDocumentPreview"),
   smartDocumentPreviewFallback: document.querySelector("#smartDocumentPreviewFallback"),
   smartDocumentPages: document.querySelector("#smartDocumentPages"),
+  smartDocumentThumbnails: document.querySelector("#smartDocumentThumbnails"),
+  smartDocumentPreviewPane: document.querySelector("#smartDocumentPreviewPane"),
+  smartDocumentPageNumber: document.querySelector("#smartDocumentPageNumber"),
+  smartDocumentPageCount: document.querySelector("#smartDocumentPageCount"),
+  smartDocumentZoomOut: document.querySelector("#smartDocumentZoomOut"),
+  smartDocumentZoomIn: document.querySelector("#smartDocumentZoomIn"),
+  smartDocumentZoomFit: document.querySelector("#smartDocumentZoomFit"),
+  smartDocumentZoomValue: document.querySelector("#smartDocumentZoomValue"),
+  smartDocumentEditorPanel: document.querySelector("#smartDocumentEditorPanel"),
   smartDocumentCanvasHelp: document.querySelector("#smartDocumentCanvasHelp"),
   analyzeSmartDocument: document.querySelector("#analyzeSmartDocument"),
   deleteSelectedSmartField: document.querySelector("#deleteSelectedSmartField"),
@@ -1061,7 +1072,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
           fields: document.smartDocument.fields.slice(0, 300).map((field, index) => ({
             id: String(field?.id || `field-${index + 1}`),
             label: String(field?.label || `Field ${index + 1}`),
-            type: ["text", "textarea", "date", "number", "email", "checkbox", "signature", "initials"].includes(field?.type) ? field.type : "text",
+            type: ["text", "textarea", "date", "number", "email", "checkbox", "radio", "signature", "initials"].includes(field?.type) ? field.type : "text",
             required: Boolean(field?.required),
             sourceName: String(field?.sourceName || ""),
             placeholder: String(field?.placeholder || ""),
@@ -1071,6 +1082,13 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
             width: field?.width !== null && field?.width !== undefined && field?.width !== "" && Number.isFinite(Number(field.width)) ? Math.max(0.01, Math.min(1, Number(field.width))) : null,
             height: field?.height !== null && field?.height !== undefined && field?.height !== "" && Number.isFinite(Number(field.height)) ? Math.max(0.01, Math.min(1, Number(field.height))) : null,
             fontSize: Math.max(6, Math.min(72, number(field?.fontSize) || 10)),
+            fontFamily: ["Helvetica", "Times Roman", "Courier"].includes(field?.fontFamily) ? field.fontFamily : "Helvetica",
+            bold: Boolean(field?.bold),
+            italic: Boolean(field?.italic),
+            underline: Boolean(field?.underline),
+            textColor: /^#[0-9a-f]{6}$/i.test(field?.textColor || "") ? field.textColor : "#071525",
+            highlightColor: /^#[0-9a-f]{6}$/i.test(field?.highlightColor || "") ? field.highlightColor : "",
+            textAlign: ["left", "center", "right"].includes(field?.textAlign) ? field.textAlign : "left",
             detected: Boolean(field?.detected),
           })),
           responses: document.smartDocument.responses && typeof document.smartDocument.responses === "object" ? { ...document.smartDocument.responses } : {},
@@ -6934,6 +6952,13 @@ function smartDocumentFieldRows() {
     width: row.querySelector('[name="fieldWidth"]')?.value === "" ? null : number(row.querySelector('[name="fieldWidth"]')?.value),
     height: row.querySelector('[name="fieldHeight"]')?.value === "" ? null : number(row.querySelector('[name="fieldHeight"]')?.value),
     fontSize: Math.max(6, Math.min(72, number(row.querySelector('[name="fieldFontSize"]')?.value) || 10)),
+    fontFamily: row.querySelector('[name="fieldFontFamily"]')?.value || "Helvetica",
+    bold: Boolean(row.querySelector('[name="fieldBold"]')?.checked),
+    italic: Boolean(row.querySelector('[name="fieldItalic"]')?.checked),
+    underline: Boolean(row.querySelector('[name="fieldUnderline"]')?.checked),
+    textColor: row.querySelector('[name="fieldTextColor"]')?.value || "#071525",
+    highlightColor: row.querySelector('[name="fieldHighlightEnabled"]')?.checked ? row.querySelector('[name="fieldHighlightColor"]')?.value || "#fff19a" : "",
+    textAlign: row.querySelector('[name="fieldTextAlign"]')?.value || "left",
     detected: row.dataset.smartDetected === "true",
   }));
 }
@@ -6941,14 +6966,14 @@ function smartDocumentFieldRows() {
 function smartDocumentResponseValues() {
   return Object.fromEntries([...(els.smartDocumentResponses?.querySelectorAll("[data-smart-response-id]") || [])].map((control) => [
     control.dataset.smartResponseId,
-    control.type === "checkbox" ? control.checked : control.value,
+    ["checkbox", "radio"].includes(control.type) ? control.checked : control.value,
   ]));
 }
 
 function smartDocumentInput(field, value) {
   const common = `data-smart-response-id="${escapeHtml(field.id)}" ${field.required ? "required" : ""}`;
   if (field.type === "textarea") return `<textarea ${common} rows="4" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}">${escapeHtml(value || "")}</textarea>`;
-  if (field.type === "checkbox") return `<span class="checkbox-input"><input ${common} type="checkbox" ${value ? "checked" : ""} /><span>Yes, confirmed</span></span>`;
+  if (["checkbox", "radio"].includes(field.type)) return `<span class="checkbox-input"><input ${common} type="${field.type}" ${value ? "checked" : ""} /><span>${field.type === "radio" ? "Selected" : "Yes, confirmed"}</span></span>`;
   const inputType = ["date", "number", "email"].includes(field.type) ? field.type : "text";
   return `<input ${common} type="${inputType}" value="${escapeHtml(value || "")}" maxlength="20000" placeholder="${escapeHtml(field.placeholder || "")}" ${inputType === "number" ? 'step="any"' : ""} />`;
 }
@@ -6960,13 +6985,26 @@ function renderSmartDocumentEditor(fields, responses = {}) {
     <div class="smart-document-field-row${field.id === selectedSmartDocumentFieldId ? " selected" : ""}" data-smart-field-id="${escapeHtml(field.id)}" data-smart-detected="${field.detected ? "true" : "false"}">
       <input name="fieldLabel" value="${escapeHtml(field.label)}" maxlength="120" aria-label="Field label" placeholder="Field label" />
       <select name="fieldType" aria-label="Field type">
-        ${[["text","Text"],["textarea","Long text"],["date","Date"],["number","Number"],["email","Email"],["checkbox","Checkbox"],["signature","Signature"],["initials","Initials"]].map(([value, label]) => `<option value="${value}" ${field.type === value ? "selected" : ""}>${label}</option>`).join("")}
+        ${[["text","Text"],["textarea","Long text"],["date","Date"],["number","Number"],["email","Email"],["checkbox","Checkbox"],["radio","Radio"],["signature","Signature"],["initials","Initials"]].map(([value, label]) => `<option value="${value}" ${field.type === value ? "selected" : ""}>${label}</option>`).join("")}
       </select>
       <label class="smart-document-required"><input name="fieldRequired" type="checkbox" ${field.required ? "checked" : ""} />Required</label>
       <button class="mini-button" type="button" data-remove-smart-field="${escapeHtml(field.id)}" aria-label="Remove ${escapeHtml(field.label)}"><span aria-hidden="true" data-icon="trash"></span></button>
       <input class="smart-document-source-name" name="fieldSourceName" value="${escapeHtml(field.sourceName || "")}" maxlength="200" aria-label="Matching PDF field name" placeholder="Matching PDF field name (optional)" />
       <span class="smart-document-field-location">Page ${Math.max(1, Math.round(number(field.page) || 1))}${field.detected ? " · detected" : ""}</span>
-      <label class="smart-document-font-size">Text size <input name="fieldFontSize" type="number" min="6" max="72" step="1" value="${Math.max(6, Math.min(72, number(field.fontSize) || 10))}" /></label>
+      <div class="smart-document-formatting" aria-label="Text formatting">
+        <label>Font<select name="fieldFontFamily">
+          ${["Helvetica", "Times Roman", "Courier"].map((font) => `<option value="${font}" ${field.fontFamily === font ? "selected" : ""}>${font}</option>`).join("")}
+        </select></label>
+        <label>Size<input name="fieldFontSize" type="number" min="6" max="72" step="1" value="${Math.max(6, Math.min(72, number(field.fontSize) || 10))}" /></label>
+        <div class="smart-format-buttons" aria-label="Font style">
+          <label class="smart-format-toggle" title="Bold"><input name="fieldBold" type="checkbox" ${field.bold ? "checked" : ""} /><strong>B</strong></label>
+          <label class="smart-format-toggle" title="Italic"><input name="fieldItalic" type="checkbox" ${field.italic ? "checked" : ""} /><em>I</em></label>
+          <label class="smart-format-toggle" title="Underline"><input name="fieldUnderline" type="checkbox" ${field.underline ? "checked" : ""} /><u>U</u></label>
+        </div>
+        <label>Text color<input name="fieldTextColor" type="color" value="${/^#[0-9a-f]{6}$/i.test(field.textColor || "") ? field.textColor : "#071525"}" /></label>
+        <label>Highlight<span class="smart-highlight-control"><input name="fieldHighlightEnabled" type="checkbox" ${field.highlightColor ? "checked" : ""} aria-label="Use highlight" /><input name="fieldHighlightColor" type="color" value="${/^#[0-9a-f]{6}$/i.test(field.highlightColor || "") ? field.highlightColor : "#fff19a"}" /></span></label>
+        <label>Alignment<select name="fieldTextAlign"><option value="left" ${field.textAlign === "left" ? "selected" : ""}>Left</option><option value="center" ${field.textAlign === "center" ? "selected" : ""}>Center</option><option value="right" ${field.textAlign === "right" ? "selected" : ""}>Right</option></select></label>
+      </div>
       <input name="fieldPage" type="hidden" value="${Math.max(1, Math.round(number(field.page) || 1))}" />
       <input name="fieldX" type="hidden" value="${Number.isFinite(Number(field.x)) ? escapeHtml(field.x) : ""}" />
       <input name="fieldY" type="hidden" value="${Number.isFinite(Number(field.y)) ? escapeHtml(field.y) : ""}" />
@@ -7011,10 +7049,11 @@ function syncSmartOverlayValue(fieldId, value) {
 
 function smartOverlayControl(field, value) {
   const common = `data-smart-overlay-input="${escapeHtml(field.id)}" aria-label="${escapeHtml(field.label)}"`;
-  if (field.type === "checkbox") return `<input ${common} type="checkbox" ${value ? "checked" : ""} />`;
-  if (field.type === "textarea") return `<textarea ${common} style="font-size:${escapeHtml(field.fontSize || 10)}px">${escapeHtml(value || "")}</textarea>`;
+  if (["checkbox", "radio"].includes(field.type)) return `<input ${common} type="${field.type}" ${value ? "checked" : ""} />`;
+  const style = `font-family:${field.fontFamily === "Times Roman" ? "Georgia,serif" : field.fontFamily === "Courier" ? "'Courier New',monospace" : "Arial,sans-serif"};font-size:${escapeHtml(field.fontSize || 10)}px;font-weight:${field.bold ? 700 : 400};font-style:${field.italic ? "italic" : "normal"};text-decoration:${field.underline ? "underline" : "none"};color:${escapeHtml(field.textColor || "#071525")};background:${escapeHtml(field.highlightColor || "transparent")};text-align:${escapeHtml(field.textAlign || "left")}`;
+  if (field.type === "textarea") return `<textarea ${common} style="${style}">${escapeHtml(value || "")}</textarea>`;
   const type = ["date", "number", "email"].includes(field.type) ? field.type : "text";
-  return `<input ${common} type="${type}" value="${escapeHtml(value || "")}" style="font-size:${escapeHtml(field.fontSize || 10)}px" ${type === "number" ? 'step="any"' : ""} />`;
+  return `<input ${common} type="${type}" value="${escapeHtml(value || "")}" style="${style}" ${type === "number" ? 'step="any"' : ""} />`;
 }
 
 function updateSmartDocumentSelection(fieldId = "") {
@@ -7030,6 +7069,13 @@ function updateSmartDocumentSelection(fieldId = "") {
     els.deleteSelectedSmartField.disabled = !selectedSmartDocumentFieldId;
     els.deleteSelectedSmartField.title = selectedSmartDocumentFieldId ? "Delete the highlighted field" : "Select a field on the document to delete it";
   }
+}
+
+function focusSmartDocumentFieldProperties(fieldId) {
+  updateSmartDocumentSelection(fieldId);
+  const row = els.smartDocumentFields?.querySelector(`[data-smart-field-id="${CSS.escape(fieldId)}"]`);
+  row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  row?.querySelector('[name="fieldLabel"]')?.focus({ preventScroll: true });
 }
 
 function deleteSelectedSmartDocumentField() {
@@ -7112,15 +7158,16 @@ function renderSmartDocumentOverlays(fields = smartDocumentFieldRows(), response
     const control = overlay.querySelector("[data-smart-overlay-input]");
     overlay.addEventListener("pointerdown", () => updateSmartDocumentSelection(field.id));
     overlay.addEventListener("focusin", () => updateSmartDocumentSelection(field.id));
-    control?.addEventListener("input", () => syncSmartOverlayValue(field.id, control.type === "checkbox" ? control.checked : control.value));
-    control?.addEventListener("change", () => syncSmartOverlayValue(field.id, control.type === "checkbox" ? control.checked : control.value));
+    overlay.addEventListener("dblclick", (event) => { event.preventDefault(); event.stopPropagation(); focusSmartDocumentFieldProperties(field.id); });
+    control?.addEventListener("input", () => syncSmartOverlayValue(field.id, ["checkbox", "radio"].includes(control.type) ? control.checked : control.value));
+    control?.addEventListener("change", () => syncSmartOverlayValue(field.id, ["checkbox", "radio"].includes(control.type) ? control.checked : control.value));
     layer.append(overlay);
     enableSmartOverlayManipulation(overlay, field);
   });
 }
 
 function defaultSmartFieldSize(type) {
-  if (type === "checkbox") return { width: 0.055, height: 0.04 };
+  if (["checkbox", "radio"].includes(type)) return { width: 0.055, height: 0.04 };
   if (type === "signature") return { width: 0.34, height: 0.055 };
   if (type === "initials") return { width: 0.14, height: 0.05 };
   if (type === "textarea") return { width: 0.42, height: 0.1 };
@@ -7134,12 +7181,52 @@ function addPlacedSmartField(type, pageNumber, x, y, { label = "", sourceName = 
   const size = defaultSmartFieldSize(type);
   const finalWidth = Math.max(0.025, Math.min(1 - x, width || size.width));
   const finalHeight = Math.max(0.02, Math.min(1 - y, height || size.height));
-  const field = { id: uid("smart-field"), label: label || `${type === "checkbox" ? "Checkbox" : "Field"} ${fields.length + 1}`, type, required: false, sourceName, placeholder: "", page: pageNumber, x, y, width: finalWidth, height: finalHeight, fontSize: 10, detected };
+  const field = { id: uid("smart-field"), label: label || `${type === "checkbox" ? "Checkbox" : "Field"} ${fields.length + 1}`, type, required: false, sourceName, placeholder: "", page: pageNumber, x, y, width: finalWidth, height: finalHeight, fontSize: 10, fontFamily: "Helvetica", bold: false, italic: ["signature", "initials"].includes(type), underline: false, textColor: "#071525", highlightColor: "", textAlign: "left", detected };
   fields.push(field);
   selectedSmartDocumentFieldId = field.id;
   renderSmartDocumentEditor(fields, responses);
   els.smartDocumentFields?.querySelector(`[data-smart-field-id="${CSS.escape(field.id)}"]`)?.scrollIntoView({ block: "nearest" });
   return field;
+}
+
+function updateSmartDocumentPageIndicator(pageNumber) {
+  const page = Math.max(1, Math.min(Number(els.smartDocumentPageNumber?.max) || 1, Math.round(number(pageNumber) || 1)));
+  if (els.smartDocumentPageNumber) els.smartDocumentPageNumber.value = page;
+  els.smartDocumentThumbnails?.querySelectorAll("[data-smart-thumbnail]").forEach((item) => item.classList.toggle("active", Number(item.dataset.smartThumbnail) === page));
+}
+
+function scrollToSmartDocumentPage(pageNumber) {
+  const page = els.smartDocumentPages?.querySelector(`[data-smart-page="${Math.max(1, Math.round(number(pageNumber) || 1))}"]`);
+  page?.scrollIntoView({ block: "start", behavior: "smooth" });
+  updateSmartDocumentPageIndicator(pageNumber);
+}
+
+function setSmartDocumentZoom(value, { fit = false } = {}) {
+  let next = Math.max(0.5, Math.min(2, Number(value) || 1));
+  if (fit) {
+    const available = Math.max(320, (els.smartDocumentPreviewPane?.clientWidth || 900) - 36);
+    const first = els.smartDocumentPages?.querySelector(".smart-document-page");
+    next = Math.max(0.5, Math.min(2, available / Math.max(1, number(first?.dataset.smartBaseWidth) || 920)));
+  }
+  smartDocumentZoom = next;
+  els.smartDocumentPages?.querySelectorAll(".smart-document-page").forEach((page) => {
+    const baseWidth = Math.max(1, number(page.dataset.smartBaseWidth) || 920);
+    page.style.width = `${Math.round(baseWidth * smartDocumentZoom)}px`;
+  });
+  if (els.smartDocumentZoomValue) els.smartDocumentZoomValue.value = `${Math.round(smartDocumentZoom * 100)}%`;
+  if (els.smartDocumentZoomOut) els.smartDocumentZoomOut.disabled = smartDocumentZoom <= 0.5;
+  if (els.smartDocumentZoomIn) els.smartDocumentZoomIn.disabled = smartDocumentZoom >= 2;
+}
+
+function appendSmartDocumentThumbnail(pageNumber, source) {
+  if (!els.smartDocumentThumbnails) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "smart-document-thumbnail";
+  button.dataset.smartThumbnail = pageNumber;
+  button.innerHTML = `<img src="${escapeHtml(source)}" alt="Page ${pageNumber} preview" /><span>${pageNumber}</span>`;
+  button.addEventListener("click", () => scrollToSmartDocumentPage(pageNumber));
+  els.smartDocumentThumbnails.append(button);
 }
 
 function smartFieldTypeFromAnnotation(annotation) {
@@ -7336,6 +7423,7 @@ async function analyzeSmartDocumentPages() {
 async function renderSmartDocumentCanvas(url, record) {
   const token = ++smartDocumentRenderToken;
   els.smartDocumentPages.innerHTML = "";
+  if (els.smartDocumentThumbnails) els.smartDocumentThumbnails.innerHTML = "";
   smartDocumentPdf = null;
   if (!url) throw new Error("preview_unavailable");
   if (/pdf/i.test(record.type || "") || /\.pdf$/i.test(record.name || "")) {
@@ -7345,11 +7433,14 @@ async function renderSmartDocumentCanvas(url, record) {
     const pdf = await loadingTask.promise;
     if (token !== smartDocumentRenderToken) { await pdf.destroy(); return; }
     smartDocumentPdf = pdf;
+    if (els.smartDocumentPageNumber) { els.smartDocumentPageNumber.max = pdf.numPages; els.smartDocumentPageNumber.value = 1; }
+    if (els.smartDocumentPageCount) els.smartDocumentPageCount.textContent = `of ${pdf.numPages}`;
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1.35 });
       const wrapper = document.createElement("div");
       wrapper.className = "smart-document-page"; wrapper.dataset.smartPage = pageNumber;
+      wrapper.dataset.smartBaseWidth = Math.round(viewport.width);
       wrapper.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
       wrapper.innerHTML = `<canvas aria-label="Document page ${pageNumber}"></canvas><div class="smart-document-overlay-layer"></div><span class="smart-document-page-number">Page ${pageNumber}</span>`;
       wrapper._pdfPage = page; wrapper._pdfViewport = viewport;
@@ -7359,24 +7450,54 @@ async function renderSmartDocumentCanvas(url, record) {
       canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
       canvas.style.width = `${viewport.width}px`; canvas.style.height = `${viewport.height}px`;
       await page.render({ canvasContext: canvas.getContext("2d"), viewport, transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0] }).promise;
+      appendSmartDocumentThumbnail(pageNumber, canvas.toDataURL("image/jpeg", 0.72));
     }
   } else if (/^image\//i.test(record.type || "")) {
     const wrapper = document.createElement("div"); wrapper.className = "smart-document-page smart-document-image-page"; wrapper.dataset.smartPage = "1";
+    wrapper.dataset.smartBaseWidth = "920";
     wrapper.innerHTML = `<img src="${escapeHtml(url)}" alt="Original document" /><div class="smart-document-overlay-layer"></div><span class="smart-document-page-number">Page 1</span>`;
     els.smartDocumentPages.append(wrapper);
+    if (els.smartDocumentPageNumber) { els.smartDocumentPageNumber.max = 1; els.smartDocumentPageNumber.value = 1; }
+    if (els.smartDocumentPageCount) els.smartDocumentPageCount.textContent = "of 1";
+    appendSmartDocumentThumbnail(1, url);
   } else throw new Error("preview_unavailable");
-  els.smartDocumentPages.querySelectorAll(".smart-document-page").forEach((page) => page.addEventListener("click", (event) => {
-    if (!smartDocumentPlacementTool || event.target.closest(".smart-field-overlay")) return;
-    if (!(event.target.matches("canvas, img") || event.target.classList.contains("smart-document-overlay-layer"))) return;
-    const bounds = page.getBoundingClientRect();
-    const size = defaultSmartFieldSize(smartDocumentPlacementTool);
-    const x = Math.max(0, Math.min(1 - size.width, (event.clientX - bounds.left) / bounds.width));
-    const y = Math.max(0, Math.min(1 - size.height, (event.clientY - bounds.top) / bounds.height));
-    addPlacedSmartField(smartDocumentPlacementTool, number(page.dataset.smartPage), x, y);
-    smartDocumentPlacementTool = "";
-    document.querySelectorAll("[data-smart-tool]").forEach((button) => button.classList.remove("active"));
-    if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Field placed. Fill it directly, drag its blue title to move it, or use the lower-right handle to resize it.";
-  }));
+  els.smartDocumentPages.querySelectorAll(".smart-document-page").forEach((page) => {
+    const placeFieldAtEvent = (event, tool = smartDocumentPlacementTool, label = smartDocumentPlacementLabel) => {
+      if (!tool || event.target.closest(".smart-field-overlay")) return;
+      if (!(event.target.matches("canvas, img") || event.target.classList.contains("smart-document-overlay-layer"))) return;
+      event.preventDefault();
+      const bounds = page.getBoundingClientRect();
+      const size = defaultSmartFieldSize(tool);
+      const x = Math.max(0, Math.min(1 - size.width, (event.clientX - bounds.left) / bounds.width));
+      const y = Math.max(0, Math.min(1 - size.height, (event.clientY - bounds.top) / bounds.height));
+      addPlacedSmartField(tool, number(page.dataset.smartPage), x, y, { label });
+      smartDocumentPlacementTool = "";
+      smartDocumentPlacementLabel = "";
+      document.querySelectorAll("[data-smart-tool]").forEach((button) => button.classList.remove("active"));
+      if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Field placed. Fill it directly, drag its blue title to move it, double-click to format it, or use the lower-right handle to resize it.";
+    };
+    page.addEventListener("click", (event) => placeFieldAtEvent(event));
+    page.addEventListener("dragover", (event) => { if (event.dataTransfer?.types.includes("application/x-jobcrest-smart-field")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; page.classList.add("smart-drop-target"); } });
+    page.addEventListener("dragleave", () => page.classList.remove("smart-drop-target"));
+    page.addEventListener("drop", (event) => {
+      page.classList.remove("smart-drop-target");
+      const raw = event.dataTransfer?.getData("application/x-jobcrest-smart-field");
+      if (!raw) return;
+      let item; try { item = JSON.parse(raw); } catch { return; }
+      placeFieldAtEvent(event, item.type, item.label);
+    });
+  });
+  setSmartDocumentZoom(1, { fit: true });
+  updateSmartDocumentPageIndicator(1);
+  if (els.smartDocumentPreviewPane) els.smartDocumentPreviewPane.onscroll = () => {
+    const paneTop = els.smartDocumentPreviewPane.getBoundingClientRect().top + 90;
+    let closest = 1; let distance = Infinity;
+    els.smartDocumentPages.querySelectorAll(".smart-document-page").forEach((page) => {
+      const current = Math.abs(page.getBoundingClientRect().top - paneTop);
+      if (current < distance) { distance = current; closest = number(page.dataset.smartPage); }
+    });
+    updateSmartDocumentPageIndicator(closest);
+  };
 }
 
 async function smartDocumentPreviewUrl(record, { original = false } = {}) {
@@ -10976,6 +11097,7 @@ function bindEvents() {
   els.cancelZohoSignDialog?.addEventListener("click", () => els.zohoSignDialog.close());
   els.addSmartDocumentField?.addEventListener("click", () => {
     smartDocumentPlacementTool = "text";
+    smartDocumentPlacementLabel = "";
     document.querySelectorAll("[data-smart-tool]").forEach((button) => button.classList.toggle("active", button.dataset.smartTool === "text"));
     if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = "Click the exact location on a document page where the new text field should appear.";
   });
@@ -10983,9 +11105,20 @@ function bindEvents() {
   els.deleteSelectedSmartField?.addEventListener("click", deleteSelectedSmartDocumentField);
   document.querySelectorAll("[data-smart-tool]").forEach((button) => button.addEventListener("click", () => {
     smartDocumentPlacementTool = button.dataset.smartTool;
+    smartDocumentPlacementLabel = button.dataset.smartLabel || "";
     document.querySelectorAll("[data-smart-tool]").forEach((item) => item.classList.toggle("active", item === button));
     if (els.smartDocumentCanvasHelp) els.smartDocumentCanvasHelp.textContent = `Click the exact location on a page for the new ${button.textContent.trim().toLowerCase()} field.`;
   }));
+  document.querySelectorAll("[data-smart-tool]").forEach((button) => button.addEventListener("dragstart", (event) => {
+    const payload = JSON.stringify({ type: button.dataset.smartTool, label: button.dataset.smartLabel || button.textContent.trim() });
+    event.dataTransfer?.setData("application/x-jobcrest-smart-field", payload);
+    event.dataTransfer?.setData("text/plain", button.textContent.trim());
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+  }));
+  els.smartDocumentZoomOut?.addEventListener("click", () => setSmartDocumentZoom(smartDocumentZoom - 0.1));
+  els.smartDocumentZoomIn?.addEventListener("click", () => setSmartDocumentZoom(smartDocumentZoom + 0.1));
+  els.smartDocumentZoomFit?.addEventListener("click", () => setSmartDocumentZoom(1, { fit: true }));
+  els.smartDocumentPageNumber?.addEventListener("change", (event) => scrollToSmartDocumentPage(event.target.value));
   els.smartDocumentFields?.addEventListener("change", refreshSmartDocumentResponses);
   els.smartDocumentFields?.addEventListener("input", (event) => {
     const row = event.target.closest("[data-smart-field-id]");
@@ -11001,6 +11134,9 @@ function bindEvents() {
     if (event.target.name === "fieldFontSize") {
       const control = els.smartDocumentPages?.querySelector(`[data-smart-overlay-id="${CSS.escape(fieldId)}"] [data-smart-overlay-input]`);
       if (control) control.style.fontSize = `${Math.max(6, Math.min(72, number(event.target.value) || 10))}px`;
+    }
+    if (["fieldFontFamily", "fieldBold", "fieldItalic", "fieldUnderline", "fieldTextColor", "fieldHighlightEnabled", "fieldHighlightColor", "fieldTextAlign"].includes(event.target.name)) {
+      renderSmartDocumentOverlays(smartDocumentFieldRows(), smartDocumentResponseValues());
     }
   });
   els.smartDocumentFields?.addEventListener("click", (event) => {
@@ -11018,7 +11154,7 @@ function bindEvents() {
     if (!control) return;
     const overlay = els.smartDocumentPages?.querySelector(`[data-smart-overlay-id="${CSS.escape(control.dataset.smartResponseId)}"] [data-smart-overlay-input]`);
     if (!overlay) return;
-    if (overlay.type === "checkbox") overlay.checked = control.checked;
+    if (["checkbox", "radio"].includes(overlay.type)) overlay.checked = control.checked;
     else overlay.value = control.value;
   });
   els.saveSmartDocumentTemplate?.addEventListener("click", () => saveNativeSmartDocument("template"));

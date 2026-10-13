@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=66" />
+    <link rel="stylesheet" href="styles.css?v=67" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1513,19 +1513,20 @@
         </header>
         <input type="hidden" name="documentId" />
         <div class="smart-document-layout">
-          <section class="smart-document-preview" aria-label="Fillable document canvas">
+          <aside class="smart-document-page-rail" aria-label="Document pages">
+            <div class="smart-document-page-rail-title">Documents</div>
+            <div class="smart-document-thumbnails" id="smartDocumentThumbnails"></div>
+          </aside>
+          <section class="smart-document-preview" id="smartDocumentPreviewPane" aria-label="Fillable document canvas">
             <div class="smart-document-canvas-toolbar" aria-label="Smart Document tools">
               <button class="primary-button" type="button" id="analyzeSmartDocument"><span aria-hidden="true" data-icon="search"></span>Analyze Document</button>
+              <label class="smart-page-jump"><span>Page</span><input id="smartDocumentPageNumber" type="number" min="1" value="1" aria-label="Current page" /><span id="smartDocumentPageCount">of 1</span></label>
               <span class="smart-tool-divider" aria-hidden="true"></span>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="text">Text</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="textarea">Long Text</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="date">Date</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="number">Number</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="checkbox">Checkbox</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="email">Email</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="signature">Signature</button>
-              <button class="secondary-button smart-field-tool" type="button" data-smart-tool="initials">Initials</button>
-              <span class="smart-tool-divider" aria-hidden="true"></span>
+              <button class="icon-button smart-zoom-button" type="button" id="smartDocumentZoomOut" aria-label="Zoom out" title="Zoom out">−</button>
+              <output id="smartDocumentZoomValue" class="smart-document-zoom-value">100%</output>
+              <button class="icon-button smart-zoom-button" type="button" id="smartDocumentZoomIn" aria-label="Zoom in" title="Zoom in">+</button>
+              <button class="secondary-button" type="button" id="smartDocumentZoomFit">Fit page</button>
+              <span class="smart-toolbar-spacer"></span>
               <button class="secondary-button smart-field-delete" type="button" id="deleteSelectedSmartField" disabled title="Select a field on the document to delete it"><span aria-hidden="true" data-icon="trash"></span>Delete Field</button>
             </div>
             <p class="smart-document-canvas-help" id="smartDocumentCanvasHelp">Analyze the original PDF to detect existing fields and blank lines, or choose a field type and click anywhere on a page.</p>
@@ -1533,10 +1534,29 @@
             <iframe class="hidden" id="smartDocumentPreview" title="Original document preview"></iframe>
             <div class="empty-state hidden" id="smartDocumentPreviewFallback">This document cannot be converted on the canvas. Upload a PDF, PNG, or JPEG copy to build a Smart Document.</div>
           </section>
-          <section class="smart-document-editor">
+          <section class="smart-document-editor" id="smartDocumentEditorPanel">
+            <div class="smart-document-palette">
+              <div class="section-heading compact-heading"><div><p class="eyebrow">Standard fields</p><h3>Drag fields onto the document</h3></div></div>
+              <div class="smart-field-palette-grid">
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="signature" data-smart-label="Signature">Signature</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="initials" data-smart-label="Initials">Initials</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="text" data-smart-label="Full Name">Full name</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="email" data-smart-label="Email">Email</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="date" data-smart-label="Sign Date">Sign date</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="date" data-smart-label="Date">Date</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="text" data-smart-label="Text">Text</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="textarea" data-smart-label="Long Text">Long text</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="number" data-smart-label="Number">Number</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="checkbox" data-smart-label="Checkbox">Checkbox</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="text" data-smart-label="Stamp">Stamp</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="radio" data-smart-label="Radio">Radio</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="text" data-smart-label="Company">Company</button>
+                <button class="secondary-button smart-field-tool" type="button" draggable="true" data-smart-tool="text" data-smart-label="Job Title">Job title</button>
+              </div>
+            </div>
             <div class="smart-document-builder">
               <div class="section-heading compact-heading">
-                <div><p class="eyebrow">Field Setup</p><h3>Fields on the document</h3></div>
+                <div><p class="eyebrow">Field properties</p><h3>Double-click a field to format it</h3></div>
                 <button class="secondary-button" type="button" id="addSmartDocumentField"><span aria-hidden="true" data-icon="plus"></span>Add Field</button>
               </div>
               <div id="smartDocumentFields" class="smart-document-fields"></div>
@@ -1579,7 +1599,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=148" defer></script>
+    <script src="app.js?v=149" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

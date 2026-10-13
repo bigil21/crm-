@@ -1,6 +1,6 @@
 const { PDFDocument, StandardFonts, rgb, PDFTextField, PDFCheckBox, PDFDropdown, PDFOptionList, PDFRadioGroup } = require("pdf-lib");
 
-const FIELD_TYPES = new Set(["text", "textarea", "date", "number", "email", "checkbox", "signature", "initials"]);
+const FIELD_TYPES = new Set(["text", "textarea", "date", "number", "email", "checkbox", "radio", "signature", "initials"]);
 const MAX_FIELDS = 300;
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
@@ -30,6 +30,10 @@ function normalizeFields(input) {
     const placementPresent = rawPlacement.map((value) => value !== null && value !== undefined && value !== "");
     const [x, y, width, height] = rawPlacement.map(Number);
     const fontSize = Number(field?.fontSize || 10);
+    const fontFamily = ["Helvetica", "Times Roman", "Courier"].includes(field?.fontFamily) ? field.fontFamily : "Helvetica";
+    const textColor = /^#[0-9a-f]{6}$/i.test(String(field?.textColor || "")) ? String(field.textColor).toLowerCase() : "#071525";
+    const highlightColor = /^#[0-9a-f]{6}$/i.test(String(field?.highlightColor || "")) ? String(field.highlightColor).toLowerCase() : "";
+    const textAlign = ["left", "center", "right"].includes(field?.textAlign) ? field.textAlign : "left";
     const hasPlacement = placementPresent.every(Boolean) && [x, y, width, height].every(Number.isFinite);
     if (!Number.isInteger(page) || page < 1 || page > 500 ||
         (hasPlacement && (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1.001 || y + height > 1.001)) ||
@@ -50,6 +54,13 @@ function normalizeFields(input) {
       width: hasPlacement ? Number(width.toFixed(6)) : null,
       height: hasPlacement ? Number(height.toFixed(6)) : null,
       fontSize: Number(fontSize.toFixed(2)),
+      fontFamily,
+      bold: Boolean(field?.bold),
+      italic: Boolean(field?.italic),
+      underline: Boolean(field?.underline),
+      textColor,
+      highlightColor,
+      textAlign,
       detected: Boolean(field?.detected),
     };
   });
@@ -58,11 +69,11 @@ function normalizeFields(input) {
 function normalizeResponses(fields, input, { requireComplete = false } = {}) {
   const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
   return Object.fromEntries(fields.map((field) => {
-    let value = field.type === "checkbox" ? Boolean(source[field.id]) : safeText(source[field.id], 20_000);
+    let value = ["checkbox", "radio"].includes(field.type) ? Boolean(source[field.id]) : safeText(source[field.id], 20_000);
     if (field.type === "email" && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) throw new Error("invalid_smart_document_email");
     if (field.type === "number" && value && !Number.isFinite(Number(value.replaceAll(",", "")))) throw new Error("invalid_smart_document_number");
     if (field.type === "date" && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("invalid_smart_document_date");
-    if (requireComplete && field.required && (field.type === "checkbox" ? value !== true : !value)) throw new Error("smart_document_required_field_missing");
+    if (requireComplete && field.required && (["checkbox", "radio"].includes(field.type) ? value !== true : !value)) throw new Error("smart_document_required_field_missing");
     return [field.id, value];
   }));
 }
@@ -80,7 +91,7 @@ function safeSourceDocument(document) {
 }
 
 function responseText(field, value) {
-  if (field.type === "checkbox") return value ? "Yes" : "No";
+  if (["checkbox", "radio"].includes(field.type)) return value ? "Yes" : "No";
   if (field.type === "date" && value) {
     const [year, month, day] = value.split("-");
     return `${month}/${day}/${year}`;
@@ -130,7 +141,18 @@ function applyExistingPdfFields(pdf, fields, responses) {
   return filled;
 }
 
-function drawPlacedField(pdf, field, response, font, signatureFont = font) {
+function hexRgb(value, fallback = "#071525") {
+  const hex = /^#[0-9a-f]{6}$/i.test(String(value || "")) ? String(value) : fallback;
+  return rgb(parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255);
+}
+
+function fieldFontKey(field) {
+  const family = field.fontFamily === "Times Roman" ? "times" : field.fontFamily === "Courier" ? "courier" : "helvetica";
+  const style = `${field.bold ? "Bold" : ""}${field.italic || ["signature", "initials"].includes(field.type) ? "Oblique" : ""}` || "Regular";
+  return `${family}${style}`;
+}
+
+function drawPlacedField(pdf, field, response, fonts) {
   if (![field.x, field.y, field.width, field.height].every(Number.isFinite)) return false;
   const page = pdf.getPages()[field.page - 1];
   if (!page) return false;
@@ -140,7 +162,7 @@ function drawPlacedField(pdf, field, response, font, signatureFont = font) {
   const height = Math.max(8, field.height * pageHeight);
   const y = pageHeight - (field.y * pageHeight) - height;
   const fontSize = Math.min(field.fontSize, Math.max(6, height * 0.64));
-  page.drawRectangle({ x, y, width, height, color: rgb(1, 1, 1), opacity: 0.92 });
+  page.drawRectangle({ x, y, width, height, color: field.highlightColor ? hexRgb(field.highlightColor, "#fff19a") : rgb(1, 1, 1), opacity: field.highlightColor ? 0.8 : 0.92 });
   if (field.type === "checkbox") {
     const box = Math.min(height - 2, width, 14);
     page.drawRectangle({ x: x + 1, y: y + Math.max(1, (height - box) / 2), width: box, height: box, borderWidth: 0.8, borderColor: rgb(0.12, 0.16, 0.22) });
@@ -151,14 +173,25 @@ function drawPlacedField(pdf, field, response, font, signatureFont = font) {
     }
     return true;
   }
+  if (field.type === "radio") {
+    const radius = Math.max(2, Math.min((height - 2) / 2, width / 2, 7));
+    const center = { x: x + radius + 1, y: y + height / 2 };
+    page.drawCircle({ ...center, size: radius, borderWidth: 0.8, borderColor: rgb(0.12, 0.16, 0.22) });
+    if (response === true) page.drawCircle({ ...center, size: Math.max(1.5, radius * .48), color: hexRgb(field.textColor) });
+    return true;
+  }
   const text = responseText(field, response);
   if (!text) return true;
-  const activeFont = ["signature", "initials"].includes(field.type) ? signatureFont : font;
+  const activeFont = fonts[fieldFontKey(field)] || fonts.helveticaRegular;
   const lines = wrapText(text, activeFont, fontSize, Math.max(6, width - 4));
   const lineHeight = fontSize * 1.12;
   const maxLines = Math.max(1, Math.floor((height - 3) / lineHeight));
   lines.slice(0, maxLines).forEach((line, index) => {
-    page.drawText(line, { x: x + 2, y: y + height - fontSize - 2 - (index * lineHeight), size: fontSize, font: activeFont, color: rgb(0.03, 0.05, 0.08), maxWidth: width - 4 });
+    const lineWidth = Math.min(width - 4, activeFont.widthOfTextAtSize(line, fontSize));
+    const lineX = field.textAlign === "center" ? x + (width - lineWidth) / 2 : field.textAlign === "right" ? x + width - lineWidth - 2 : x + 2;
+    const lineY = y + height - fontSize - 2 - (index * lineHeight);
+    page.drawText(line, { x: lineX, y: lineY, size: fontSize, font: activeFont, color: hexRgb(field.textColor), maxWidth: width - 4 });
+    if (field.underline && lineWidth > 0) page.drawLine({ start: { x: lineX, y: lineY - 1.2 }, end: { x: lineX + lineWidth, y: lineY - 1.2 }, thickness: Math.max(0.5, fontSize / 18), color: hexRgb(field.textColor) });
   });
   return true;
 }
@@ -188,12 +221,24 @@ async function renderCompletedDocument(document, template, actor = {}) {
     }
   }
   const filledSourceFields = sourceEmbedded ? applyExistingPdfFields(pdf, fields, responses) : [];
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const signatureFont = await pdf.embedFont(StandardFonts.HelveticaOblique);
+  const fonts = {
+    helveticaRegular: await pdf.embedFont(StandardFonts.Helvetica),
+    helveticaBold: await pdf.embedFont(StandardFonts.HelveticaBold),
+    helveticaOblique: await pdf.embedFont(StandardFonts.HelveticaOblique),
+    helveticaBoldOblique: await pdf.embedFont(StandardFonts.HelveticaBoldOblique),
+    timesRegular: await pdf.embedFont(StandardFonts.TimesRoman),
+    timesBold: await pdf.embedFont(StandardFonts.TimesRomanBold),
+    timesOblique: await pdf.embedFont(StandardFonts.TimesRomanItalic),
+    timesBoldOblique: await pdf.embedFont(StandardFonts.TimesRomanBoldItalic),
+    courierRegular: await pdf.embedFont(StandardFonts.Courier),
+    courierBold: await pdf.embedFont(StandardFonts.CourierBold),
+    courierOblique: await pdf.embedFont(StandardFonts.CourierOblique),
+    courierBoldOblique: await pdf.embedFont(StandardFonts.CourierBoldOblique),
+  };
   const filledSet = new Set(filledSourceFields.map((name) => name.trim().toLowerCase()));
   fields.forEach((field) => {
     if (field.sourceName && filledSet.has(field.sourceName.trim().toLowerCase())) return;
-    drawPlacedField(pdf, field, responses[field.id], font, signatureFont);
+    drawPlacedField(pdf, field, responses[field.id], fonts);
   });
   if (sourceEmbedded && filledSourceFields.length) {
     try { pdf.getForm().flatten(); } catch { /* Placed fields still remain authoritative. */ }
