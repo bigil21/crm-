@@ -941,7 +941,7 @@
     state.selectedContactId = contactId;
     state.leadDetailTab = "conversation";
     state.view = "leadDetail";
-    saveState();
+    saveUiState();
     render();
     return true;
   }
@@ -1149,7 +1149,7 @@
     selectedConversationJobId = event.target.value;
     state.selectedLeadJobId = event.target.value;
     state.selectedProfitJobId = event.target.value;
-    saveState({ localOnly: true });
+    saveUiState();
     selectedMentionKeys = new Set();
     mentionSuggestionQuery = "";
     renderLeadDetail();

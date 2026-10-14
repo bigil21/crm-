@@ -700,7 +700,7 @@
       queueWorkflowLocalSave();
       renderActiveWorkflowLead();
     } else {
-      saveState({ localOnly: true });
+      saveUiState();
       render();
     }
     showToast(result.reason || "Complete the stage checklist before moving forward");
@@ -897,7 +897,7 @@
       state.selectedContactId = button.dataset.contactId;
       state.leadDetailTab = "overview";
       state.view = "leadDetail";
-      saveState({ localOnly: true });
+      saveUiState();
       render();
     }
   }

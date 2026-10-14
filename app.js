@@ -1,4 +1,5 @@
 const STORAGE_KEY = "roofline-crm-v1";
+const UI_STORAGE_KEY = `${STORAGE_KEY}:ui-v1`;
 const SUPABASE_CRM_TABLE = "crm_state";
 const SUPABASE_RECORDS_TABLE = "crm_records";
 const SUPABASE_AUDIT_TABLE = "crm_audit_events";
@@ -836,6 +837,45 @@ function activeStorageKey() {
   return authSession?.user?.id ? `${STORAGE_KEY}:${authSession.user.id}` : STORAGE_KEY;
 }
 
+function activeUiStorageKey() {
+  return authSession?.user?.id ? `${UI_STORAGE_KEY}:${authSession.user.id}` : UI_STORAGE_KEY;
+}
+
+function uiStateSnapshot() {
+  return {
+    view: state.view,
+    search: state.search,
+    pipelineFilter: state.pipelineFilter,
+    leadStageFilter: state.leadStageFilter,
+    leaderboardRange: state.leaderboardRange,
+    leadDetailTab: state.leadDetailTab,
+    selectedContactId: state.selectedContactId,
+    selectedEstimateId: state.selectedEstimateId,
+    newEstimateContactId: state.newEstimateContactId,
+    newEstimateJobId: state.newEstimateJobId,
+    selectedLeadJobId: state.selectedLeadJobId,
+    selectedProfitJobId: state.selectedProfitJobId,
+  };
+}
+
+function loadUiState(storageKey = activeUiStorageKey()) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || "null");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUiState() {
+  try {
+    localStorage.setItem(activeUiStorageKey(), JSON.stringify(uiStateSnapshot()));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function loadState(storageKey = activeStorageKey()) {
   try {
     const raw = localStorage.getItem(storageKey);
@@ -846,16 +886,18 @@ function loadState(storageKey = activeStorageKey()) {
         return normalizeState({
           ...createEmptyState(),
           ...legacyParsed,
+          ...loadUiState(),
           company: normalizeCompany(legacyParsed.company),
           currentUser: { ...defaultCurrentUser, ...(legacyParsed.currentUser || {}) },
         });
       }
     }
-    if (!raw) return normalizeState(authSession?.user?.id ? createEmptyState() : createInitialState());
+    if (!raw) return normalizeState({ ...(authSession?.user?.id ? createEmptyState() : createInitialState()), ...loadUiState() });
     const parsed = JSON.parse(raw);
     return normalizeState({
       ...(authSession?.user?.id ? createEmptyState() : createInitialState()),
       ...parsed,
+      ...loadUiState(),
       company: normalizeCompany(parsed.company),
       currentUser: { ...defaultCurrentUser, ...(parsed.currentUser || {}) },
     });
@@ -2808,12 +2850,12 @@ function setView(view) {
   if (!canView(view)) {
     showToast(`Your ${roleLabel()} role cannot access that section`);
     state.view = firstAllowedView();
-    saveState({ localOnly: true });
+    saveUiState();
     render();
     return;
   }
   state.view = view;
-  saveState({ localOnly: true });
+  saveUiState();
   render();
 }
 
@@ -2834,7 +2876,7 @@ function openLeadDetail(contactId, tab = "overview", jobId = "") {
   state.selectedProfitJobId = state.selectedLeadJobId;
   state.leadDetailTab = tab;
   state.view = "leadDetail";
-  saveState({ localOnly: true });
+  saveUiState();
   render();
 }
 
@@ -2853,7 +2895,7 @@ function setSelectedEstimate(id) {
   state.selectedEstimateId = id;
   const estimate = getSelectedEstimate();
   if (estimate) state.selectedContactId = estimate.contactId;
-  saveState({ localOnly: true });
+  saveUiState();
   renderEstimates();
 }
 
@@ -8339,7 +8381,7 @@ function editCalendarTask(taskId) {
     return;
   }
   state.view = "calendar";
-  saveState();
+  saveUiState();
   render();
   fillCalendarTaskForm(task);
   els.calendarTaskForm?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -11058,7 +11100,7 @@ function bindEvents() {
       state.leadStageFilter = dashboardStage.dataset.dashboardStage || "";
       state.search = "";
       state.view = "leads";
-      saveState({ localOnly: true });
+      saveUiState();
       render();
       return;
     }
@@ -11072,14 +11114,14 @@ function bindEvents() {
     const filterButton = event.target.closest("[data-pipeline-filter]");
     if (filterButton) {
       state.pipelineFilter = filterButton.dataset.pipelineFilter;
-      saveState({ localOnly: true });
+      saveUiState();
       renderPipeline();
     }
 
     const leaderboardButton = event.target.closest("[data-leaderboard-range]");
     if (leaderboardButton) {
       state.leaderboardRange = leaderboardButton.dataset.leaderboardRange;
-      saveState({ localOnly: true });
+      saveUiState();
       renderDashboard();
     }
 
@@ -11115,10 +11157,10 @@ function bindEvents() {
     if (action === "edit-contact") openContactDialog(contactId);
     if (action === "estimate-contact") await createEstimate(contactId);
     if (action === "estimate-job") await createEstimate(contactId, true, actionButton.dataset.jobId);
-    if (action === "go-to-settings") { state.view = "company"; render(); }
+    if (action === "go-to-settings") { state.view = "company"; saveUiState(); render(); }
     if (action === "clear-lead-stage-filter") {
       state.leadStageFilter = "";
-      saveState({ localOnly: true });
+      saveUiState();
       renderLeadsView();
     }
     if (action === "select-estimate") {
@@ -11231,7 +11273,7 @@ function bindEvents() {
       return;
     }
     state.leadDetailTab = tabButton.dataset.leadTab;
-    saveState({ localOnly: true });
+    saveUiState();
     renderLeadDetail();
   });
 
@@ -11331,7 +11373,7 @@ function bindEvents() {
     if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
     state.selectedLeadJobId = event.target.value;
     state.selectedProfitJobId = event.target.value;
-    saveState({ localOnly: true });
+    saveUiState();
     renderLeadDetail();
   });
   els.leadPhotoJobSelect?.addEventListener("change", (event) => {
@@ -11340,7 +11382,7 @@ function bindEvents() {
     if (!contactJobs(contact).some((job) => job.id === event.target.value)) return;
     state.selectedLeadJobId = event.target.value;
     state.selectedProfitJobId = event.target.value;
-    saveState({ localOnly: true });
+    saveUiState();
     renderLeadDetail();
   });
   els.uploadLeadPhotoButton?.addEventListener("click", () => {
@@ -11369,7 +11411,7 @@ function bindEvents() {
     if (!requireAction("manageJobFinancials")) return;
     state.selectedLeadJobId = event.target.value;
     state.selectedProfitJobId = event.target.value;
-    saveState({ localOnly: true });
+    saveUiState();
     renderLeadDetail();
   });
   els.profitCostForm?.addEventListener("submit", saveProfitCost);
@@ -11382,7 +11424,7 @@ function bindEvents() {
     state.selectedProfitJobId = event.target.value;
     fillManualPaymentForm();
     setSaveState(els.manualPaymentSaveStatus, "", "");
-    saveState({ localOnly: true });
+    saveUiState();
     renderLeadDetail();
   });
   els.manualPaymentForm?.addEventListener("submit", saveManualPayment);
@@ -11397,7 +11439,7 @@ function bindEvents() {
     if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
     state.selectedLeadJobId = event.target.value;
     state.selectedProfitJobId = event.target.value;
-    saveState({ localOnly: true });
+    saveUiState();
     renderLeadDetail();
   });
   els.copyLeadEmailButton.addEventListener("click", copyLeadEmail);
@@ -11559,7 +11601,7 @@ function bindEvents() {
 
   els.leadStageFilter?.addEventListener("change", (event) => {
     state.leadStageFilter = statuses.includes(event.target.value) ? event.target.value : "";
-    saveState();
+    saveUiState();
     renderLeadsView();
   });
 
@@ -11583,12 +11625,12 @@ function bindEvents() {
     const contact = getContact(event.target.value);
     state.newEstimateContactId = contact?.id || "";
     state.newEstimateJobId = primaryJob(contact)?.id || "";
-    saveState();
+    saveUiState();
     renderNewEstimatePickers();
   });
   els.newEstimateJob?.addEventListener("change", (event) => {
     state.newEstimateJobId = event.target.value;
-    saveState();
+    saveUiState();
   });
   els.newEstimateButton.addEventListener("click", async () => {
     if (!requireAction("manageEstimates")) return;

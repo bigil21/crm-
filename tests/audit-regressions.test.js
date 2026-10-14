@@ -96,6 +96,40 @@ test('cache quota failure does not prevent durable save scheduling', () => {
   assert.equal(queued, 2);
 });
 
+test('navigation preferences never serialize business data or queue cloud work', () => {
+  let stored;
+  const c = functions('app.js', ['uiStateSnapshot', 'saveUiState'], {
+    state: {
+      view: 'leadDetail', search: 'audit', pipelineFilter: 'Lead', leadStageFilter: 'Inspection',
+      leaderboardRange: 'week', leadDetailTab: 'documents', selectedContactId: 'contact-1',
+      selectedEstimateId: 'estimate-1', newEstimateContactId: 'contact-2', newEstimateJobId: 'job-2',
+      selectedLeadJobId: 'job-1', selectedProfitJobId: 'job-1',
+      get contacts() { throw new Error('business records must not be read'); },
+      get estimates() { throw new Error('business records must not be read'); },
+    },
+    localStorage: { setItem(key, value) { stored = { key, value }; } },
+    activeUiStorageKey: () => 'jobcrest-ui:test-user',
+  });
+  assert.equal(c.saveUiState(), true);
+  assert.equal(stored.key, 'jobcrest-ui:test-user');
+  const saved = JSON.parse(stored.value);
+  assert.equal(saved.view, 'leadDetail');
+  assert.equal(saved.leaderboardRange, 'week');
+  assert.equal(Object.hasOwn(saved, 'contacts'), false);
+  assert.equal(Object.hasOwn(saved, 'estimates'), false);
+  assert.ok(stored.value.length < 1000);
+});
+
+test('high-frequency navigation handlers use the small UI preference writer', () => {
+  const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const setView = source.match(/function setView\(view\) \{[^]*?\n\}/)?.[0] || '';
+  assert.match(setView, /saveUiState\(\)/);
+  assert.doesNotMatch(setView, /saveState\(/);
+  assert.match(source, /const leaderboardButton[^]*?state\.leaderboardRange[^]*?saveUiState\(\)[^]*?renderDashboard\(\)/);
+  assert.match(source, /const tabButton[^]*?state\.leadDetailTab[^]*?saveUiState\(\)[^]*?renderLeadDetail\(\)/);
+  assert.match(source, /leadStageFilter\?\.addEventListener[^]*?saveUiState\(\)[^]*?renderLeadsView\(\)/);
+});
+
 test('durable mode never duplicates business rows in legacy background saves', () => {
   for (const admin of [true, false]) {
     const c = functions('app.js', ['companyStatePayload', 'cloudRowsForSave', 'cloudSnapshotPayload'], {
