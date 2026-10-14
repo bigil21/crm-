@@ -98,7 +98,7 @@
 
   async function signOutCurrentSession() {
     try {
-      await client.auth.signOut({ scope: "global" });
+      await client.auth.signOut({ scope: "local" });
     } catch {
       try {
         await client.auth.signOut();
@@ -120,6 +120,12 @@
           : "Sign-in did not create a verified CRM session. Click Clear Saved Session, then try again.",
         "error",
       );
+      return false;
+    }
+    const trusted = await window.RooflineAuth.getTrustedUser();
+    if (trusted.error || trusted.accessDenied) {
+      await signOutCurrentSession();
+      setStatus("Your account exists but has not been approved for CRM access. Ask an administrator to approve it.", "error");
       return false;
     }
     return true;
@@ -151,6 +157,9 @@
     passwordField.autocomplete = "new-password";
     form.querySelector('button[type="submit"]').textContent = "Save New Password";
     [createAccountButton, magicLinkButton, resetPasswordButton, clearSessionButton].forEach((button) => button?.classList.add("hidden"));
+  } else if (existing.accessDenied || params.get("reason") === "approval") {
+    await signOutCurrentSession();
+    setStatus("Your account exists but has not been approved for CRM access. Ask an administrator to approve it.", "error");
   } else if (existing.user && window.RooflineAuth.isAllowedUser(existing.user)) {
     setStatus(`Currently signed in as ${existing.user.email}. Enter another email/password below to switch accounts, or click Clear Saved Session first.`);
   } else if (forceAccountSwitch) {
@@ -220,24 +229,18 @@
     const { data, error } = await client.auth.signUp({
       email,
       password,
-      options: {
-        emailRedirectTo: confirmationRedirectUrl(),
-        data: {
-          role: config.defaultRole || "viewer",
-        },
-      },
+      options: { emailRedirectTo: confirmationRedirectUrl() },
     });
     if (error) {
       setStatus(authErrorMessage(error, "create-account"), "error");
       return;
     }
     if (data.session) {
-      if (!(await verifySignedInEmail(email))) return;
-      queueSignInUnlock();
-      location.replace(sanitizeRedirect(redirect));
+      await signOutCurrentSession();
+      setStatus("Account created. An administrator must approve access before you can sign in.", "success");
       return;
     }
-    setStatus("Account created. Check your email to confirm it, then come back here and sign in. If you are the admin, you can also confirm the user in Supabase Authentication > Users.", "success");
+    setStatus("Account created. Confirm your email, then ask an administrator to approve CRM access.", "success");
   });
 
   magicLinkButton.addEventListener("click", async () => {

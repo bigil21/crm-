@@ -30,12 +30,7 @@
   }
 
   function assignGlobal(name, value) {
-    try {
-      window[name] = value;
-    } catch {}
-    try {
-      Function("value", `${name} = value;`)(value);
-    } catch {}
+    if (!window.JobCrestApp?.replaceFunction?.(name, value)) throw new Error(`Unsupported JobCrest extension: ${name}`);
   }
 
   function isSoldJob(job) {
@@ -1510,15 +1505,6 @@
     return true;
   }
 
-  const timer = window.setInterval(() => {
-    if (installProjectConversations()) window.clearInterval(timer);
-  }, 200);
-  window.addEventListener(
-    "jobcrest:app-ready",
-    () => {
-      if (installProjectConversations()) window.clearInterval(timer);
-    },
-    { once: true },
-  );
-  window.setTimeout(() => window.clearInterval(timer), 60000);
+  if (window.JobCrestApp?.ready) installProjectConversations();
+  else window.addEventListener("jobcrest:app-ready", installProjectConversations, { once: true });
 })();

@@ -29,7 +29,7 @@ function harness(options = {}) {
   writer.remember([{ record_type: 'estimate', id: 'estimate-A', version: 7 }]);
   const c = vm.createContext({
     console, state, actor, contact, job, calls, notices, recoveryStorage, button, writer, pending: false,
-    squareInvoiceSends: new Map(), authSession: { user: { id: 'admin-A', email: 'admin@example.invalid', app_metadata: { role: 'admin' } } },
+    squareInvoiceSends: new Map(), authSession: { role: 'admin', user: { id: 'admin-A', email: 'admin@example.invalid', app_metadata: { role: 'admin' } } },
     durableRecordsReady: true, durableWriteBlocked: false, durableSaveInFlight: false, cloudClient: {},
     currentRole: () => actor.role, canUseCloudSync: () => true,
     window: { RooflineAuth: { isEditorSessionCurrent: () => actor.current } },
@@ -258,6 +258,8 @@ for (const [code, message] of [
 for (const [status, error] of [
   [400, 'Send only the saved estimate ID and its current version.'],
   [503, 'Reliable Square invoice storage is not configured. No invoice was sent.'],
+  [401, 'authentication_required'],
+  [403, 'admin_required'],
 ]) {
   test(`definitive ${status} pre-provider refusal preserves newer typing without a global block`, async () => {
     const started = deferred(), response = deferred();
@@ -271,7 +273,12 @@ for (const [status, error] of [
     assert.equal(c.calls.blocked.length, 0);
     assert.equal(c.calls.reload, 0);
     assert.equal(c.durableWriteBlocked, false);
-    assert.equal([...c.notices.values()][0].textContent, `Invoice sending was not started. ${error}`);
+    const expected = error === 'authentication_required'
+      ? 'Your sign-in expired before Square was contacted. Sign in again and retry.'
+      : error === 'admin_required'
+        ? 'Your account is not currently approved to send Square invoices. Ask an administrator to review your assigned role.'
+        : error;
+    assert.equal([...c.notices.values()][0].textContent, `Invoice sending was not started. ${expected}`);
   });
 }
 

@@ -38,4 +38,4 @@ The CRM can run locally or sync shared CRM data through Supabase.
 - Includes a manifest and service worker so it can be installed from the browser when served from localhost.
 - Includes PNG app icons for install support.
 
-Run `npm run check:go-live` for the local architecture check. See `GO_LIVE_RUNBOOK.md` for migration, 190-lead verification, pilot, and deployment gates.
+Run `npm run check:go-live` for syntax validation and the full behavioral test suite. Source-string checks are not treated as release evidence. See `GO_LIVE_RUNBOOK.md` for migration, 190-lead verification, pilot, and deployment gates.

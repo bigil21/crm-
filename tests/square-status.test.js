@@ -40,6 +40,10 @@ function backend({ records = dataset(), env = {}, pageSize = 100, rest, provider
       if (url.origin === 'https://unit.supabase.co' && url.pathname === '/auth/v1/user') {
         authCalls.push({ url, options }); return authUser ? json(200, authUser) : json(401, {});
       }
+      if (url.origin === 'https://unit.supabase.co' && url.pathname === '/rest/v1/rpc/crm_access_profile') {
+        const approved = Boolean(authUser?.email?.endsWith('@coastalcrestroofing.com'));
+        return json(200, { approved, role: approved ? authUser.app_metadata?.role || 'viewer' : 'viewer', email: approved ? authUser.email : '' });
+      }
       if (url.origin === 'https://unit.supabase.co' && url.pathname === '/rest/v1/crm_records') {
         const call = { url, options }; restCalls.push(call);
         if (rest) return rest(call, restCalls.length);

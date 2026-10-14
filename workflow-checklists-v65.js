@@ -173,12 +173,7 @@
   }
 
   function assignGlobal(name, value) {
-    try {
-      window[name] = value;
-    } catch {}
-    try {
-      Function("value", `${name} = value;`)(value);
-    } catch {}
+    if (!window.JobCrestApp?.replaceFunction?.(name, value)) throw new Error(`Unsupported JobCrest extension: ${name}`);
   }
 
   function estimatesForJob(contact, job) {
@@ -705,7 +700,7 @@
       queueWorkflowLocalSave();
       renderActiveWorkflowLead();
     } else {
-      saveState();
+      saveState({ localOnly: true });
       render();
     }
     showToast(result.reason || "Complete the stage checklist before moving forward");
@@ -902,7 +897,7 @@
       state.selectedContactId = button.dataset.contactId;
       state.leadDetailTab = "overview";
       state.view = "leadDetail";
-      saveState();
+      saveState({ localOnly: true });
       render();
     }
   }
@@ -1228,16 +1223,7 @@
     return true;
   }
 
-  const timer = window.setInterval(() => {
-    if (installWorkflowChecklists()) window.clearInterval(timer);
-  }, 200);
-  window.addEventListener(
-    "jobcrest:app-ready",
-    () => {
-      if (installWorkflowChecklists()) window.clearInterval(timer);
-    },
-    { once: true },
-  );
-  window.setTimeout(() => window.clearInterval(timer), 60000);
+  if (window.JobCrestApp?.ready) installWorkflowChecklists();
+  else window.addEventListener("jobcrest:app-ready", installWorkflowChecklists, { once: true });
 })();
 

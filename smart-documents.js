@@ -1,4 +1,4 @@
-const { PDFDocument, StandardFonts, rgb, PDFTextField, PDFCheckBox, PDFDropdown, PDFOptionList, PDFRadioGroup } = require("pdf-lib");
+const { PDFDocument, StandardFonts, rgb, PDFTextField, PDFCheckBox, PDFDropdown, PDFOptionList, PDFRadioGroup } = require("@cantoo/pdf-lib");
 
 const FIELD_TYPES = new Set(["text", "textarea", "date", "number", "email", "checkbox", "radio", "signature", "initials"]);
 const MAX_FIELDS = 300;

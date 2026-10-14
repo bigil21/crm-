@@ -14,14 +14,19 @@ before(async () => {
   await db.exec(`
     create role anon; create role authenticated;
     create schema auth; create schema storage;
-    create table auth.users(id uuid primary key);
+    create table auth.users(id uuid primary key, email text, raw_app_meta_data jsonb default '{}'::jsonb);
     create function auth.jwt() returns jsonb language sql stable as
       $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
     create function auth.uid() returns uuid language sql stable as $$ select (auth.jwt()->>'sub')::uuid $$;
     create table storage.buckets(id text primary key, name text, public boolean, file_size_limit bigint);
-    create table storage.objects(id uuid, bucket_id text);
+    create table storage.objects(id uuid, bucket_id text, name text, owner_id text);
+    create function storage.foldername(text) returns text[] language sql immutable as
+      $$ select string_to_array(trim(both '/' from $1), '/') $$;
     grant usage on schema public, auth, storage to authenticated, anon;
-    insert into auth.users values ('${ids.admin}'), ('${ids.sales}'), ('${ids.outsider}');
+    insert into auth.users(id,email,raw_app_meta_data) values
+      ('${ids.admin}','admin@coastalcrestroofing.com','{"role":"admin"}'),
+      ('${ids.sales}','sales@coastalcrestroofing.com','{"role":"sales"}'),
+      ('${ids.outsider}','outsider@example.invalid','{"role":"admin"}');
   `);
   await db.exec(fs.readFileSync(path.join(root, 'supabase/schema.sql'), 'utf8'));
   await db.exec('grant all on all tables in schema public to authenticated;');
@@ -63,13 +68,17 @@ test('sales cannot alter settings through direct update or an upsert', async () 
 
 test('company settings remain admin-only even for broad manager roles', async () => {
   await as();
-  await db.query("select set_config('request.jwt.claims', $1, false)", [JSON.stringify({ sub: ids.sales, email: 'manager@coastalcrestroofing.com', app_metadata: { role: 'sales_manager' } })]);
+  await db.exec('reset role');
+  await db.query("update public.crm_user_access set role='sales_manager' where user_id=$1", [ids.sales]);
+  await as();
   assert.equal((await db.query("select public.can_manage_team_crm() as allowed")).rows[0].allowed, true);
   assert.equal((await db.query("update public.crm_state set data='{}',updated_by=auth.uid() where id='coastal-crest:company' returning id")).rows.length, 0);
   await rejectsCode(() => db.exec("truncate public.crm_state"), '42501');
   await as('admin');
   await db.exec("update public.crm_state set data='{\"company\":{\"name\":\"Admin change\"}}',updated_by=auth.uid() where id='coastal-crest:company'");
   assert.equal((await db.query("select data from public.crm_state where id='coastal-crest:company'")).rows[0].data.company.name, 'Admin change');
+  await db.exec('reset role');
+  await db.query("update public.crm_user_access set role='sales' where user_id=$1", [ids.sales]);
 });
 
 test('sales still save their own legacy private state without changing company settings', async () => {

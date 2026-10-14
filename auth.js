@@ -12,7 +12,6 @@
     supabaseUrl: "",
     supabaseAnonKey: "",
     allowedEmailDomain: "coastalcrestroofing.com",
-    adminEmails: "gil@coastalcrestroofing.com,devon@coastalcrestroofing.com",
     defaultRole: "viewer",
     authRequired: true,
     syncEnabled: true,
@@ -43,12 +42,7 @@
   }
 
   function isExternalCrmEntry() {
-    if (!["/", "/index.html"].includes(location.pathname)) return false;
-    try {
-      return Boolean(document.referrer && new URL(document.referrer).origin !== location.origin);
-    } catch {
-      return false;
-    }
+    return false;
   }
 
   function prepareAuthStorage() {
@@ -57,9 +51,6 @@
     // Retire the previous cross-browser-session tokens. New credentials live
     // only in this tab's sessionStorage and disappear when the tab/session ends.
     try { removeAuthKeys(window.localStorage); } catch { /* Persistent storage may be blocked. */ }
-    if (isExternalCrmEntry()) {
-      try { removeAuthKeys(window.sessionStorage); } catch { /* The visit remains signed out. */ }
-    }
   }
 
   function browserSessionStorage() {
@@ -122,16 +113,7 @@
     return Boolean(test && user?.id === test.userId && String(user.email || "").toLowerCase() === test.email && user.app_metadata?.role === "sales");
   }
 
-  function adminEmails() {
-    return String(config.adminEmails || "")
-      .split(",")
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean);
-  }
-
-  function isAdminEmail(email = "") {
-    return adminEmails().includes(String(email || "").toLowerCase());
-  }
+  function isAdminEmail() { return false; }
 
   function normalizeRole(role) {
     const value = String(role || config.defaultRole || "viewer")
@@ -142,7 +124,6 @@
   }
 
   function roleForUser(user) {
-    if (isAdminEmail(user?.email)) return "admin";
     return normalizeRole(user?.app_metadata?.role || config.defaultRole);
   }
 
@@ -185,10 +166,20 @@
       return { error: userResult.error || new Error("Unable to verify user") };
     }
 
+    const accessResult = await client.rpc("crm_access_profile");
+    if (accessResult.error || accessResult.data?.approved !== true) {
+      return {
+        session: sessionResult.data.session,
+        user: userResult.data.user,
+        accessDenied: true,
+        error: accessResult.error || new Error("crm_access_not_approved"),
+      };
+    }
+
     return {
       session: sessionResult.data.session,
       user: userResult.data.user,
-      role: roleForUser(userResult.data.user),
+      role: normalizeRole(accessResult.data.role),
     };
   }
 
@@ -215,7 +206,7 @@
 
     const auth = await getTrustedUser();
     if (auth.error || !auth.user) {
-      location.replace(loginUrl("auth"));
+      location.replace(loginUrl(auth.accessDenied ? "approval" : "auth"));
       return null;
     }
 
@@ -462,9 +453,6 @@
     validRoles,
   };
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", installDashboardSearchEnhancement, { once: true });
-  } else {
-    installDashboardSearchEnhancement();
-  }
+  // Search results are rendered from the current authoritative in-memory CRM
+  // state by app.js. Never inspect stale local recovery snapshots for results.
 })();

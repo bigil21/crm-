@@ -9,10 +9,13 @@ do $$ begin
 end $$;
 create temporary table staging_checks(check_name text, passed boolean);
 grant select,insert on staging_checks to authenticated,anon;
-insert into auth.users(id,email) values
- ('00000000-0000-4000-8000-000000000001','staging-admin@coastalcrestroofing.com'),
- ('00000000-0000-4000-8000-000000000002','staging-sales@coastalcrestroofing.com'),
- ('00000000-0000-4000-8000-000000000003','staging-outsider@example.com');
+insert into auth.users(id,email,raw_app_meta_data) values
+ ('00000000-0000-4000-8000-000000000001','staging-admin@coastalcrestroofing.com','{"role":"admin"}'),
+ ('00000000-0000-4000-8000-000000000002','staging-sales@coastalcrestroofing.com','{"role":"sales"}'),
+ ('00000000-0000-4000-8000-000000000003','staging-outsider@example.com','{"role":"admin"}');
+insert into public.crm_user_access(user_id,email,role,approved,approved_at) values
+ ('00000000-0000-4000-8000-000000000001','staging-admin@coastalcrestroofing.com','admin',true,clock_timestamp()),
+ ('00000000-0000-4000-8000-000000000002','staging-sales@coastalcrestroofing.com','sales',true,clock_timestamp());
 select set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000002","email":"staging-sales@coastalcrestroofing.com","app_metadata":{"role":"sales"}}',true);
 set local role authenticated;
 select public.crm_commit_records('smoke-create','[

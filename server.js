@@ -4,7 +4,7 @@ const path = require("path");
 const crypto = require("node:crypto");
 const {
   createOAuthState, verifyOAuthState, createAuthorizationUrl, exchangeAuthorizationCode,
-  refreshAccessToken, fetchGoogleIdentity, encryptSecret, decryptSecret, upsertCalendarEvent, deleteCalendarEvent,
+  refreshAccessToken, revokeGoogleToken, fetchGoogleIdentity, encryptSecret, decryptSecret, upsertCalendarEvent, deleteCalendarEvent,
   GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE, sendGmailMessage, fetchGmailThread,
 } = require(path.join(__dirname, "google-workspace"));
 const {
@@ -13,7 +13,7 @@ const {
 const {
   ZOHO_SIGN_SCOPES, createAuthorizationUrl: createZohoAuthorizationUrl,
   exchangeAuthorizationCode: exchangeZohoAuthorizationCode,
-  refreshAccessToken: refreshZohoAccessToken, createSmartDocument, createEmbeddedSendUrl,
+  refreshAccessToken: refreshZohoAccessToken, revokeRefreshToken: revokeZohoRefreshToken, createSmartDocument, createEmbeddedSendUrl,
 } = require(path.join(__dirname, "zoho-sign"));
 const {
   normalizeFields: normalizeSmartDocumentFields,
@@ -104,7 +104,6 @@ function authConfigScript() {
     supabaseUrl: authConfig?.origin || "",
     supabaseAnonKey: authConfig?.anonKey || "",
     allowedEmailDomain,
-    adminEmails: process.env.ADMIN_EMAILS || process.env.OWNER_EMAIL || process.env.ADMIN_EMAIL || "",
     defaultRole: process.env.DEFAULT_AUTH_ROLE || "viewer",
     authRequired: authenticationRequired(),
     syncEnabled: process.env.SUPABASE_SYNC_ENABLED === "true",
@@ -178,7 +177,16 @@ async function verifyApiUser(req) {
   });
   if (!response.ok) return null;
   const user = await response.json();
-  return isAllowedApiUser(user) ? user : null;
+  if (!isAllowedApiUser(user)) return null;
+  const accessResponse = await fetch(`${config.origin}/rest/v1/rpc/crm_access_profile`, {
+    method: "POST",
+    signal: AbortSignal.timeout(15000),
+    headers: { apikey: config.anonKey, Authorization: authorization, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const access = await accessResponse.json().catch(() => null);
+  if (!accessResponse.ok || access?.approved !== true) return null;
+  return { ...user, app_metadata: { ...(user.app_metadata || {}), role: String(access.role || "viewer") } };
 }
 
 async function requireApiUser(req, res, handler) {
@@ -190,22 +198,18 @@ async function requireApiUser(req, res, handler) {
     }
     await handler(req, res, user);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "request_failed" });
+    console.error("Authenticated API request failed", {
+      path: String(req.url || "").split("?")[0],
+      code: String(error?.code || error?.name || "request_failed").slice(0, 80),
+    });
+    sendJson(res, 500, { error: "request_failed" });
   }
-}
-
-function configuredAdminEmails() {
-  return String(process.env.ADMIN_EMAILS || process.env.OWNER_EMAIL || process.env.ADMIN_EMAIL || "")
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean);
 }
 
 function isApiAdmin(user = {}) {
   return Boolean(
     user.local ||
-      String(user.app_metadata?.role || "").toLowerCase() === "admin" ||
-      configuredAdminEmails().includes(String(user.email || "").toLowerCase()),
+      String(user.app_metadata?.role || "").toLowerCase() === "admin",
   );
 }
 
@@ -215,6 +219,7 @@ function canManageAssignedCalendar(user = {}) {
 }
 
 const localOAuthConnections = new Map();
+const localOAuthStates = new Map();
 
 function googleWorkspaceConfig() {
   const clientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
@@ -257,6 +262,46 @@ function integrationServiceHeaders(config, extra = {}) {
     ...(!config.key.startsWith("sb_secret_") ? { Authorization: `Bearer ${config.key}` } : {}),
     ...extra,
   };
+}
+
+function oauthStateHash(state) {
+  return crypto.createHash("sha256").update(String(state || "")).digest("hex");
+}
+
+async function storeOAuthState(store, provider, identity, state) {
+  const stateHash = oauthStateHash(state);
+  if (store.local) {
+    localOAuthStates.set(stateHash, { provider, userId: identity.sub, companyId: store.companyId, expiresAt: Date.now() + 10 * 60 * 1000 });
+    return;
+  }
+  const response = await fetch(`${store.origin}/rest/v1/crm_oauth_states`, {
+    method: "POST", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { "Content-Type": "application/json", Prefer: "return=minimal" }),
+    body: JSON.stringify({ state_hash: stateHash, company_state_id: store.companyId, provider, crm_user_id: identity.sub, expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() }),
+  });
+  if (!response.ok) throw new Error("integration_state_store_unavailable");
+}
+
+async function consumeOAuthState(store, provider, identity, state) {
+  const stateHash = oauthStateHash(state);
+  if (store.local) {
+    const saved = localOAuthStates.get(stateHash);
+    localOAuthStates.delete(stateHash);
+    if (!saved || saved.provider !== provider || saved.userId !== identity.sub || saved.companyId !== store.companyId || saved.expiresAt < Date.now()) throw new Error("invalid_oauth_state");
+    return;
+  }
+  const url = new URL(`${store.origin}/rest/v1/crm_oauth_states`);
+  url.searchParams.set("state_hash", `eq.${stateHash}`);
+  url.searchParams.set("company_state_id", `eq.${store.companyId}`);
+  url.searchParams.set("provider", `eq.${provider}`);
+  url.searchParams.set("crm_user_id", `eq.${identity.sub}`);
+  url.searchParams.set("expires_at", `gt.${new Date().toISOString()}`);
+  const response = await fetch(url, {
+    method: "DELETE", signal: AbortSignal.timeout(15000),
+    headers: integrationServiceHeaders(store, { Prefer: "return=representation" }),
+  });
+  const rows = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(rows) || rows.length !== 1) throw new Error("invalid_oauth_state");
 }
 
 async function getProviderConnection(store, provider, email) {
@@ -334,6 +379,7 @@ async function handleGoogleConnect(req, res, user) {
   if (!config || !store) { sendJson(res, 503, { error: "Google Workspace is not configured." }); return; }
   const identity = { sub: user.id || "local-admin", email: user.email, company: store.companyId };
   const state = createOAuthState(identity, config.stateSecret);
+  await storeOAuthState(store, "google", identity, state);
   sendJson(res, 200, { authorizationUrl: createAuthorizationUrl(config, identity, state) });
 }
 
@@ -345,6 +391,7 @@ async function handleGoogleCallback(url, res) {
     if (url.searchParams.get("error")) throw new Error("google_consent_denied");
     const identity = verifyOAuthState(url.searchParams.get("state"), config.stateSecret);
     if (identity.company !== store.companyId) throw new Error("invalid_oauth_state");
+    await consumeOAuthState(store, "google", identity, url.searchParams.get("state"));
     const tokens = await exchangeAuthorizationCode(fetch, config, url.searchParams.get("code"));
     const googleIdentity = await fetchGoogleIdentity(fetch, tokens.access_token);
     if (googleIdentity.email !== identity.email) throw new Error("google_email_mismatch");
@@ -367,8 +414,13 @@ async function handleGoogleCallback(url, res) {
 }
 
 async function handleGoogleDisconnect(req, res, user) {
+  const config = googleWorkspaceConfig();
   const store = integrationStoreConfig();
-  if (!store) { sendJson(res, 503, { error: "Integration storage is not configured." }); return; }
+  if (!config || !store) { sendJson(res, 503, { error: "Google Workspace is not configured." }); return; }
+  const connection = await getGoogleConnection(store, user.email);
+  if (connection?.encrypted_refresh_token) {
+    await revokeGoogleToken(fetch, decryptSecret(connection.encrypted_refresh_token, config.encryptionKey));
+  }
   await revokeGoogleConnection(store, user.email);
   sendJson(res, 200, { disconnected: true });
 }
@@ -527,6 +579,7 @@ async function handleZohoConnect(req, res, user) {
   if (!config || !store) { sendJson(res, 503, { error: "Zoho Sign is not configured." }); return; }
   const identity = { sub: user.id || "local-admin", email: user.email, company: store.companyId };
   const state = createOAuthState(identity, config.stateSecret);
+  await storeOAuthState(store, "zoho", identity, state);
   sendJson(res, 200, { authorizationUrl: createZohoAuthorizationUrl(config, state) });
 }
 
@@ -538,6 +591,7 @@ async function handleZohoCallback(url, res) {
     if (url.searchParams.get("error")) throw new Error("zoho_consent_denied");
     const identity = verifyOAuthState(url.searchParams.get("state"), config.stateSecret);
     if (identity.company !== store.companyId) throw new Error("invalid_oauth_state");
+    await consumeOAuthState(store, "zoho", identity, url.searchParams.get("state"));
     const tokens = await exchangeZohoAuthorizationCode(fetch, config, url.searchParams.get("code"));
     const existing = await getProviderConnection(store, "zoho", identity.email);
     const refreshToken = tokens.refresh_token || (existing ? decryptSecret(existing.encrypted_refresh_token, config.encryptionKey) : "");
@@ -554,8 +608,13 @@ async function handleZohoCallback(url, res) {
 }
 
 async function handleZohoDisconnect(req, res, user) {
+  const config = zohoSignConfig();
   const store = integrationStoreConfig();
-  if (!store) { sendJson(res, 503, { error: "Integration storage is not configured." }); return; }
+  if (!config || !store) { sendJson(res, 503, { error: "Zoho Sign is not configured." }); return; }
+  const connection = await getProviderConnection(store, "zoho", user.email);
+  if (connection?.encrypted_refresh_token) {
+    await revokeZohoRefreshToken(fetch, config, decryptSecret(connection.encrypted_refresh_token, config.encryptionKey));
+  }
   await revokeProviderConnection(store, "zoho", user.email);
   sendJson(res, 200, { disconnected: true });
 }
@@ -670,6 +729,7 @@ function smartDocumentPayload(existing, fields, responses, status, user, complet
     result.lastEmailedTo = existing.lastEmailedTo;
     result.lastEmailMessageId = existing.lastEmailMessageId;
   }
+  if (existing?.emailDelivery && typeof existing.emailDelivery === "object") result.emailDelivery = existing.emailDelivery;
   return result;
 }
 
@@ -738,13 +798,33 @@ async function handleSmartDocumentEmail(req, res, user) {
   const store = integrationStoreConfig();
   if (!store || store.local) { sendJson(res, 503, { error: "Shared document storage is not configured." }); return; }
   let payload;
+  let record;
+  let pendingDelivery;
   try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Smart Document email." }); return; }
   try {
-    const record = await getTrustedDocumentRecord(store, payload?.documentId);
+    record = await getTrustedDocumentRecord(store, payload?.documentId);
     if (!canAccessTrustedRecord(user, record)) throw new Error("document_not_found");
     const smartDocument = record.data.smartDocument;
     const completedFile = smartDocument?.completedFile;
     if (smartDocument?.status !== "completed" || !completedFile?.storagePath) throw new Error("smart_document_not_completed");
+    if (smartDocument?.emailDelivery?.status === "sending") throw new Error("smart_document_email_pending");
+    const deliveryId = crypto.randomUUID();
+    const deliveryStartedAt = new Date().toISOString();
+    pendingDelivery = {
+      ...smartDocument,
+      revision: Math.max(0, Number(smartDocument.revision) || 0) + 1,
+      updatedAt: deliveryStartedAt,
+      updatedBy: user.id,
+      emailDelivery: {
+        id: deliveryId,
+        status: "sending",
+        toEmail: String(payload?.toEmail || "").trim().toLowerCase(),
+        subject: String(payload?.subject || "").trim().slice(0, 200),
+        startedAt: deliveryStartedAt,
+        actorUserId: user.id,
+      },
+    };
+    await saveTrustedSmartDocument(store, user, record, pendingDelivery);
     const bytes = await downloadTrustedStorageObject(store, completedFile.storagePath, 20 * 1024 * 1024);
     const { accessToken, connection } = await googleAccessForUser(user, GOOGLE_GMAIL_SEND_SCOPE);
     const sent = await sendGmailMessage(fetch, accessToken, {
@@ -755,13 +835,19 @@ async function handleSmartDocumentEmail(req, res, user) {
       attachment: { bytes, name: completedFile.name, type: "application/pdf" },
     });
     const emailReceipt = {
-      ...smartDocument,
-      revision: Math.max(0, Number(smartDocument.revision) || 0) + 1,
+      ...pendingDelivery,
+      revision: pendingDelivery.revision + 1,
       updatedAt: new Date().toISOString(),
       updatedBy: user.id,
       lastEmailedAt: new Date().toISOString(),
       lastEmailedTo: String(payload?.toEmail || "").trim().toLowerCase(),
       lastEmailMessageId: sent.messageId,
+      emailDelivery: {
+        ...pendingDelivery.emailDelivery,
+        status: "sent",
+        sentAt: new Date().toISOString(),
+        providerMessageId: sent.messageId,
+      },
     };
     await saveTrustedSmartDocument(store, user, record, emailReceipt);
     sendJson(res, 200, { sent: true, fromEmail: connection.provider_email, toEmail: emailReceipt.lastEmailedTo, sentAt: emailReceipt.lastEmailedAt, ...sent });
@@ -770,12 +856,13 @@ async function handleSmartDocumentEmail(req, res, user) {
     const messages = {
       document_not_found: "The saved CRM document could not be found or is not assigned to you.",
       smart_document_not_completed: "Save the completed Smart Document before emailing it.",
+      smart_document_email_pending: "A prior email may already have been sent but its receipt was not confirmed. An administrator must review Gmail before another send.",
       google_not_connected: "Connect Google Workspace in Settings before emailing documents.",
       google_scope_missing: "Reconnect Google Workspace to approve Gmail sending.",
       invalid_gmail_attachment: "The completed PDF is too large for direct Gmail delivery.",
       gmail_send_failed: "Gmail rejected the message.",
     };
-    const status = badRequest ? 400 : ["google_not_connected", "google_scope_missing", "smart_document_not_completed"].includes(error.message) ? 409 : error.message === "document_not_found" ? 404 : 502;
+    const status = badRequest ? 400 : ["google_not_connected", "google_scope_missing", "smart_document_not_completed", "smart_document_email_pending"].includes(error.message) ? 409 : error.message === "document_not_found" ? 404 : 502;
     sendJson(res, status, { error: messages[error.message] || "The completed Smart Document could not be emailed.", code: error.message });
   }
 }
@@ -916,16 +1003,20 @@ async function requireApiAdmin(req, res, handler) {
   try {
     const user = await verifyApiUser(req);
     if (!user) {
-      sendJson(res, 401, { error: "authentication_required" });
+      sendJson(res, 401, { error: "authentication_required", noProviderAction: true });
       return;
     }
     if (!isApiAdmin(user)) {
-      sendJson(res, 403, { error: "admin_required" });
+      sendJson(res, 403, { error: "admin_required", noProviderAction: true });
       return;
     }
     await handler(req, res, user);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "request_failed" });
+    console.error("Administrative API request failed", {
+      path: String(req.url || "").split("?")[0],
+      code: String(error?.code || error?.name || "request_failed").slice(0, 80),
+    });
+    sendJson(res, 500, { error: "request_failed" });
   }
 }
 
@@ -1419,19 +1510,11 @@ const handleRequest = (req, res) => {
     return;
   }
   if (url.pathname === "/api/health" && req.method === "GET") {
-    const config = supabaseConfig();
     sendJson(res, 200, {
       ok: true,
       service: "jobcrest-crm",
       release: process.env.RENDER_GIT_COMMIT || "full-audit-repairs-20260921",
       timestamp: new Date().toISOString(),
-      authRequired: authenticationRequired(),
-      cloudSyncConfigured: Boolean(config.url && config.anonKey && process.env.SUPABASE_SYNC_ENABLED === "true"),
-      storageMode: config.url ? "supabase" : "local",
-      squareConfigured: Boolean(squareToken() && squareWebhookKey()),
-      googleWorkspaceConfigured: Boolean(googleWorkspaceConfig() && integrationStoreConfig()),
-      googleDriveConfigured: Boolean(googleDriveConfig() && integrationStoreConfig() && !integrationStoreConfig()?.local),
-      zohoSignConfigured: Boolean(zohoSignConfig() && integrationStoreConfig()),
     });
     return;
   }

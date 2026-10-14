@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const {
   GOOGLE_CALENDAR_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE,
   createOAuthState, verifyOAuthState, createAuthorizationUrl,
-  encryptSecret, decryptSecret, calendarEventResource, upsertCalendarEvent, deleteCalendarEvent,
+  encryptSecret, decryptSecret, revokeGoogleToken, calendarEventResource, upsertCalendarEvent, deleteCalendarEvent,
   gmailMessageResource, sendGmailMessage, fetchGmailThread,
 } = require('../google-workspace');
 
@@ -102,6 +102,14 @@ test('refresh tokens use authenticated encryption and reject the wrong key', () 
   assert.throws(() => decryptSecret(encrypted, Buffer.alloc(32, 8).toString('base64')), /encrypted_secret_invalid/);
 });
 
+test('Google disconnect revokes the provider refresh token', async () => {
+  const calls = [];
+  await revokeGoogleToken(async (url, options) => { calls.push({ url, options }); return { ok: true }; }, 'refresh-token');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.match(calls[0].url, /^https:\/\/oauth2\.googleapis\.com\/revoke\?token=refresh-token$/);
+  await assert.rejects(revokeGoogleToken(async () => ({ ok: false }), 'refresh-token'), /google_token_revocation_failed/);
+});
+
 test('calendar event carries CRM reference, lead details and reminder choice', () => {
   const event = calendarEventResource({ id: 'task-1', title: 'Call homeowner', dueAt: '2026-10-05T14:30:00-04:00', duration: 45, reminder: 'none', notes: 'Discuss color.' },
     { name: 'Jordan Blake', phone: '555-111-2222', email: 'jordan@example.com', address: '1 Main St\nCharlotte, NC' });
@@ -111,6 +119,12 @@ test('calendar event carries CRM reference, lead details and reminder choice', (
   assert.deepEqual(event.reminders, { useDefault: false, overrides: [] });
   assert.match(event.description, /Related Lead: Jordan Blake/);
   assert.equal(Date.parse(event.end.dateTime) - Date.parse(event.start.dateTime), 45 * 60 * 1000);
+});
+
+test('datetime-local tasks retain Eastern wall-clock time on a UTC server', () => {
+  const event = calendarEventResource({ id: 'task-2', title: 'Evening inspection', dueAt: '2026-10-14T19:00', duration: 60, reminder: 'popup' }, null, 'America/New_York');
+  assert.deepEqual(event.start, { dateTime: '2026-10-14T19:00:00', timeZone: 'America/New_York' });
+  assert.deepEqual(event.end, { dateTime: '2026-10-14T20:00:00', timeZone: 'America/New_York' });
 });
 
 test('calendar sync inserts once and updates the saved Google event thereafter', async () => {

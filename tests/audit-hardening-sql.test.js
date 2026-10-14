@@ -36,7 +36,9 @@ before(async () => {
     create function auth.uid() returns uuid language sql stable as
       $$ select nullif(auth.jwt()->>'sub', '')::uuid $$;
     create table storage.buckets(id text primary key, name text, public boolean, file_size_limit bigint);
-    create table storage.objects(id uuid, bucket_id text);
+    create table storage.objects(id uuid, bucket_id text, name text, owner_id text);
+    create function storage.foldername(text) returns text[] language sql immutable as
+      $$ select string_to_array(trim(both '/' from $1), '/') $$;
     grant usage on schema public, auth, storage to anon, authenticated, service_role, supabase_auth_admin;
     insert into auth.users(id,email,raw_app_meta_data)
       values ('${adminId}','admin@coastalcrestroofing.com','{"role":"admin"}');

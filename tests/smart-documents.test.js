@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { PDFDocument } = require('pdf-lib');
+const { PDFDocument } = require('@cantoo/pdf-lib');
 const { PGlite } = require('@electric-sql/pglite');
 const { normalizeFields, normalizeResponses, renderCompletedDocument } = require('../smart-documents');
 

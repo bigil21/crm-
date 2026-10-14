@@ -464,7 +464,7 @@ function schedulerHarness({ env = {}, claim = validClaim(), providerStatus = 200
   let pending = claim !== null, route;
   const context = vm.createContext({
     URL, Buffer, AbortSignal, __dirname: root, module: { exports: {} },
-    console: { log() {}, warn: message => warnings.push(message) },
+    console: { log() {}, warn: message => warnings.push(message), error() {} },
     process: { env: { CRM_SKIP_ENV_FILES: 'true', AUTH_REQUIRED: 'true', SUPABASE_URL: 'https://unit.supabase.co',
       SUPABASE_ANON_KEY: 'sb_publishable_synthetic', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_synthetic_worker',
       SUPABASE_STATE_ID: scope.companyId, SQUARE_ENVIRONMENT: scope.environment,
@@ -484,6 +484,10 @@ function schedulerHarness({ env = {}, claim = validClaim(), providerStatus = 200
       const url = new URL(String(input));
       if (url.origin === 'https://unit.supabase.co' && url.pathname === '/auth/v1/user') {
         authCalls.push({ url, options }); return jsonResponse(authUser ? 200 : 401, authUser || {});
+      }
+      if (url.origin === 'https://unit.supabase.co' && url.pathname === '/rest/v1/rpc/crm_access_profile') {
+        const approved = Boolean(authUser?.email?.endsWith('@coastalcrestroofing.com'));
+        return jsonResponse(200, { approved, role: approved ? authUser.app_metadata?.role || 'viewer' : 'viewer', email: approved ? authUser.email : '' });
       }
       if (url.origin === 'https://unit.supabase.co' && url.pathname.startsWith('/rest/v1/rpc/')) {
         const call = { name: url.pathname.split('/').at(-1), url, options, body: JSON.parse(options.body) }; rpcCalls.push(call);

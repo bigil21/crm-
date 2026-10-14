@@ -64,6 +64,14 @@ function refreshAccessToken(fetchImpl, config, refreshToken) {
   return tokenRequest(fetchImpl, config, { refresh_token: refreshToken, grant_type: "refresh_token" });
 }
 
+async function revokeRefreshToken(fetchImpl, config, refreshToken) {
+  if (typeof refreshToken !== "string" || !refreshToken) throw new Error("zoho_refresh_token_missing");
+  const url = new URL("/oauth/v2/token/revoke", config.accountsOrigin);
+  url.searchParams.set("token", refreshToken);
+  const response = await fetchImpl(url, { method: "POST", signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error("zoho_token_revocation_failed");
+}
+
 function validateDocument(document) {
   const name = safeFileName(document?.name);
   const size = Number(document?.size);
@@ -110,6 +118,6 @@ async function createEmbeddedSendUrl(fetchImpl, config, accessToken, requestId) 
 
 module.exports = {
   ZOHO_SIGN_SCOPES, SUPPORTED_EXTENSIONS, MAX_ZOHO_SIGN_FILE_SIZE,
-  createAuthorizationUrl, exchangeAuthorizationCode, refreshAccessToken,
+  createAuthorizationUrl, exchangeAuthorizationCode, refreshAccessToken, revokeRefreshToken,
   createSmartDocument, createEmbeddedSendUrl, safeZohoId,
 };

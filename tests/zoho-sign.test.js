@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   ZOHO_SIGN_SCOPES, MAX_ZOHO_SIGN_FILE_SIZE, createAuthorizationUrl,
-  createSmartDocument, createEmbeddedSendUrl,
+  revokeRefreshToken, createSmartDocument, createEmbeddedSendUrl,
 } = require('../zoho-sign');
 
 const config = {
@@ -17,6 +17,14 @@ test('Zoho OAuth requests offline access with only document scopes', () => {
   assert.equal(url.searchParams.get('access_type'), 'offline');
   assert.equal(url.searchParams.get('state'), 'signed-state');
   assert.deepEqual(url.searchParams.get('scope').split(','), ZOHO_SIGN_SCOPES);
+});
+
+test('Zoho disconnect revokes the provider refresh token', async () => {
+  const calls = [];
+  await revokeRefreshToken(async (url, options) => { calls.push({ url: String(url), options }); return { ok: true }; }, config, 'refresh-token');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.match(calls[0].url, /^https:\/\/accounts\.zoho\.com\/oauth\/v2\/token\/revoke\?token=refresh-token$/);
+  await assert.rejects(revokeRefreshToken(async () => ({ ok: false }), config, 'refresh-token'), /zoho_token_revocation_failed/);
 });
 
 test('Smart Document upload creates a draft with one verified signer', async () => {

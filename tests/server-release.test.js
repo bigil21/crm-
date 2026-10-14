@@ -16,7 +16,12 @@ function server(env = {}, user = null) {
       if (name === 'https') throw Error('A release test must not contact Square');
       return require(name);
     },
-    fetch: async (url, options) => { outbound.push({ url, options }); return { ok: Boolean(user), json: async () => user }; },
+    fetch: async (url, options) => {
+      outbound.push({ url, options });
+      const isAccess = String(url).includes('/rest/v1/rpc/crm_access_profile');
+      const body = isAccess && user ? { approved: user.approved !== false, role: user.app_metadata?.role || 'viewer', email: user.email } : user;
+      return { ok: Boolean(body), json: async () => body };
+    },
   });
   vm.runInContext(serverSource, context);
   const request = (url, method = 'GET', authorization = '') => new Promise((resolve, reject) => {
@@ -71,7 +76,8 @@ test('login redirects, fresh HTML and health/config work without database migrat
   assert.equal((await h.request('/logout/')).headers.Location, '/logout');
   const html = await h.request('/'); assert.match(html.headers['Cache-Control'], /no-store/);
   const health = JSON.parse((await h.request('/api/health')).body);
-  assert.equal(health.authRequired, true); assert.equal(health.cloudSyncConfigured, true);
+  assert.deepEqual(Object.keys(health).sort(), ['ok', 'release', 'service', 'timestamp']);
+  assert.equal(health.ok, true);
   assert.equal(health.release, 'full-audit-repairs-20260921');
   const config = (await h.request('/auth-config.js')).body; assert.match(config, /"authRequired":true/);
   assert.equal(h.outbound.length, 0);
@@ -84,9 +90,11 @@ for (const env of [{}, { AUTH_REQUIRED: 'false' }, { NODE_ENV: 'production', ALL
     assert.equal(h.outbound.length, 0);
   });
 }
-test('only an explicit development demo may bypass authentication', async () => {
+test('public health never exposes whether authentication can be bypassed', async () => {
   const h = server({ NODE_ENV: 'development', ALLOW_LOCAL_DEMO: 'true', AUTH_REQUIRED: 'false' });
-  assert.equal(JSON.parse((await h.request('/api/health')).body).authRequired, false);
+  const health = JSON.parse((await h.request('/api/health')).body);
+  assert.equal(health.ok, true);
+  assert.equal(Object.hasOwn(health, 'authRequired'), false);
 });
 test('valid company admin and sales authorization stays compatible', async () => {
   const env = { AUTH_REQUIRED: 'true', SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'sb_publishable_synthetic' };

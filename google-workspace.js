@@ -95,6 +95,15 @@ function refreshAccessToken(fetchImpl, config, refreshToken) {
   return tokenRequest(fetchImpl, config, { refresh_token: refreshToken, grant_type: "refresh_token" });
 }
 
+async function revokeGoogleToken(fetchImpl, token) {
+  if (typeof token !== "string" || !token) throw new Error("google_refresh_token_missing");
+  const response = await fetchImpl(`${GOOGLE_TOKEN_URL.replace(/\/token$/, "/revoke")}?token=${encodeURIComponent(token)}`, {
+    method: "POST", signal: AbortSignal.timeout(15000),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+  if (!response.ok) throw new Error("google_token_revocation_failed");
+}
+
 async function fetchGoogleIdentity(fetchImpl, accessToken) {
   const response = await fetchImpl(GOOGLE_USERINFO_URL, {
     signal: AbortSignal.timeout(15000), headers: { Authorization: `Bearer ${accessToken}` },
@@ -130,10 +139,26 @@ function decryptSecret(value, encodedKey) {
 }
 
 function calendarEventResource(task, contact, timeZone = "America/New_York") {
-  const start = new Date(task.dueAt);
   const duration = Number(task.duration);
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(duration) || duration < 5 || duration > 1440) throw new Error("invalid_task_schedule");
-  const end = new Date(start.getTime() + duration * 60 * 1000);
+  if (!Number.isFinite(duration) || duration < 5 || duration > 1440) throw new Error("invalid_task_schedule");
+  const localMatch = String(task.dueAt || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  let startDateTime;
+  let endDateTime;
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second = "00"] = localMatch;
+    const wallClock = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
+    if (wallClock.getUTCFullYear() !== Number(year) || wallClock.getUTCMonth() !== Number(month) - 1 || wallClock.getUTCDate() !== Number(day) ||
+        wallClock.getUTCHours() !== Number(hour) || wallClock.getUTCMinutes() !== Number(minute)) throw new Error("invalid_task_schedule");
+    startDateTime = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    wallClock.setUTCMinutes(wallClock.getUTCMinutes() + duration);
+    const pad = value => String(value).padStart(2, "0");
+    endDateTime = `${wallClock.getUTCFullYear()}-${pad(wallClock.getUTCMonth() + 1)}-${pad(wallClock.getUTCDate())}T${pad(wallClock.getUTCHours())}:${pad(wallClock.getUTCMinutes())}:${pad(wallClock.getUTCSeconds())}`;
+  } else {
+    const start = new Date(task.dueAt);
+    if (!Number.isFinite(start.getTime())) throw new Error("invalid_task_schedule");
+    startDateTime = start.toISOString();
+    endDateTime = new Date(start.getTime() + duration * 60 * 1000).toISOString();
+  }
   const description = [
     task.notes,
     contact?.name ? `Related Lead: ${contact.name}` : "",
@@ -144,8 +169,8 @@ function calendarEventResource(task, contact, timeZone = "America/New_York") {
   const resource = {
     summary: String(task.title || "CRM task").trim().slice(0, 500),
     description,
-    start: { dateTime: start.toISOString(), timeZone },
-    end: { dateTime: end.toISOString(), timeZone },
+    start: { dateTime: startDateTime, timeZone },
+    end: { dateTime: endDateTime, timeZone },
     reminders: task.reminder === "none" ? { useDefault: false, overrides: [] } : { useDefault: true },
     extendedProperties: { private: { jobcrestTaskId: safeIdentifier(task.id, "task") } },
   };
@@ -295,6 +320,6 @@ async function fetchGmailThread(fetchImpl, accessToken, threadId, connectedEmail
 
 module.exports = {
   GOOGLE_CALENDAR_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE, safeEmail, createOAuthState, verifyOAuthState, createAuthorizationUrl,
-  exchangeAuthorizationCode, refreshAccessToken, fetchGoogleIdentity, encryptSecret, decryptSecret,
+  exchangeAuthorizationCode, refreshAccessToken, revokeGoogleToken, fetchGoogleIdentity, encryptSecret, decryptSecret,
   calendarEventResource, upsertCalendarEvent, deleteCalendarEvent, gmailMessageResource, sendGmailMessage, fetchGmailThread,
 };

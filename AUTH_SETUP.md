@@ -1,44 +1,30 @@
-# Supabase Setup
+# Authentication Setup
 
-1. Copy `.env.example` to `.env`.
-2. Fill in `SUPABASE_URL` and `SUPABASE_ANON_KEY` from your Supabase project API settings.
-3. In Supabase Dashboard > SQL Editor, run `supabase/schema.sql`.
-   This creates the CRM state, admin, and durable conversation-message tables and can be rerun safely after updates.
-4. In Supabase Auth settings, add these redirect URLs:
-   - `http://localhost:4173/login`
-   - Your production `/login` URL when deployed.
-   These redirects are used for account confirmation, magic links, and password recovery.
-5. Invite or create users with `@coastalcrestroofing.com` email addresses only.
-6. Add the owner email to Render's `ADMIN_EMAILS` environment variable.
-7. Add the owner email to the Supabase admin list by running this in SQL Editor after the owner account exists:
+## New project
+
+1. Create the Supabase project and configure the production Site URL and allowed `/login` redirects.
+2. For an empty project, apply `supabase/schema.sql`, then later files in `supabase/migrations` in order.
+3. Set the server and public values described in `.env.example`.
+4. Invite or create company users. Keep email confirmation enabled.
+5. Explicitly approve each user and assign a server-owned role in `public.crm_user_access`.
+
+Example owner approval after the Auth user exists:
 
 ```sql
-insert into public.crm_admins (email)
-values ('owner@coastalcrestroofing.com')
-on conflict (email) do nothing;
+insert into public.crm_user_access(user_id,email,role,approved,approved_at)
+select id,lower(email),'admin',true,now()
+from auth.users
+where lower(email)='owner@coastalcrestroofing.com'
+on conflict(user_id) do update
+set email=excluded.email,role='admin',approved=true,approved_at=now(),updated_at=now();
 ```
 
-8. Assign one of these role values in each user's Supabase app metadata:
-   - `admin`
-   - `office_manager`
-   - `sales_manager`
-   - `operations_manager`
-   - `sales`
-   - `production`
-   - `viewer`
+Supported roles are `admin`, `office_manager`, `sales_manager`, `operations_manager`, `sales`, `production`, and `viewer`. Use canonical underscore values. The CRM trusts only approved rows in `public.crm_user_access`; signup metadata, the email domain, public configuration, and environment admin-email lists cannot promote a user.
 
-The CRM trusts roles from `app_metadata.role`. Users listed in `ADMIN_EMAILS` or `public.crm_admins` are treated as admins.
-Role values may also be entered with spaces or hyphens, such as `Sales Manager`; the app normalizes them to `sales_manager`.
+The public Create Account action creates only an Auth identity. It does not approve CRM access. A pending user receives an approval-required message and remains signed out.
 
-The login page also includes a Create Account button. It only accepts `@coastalcrestroofing.com` emails and creates users with `DEFAULT_AUTH_ROLE` until an admin updates their role in Supabase.
+## Existing project
 
-Set `AUTH_REQUIRED=true` and `SUPABASE_SYNC_ENABLED=true` when you are ready to use Supabase for CRM data. Leave `AUTH_REQUIRED=false` for local design/build work without signing in; cloud sync waits for a signed-in company user.
+Take a backup and apply reviewed migrations in order. Do not rerun an older `schema.sql` snapshot over a database that already has migrations. Legacy data conversion is a separate reviewed maintenance operation and never runs automatically on manager login.
 
-Legacy data remains in scoped `crm_state` rows as a migration and rollback bridge. The current schema stores each contact, job, estimate, task, document, conversation message, and audit event independently, with row-level access controls. Document bytes are stored in the private `crm-documents` bucket.
-
-After the first manager login, run `supabase/go-live-verification.sql` to verify migrated counts, relationships, conversations, and recovery backups.
-
-Manager access:
-- `office_manager` can manage team records, estimates, documents, tasks, and company settings.
-- `sales_manager` can manage team leads, contacts, jobs, estimates, tasks, and sales reports.
-- `operations_manager` can manage team jobs, projects, documents, tasks, and operational reports.
+After migration, run `supabase/go-live-verification.sql`, then test an admin, manager, sales, production, viewer, and unapproved account. Confirm both browser controls and database writes match the intended role boundaries.

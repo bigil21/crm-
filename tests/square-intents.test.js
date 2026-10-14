@@ -18,7 +18,8 @@ before(async () => {
     create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb $$;
     create function auth.uid() returns uuid language sql stable as $$ select (auth.jwt()->>'sub')::uuid $$;
     create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint);
-    create table storage.objects(id uuid,bucket_id text);
+    create table storage.objects(id uuid,bucket_id text,name text,owner_id text);
+    create function storage.foldername(text) returns text[] language sql immutable as $$ select string_to_array(trim(both '/' from $1), '/') $$;
     grant usage on schema public,auth,storage to authenticated,anon,service_role;`);
   for (const [name, id] of Object.entries(users)) {
     await db.query('insert into auth.users values($1,$2,$3::jsonb)', [id, `${name}@${name === 'outsider' ? 'example.invalid' : 'coastalcrestroofing.com'}`, JSON.stringify({ role: name === 'sales' ? 'sales' : 'admin' })]);

@@ -51,6 +51,10 @@ function harness({ env = {}, authUser = admin, intent = initialIntent(), overrid
         authCalls.push({ url, options }); events.push('auth');
         return authUser ? json(200, authUser) : json(401, {});
       }
+      if (url.origin === 'https://unit.supabase.co' && url.pathname === '/rest/v1/rpc/crm_access_profile') {
+        const approved = Boolean(authUser?.email?.endsWith('@coastalcrestroofing.com'));
+        return json(200, { approved, role: approved ? authUser.app_metadata?.role || 'viewer' : 'viewer', email: approved ? authUser.email : '' });
+      }
       if (url.origin !== 'https://unit.supabase.co' || !url.pathname.startsWith('/rest/v1/rpc/')) {
         throw Error(`Unmocked outbound request: ${url.origin}${url.pathname}`);
       }

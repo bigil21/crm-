@@ -2,7 +2,7 @@ services:
   - type: web
     name: crm
     runtime: node
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node server.js
     healthCheckPath: /api/health
     # Response caching/security headers are controlled by the Node server.

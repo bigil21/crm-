@@ -306,16 +306,16 @@ test('paged reads include more than 1000 rows even with a smaller server page ca
   const c = functions('app.js',['fetchAllCompanyRows'], {
     supabaseStateId: () => 'test-company',
     cloudClient: { from() { return {
-      select(_fields, opts) { assert.equal(opts.count, 'exact'); return this; },
+      select(_fields, opts) { assert.equal(opts, undefined); return this; },
       eq() { return this; }, order() { return this; },
-      async range(start, end) { pages++; return {data:source.slice(start,Math.min(end+1,start+100)),count:source.length}; },
+      async range(start, end) { pages++; return {data:source.slice(start,Math.min(end+1,start+100))}; },
     }; } },
   });
   const rows = await c.fetchAllCompanyRows('crm_records');
-  assert.equal(rows.length,1201); assert.equal(pages,13);
+  assert.equal(rows.length,1201); assert.equal(pages,14);
   assert.equal(rows[1200].id,'01200');
 });
-for (const failure of ['count changed','empty page','duplicate page','provider error']) {
+for (const failure of ['duplicate page','provider error']) {
   test(`paged reads reject an incomplete snapshot: ${failure}`, async () => {
     let page = 0;
     const c = functions('app.js',['fetchAllCompanyRows'], {
@@ -323,9 +323,9 @@ for (const failure of ['count changed','empty page','duplicate page','provider e
       cloudClient: { from() { return {
         select() { return this; }, eq() { return this; }, order() { return this; },
         async range() {
-          if (page++ === 0) return {data:[{id:'one'}],count:2};
+          if (page++ === 0) return {data:[{id:'one'}]};
           return failure === 'provider error' ? {error:Error('offline')} :
-            {count:failure === 'count changed' ? 3 : 2,data:failure === 'empty page' ? [] : [{id:'one'}]};
+            {data:[{id:'one'}]};
         },
       }; } },
     });
@@ -366,6 +366,82 @@ test('invoiced estimate cannot be reassigned or deleted', () => {
   assert.equal(estimate.contactId,'lead'); assert.equal(c.state.estimates.length,1);
 });
 
+test('reserved estimate number ignores every client-side edit', () => {
+  const estimate = { id: 'estimate', estimateNumber: 'EST-1042' };
+  const numberInput = { value: '' };
+  const c = functions('app.js', ['updateSelectedEstimateFromField'], {
+    state: { estimates: [estimate] }, canAction: () => true, getSelectedEstimate: () => estimate,
+    els: { estimateNumber: numberInput },
+  });
+  c.updateSelectedEstimateFromField('estimateNumber', 'EST-9999');
+  assert.equal(estimate.estimateNumber, 'EST-1042');
+  assert.equal(numberInput.value, 'EST-1042');
+  assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /id="estimateNumber"[^>]*readonly/);
+});
+
+test('Zoho merge preserves jobs, documents, ownership, workflow and financial values', () => {
+  const existing = {
+    id: 'lead', name: 'Original', status: 'Won', type: 'Customer', salesRep: 'Alex', value: 35250.75,
+    ownerUserId: 'owner', ownerEmail: 'owner@example.invalid', ownerName: 'Owner', closedDate: '2026-10-01',
+    createdAt: '2026-01-01', lastContact: '2026-10-01', notes: 'Original note',
+    jobs: [{ id: 'job', manualPayments: [{ id: 'payment', amount: 100, date: '2026-10-01' }] }],
+    documents: [{ id: 'document', name: 'Contract.pdf' }], updates: [{ id: 'update' }],
+  };
+  const imported = { id: 'new', name: 'Updated Name', status: 'New', type: 'Lead', salesRep: 'Unassigned', value: 0,
+    email: 'updated@example.invalid', jobs: [{ id: 'replacement' }], documents: [], updates: [], notes: 'Imported note',
+    createdAt: '2026-10-02', lastContact: '2026-10-02' };
+  const c = functions('app.js', ['number', 'normalizeManualPayment', 'normalizeCostItem', 'normalizeJobEmail', 'normalizeJob', 'normalizeUpdate', 'normalizeDocument', 'normalizeContact', 'mergeImportedContact'], {
+    seedContacts: [], defaultDocumentCategories: [], soldJobStatuses: ['Won'], todayISO: () => '2026-10-14',
+    uid: prefix => `${prefix}-generated`, normalizePersonName: value => value || '', categoryForLegacyName: () => null,
+    JOB_PHOTO_CATEGORY_ID: 'doccat_photos', sanitizeSmartDocumentRecord: value => value,
+  });
+  const merged = c.mergeImportedContact(existing, imported);
+  assert.equal(merged.name, 'Updated Name'); assert.equal(merged.email, 'updated@example.invalid');
+  assert.equal(merged.status, 'Won'); assert.equal(merged.type, 'Customer'); assert.equal(merged.salesRep, 'Alex');
+  assert.equal(merged.value, 35250.75); assert.equal(merged.ownerUserId, 'owner');
+  assert.equal(merged.jobs[0].id, 'job'); assert.equal(merged.jobs[0].manualPayments[0].id, 'payment');
+  assert.equal(merged.documents[0].id, 'document'); assert.equal(merged.updates[0].id, 'update');
+});
+
+test('contact deletion is blocked before mutation when financial history exists', async () => {
+  const contact = { id: 'lead', name: 'Client', jobs: [{ id: 'job', manualPayments: [{ amount: 1 }] }], documents: [] };
+  let notice = '';
+  const c = functions('app.js', ['contactHasFinancialHistory', 'deleteContact'], {
+    state: { contacts: [contact], estimates: [], selectedContactId: 'lead', selectedEstimateId: null },
+    requireAction: () => true, getContact: () => contact, contactJobs: value => value.jobs,
+    number: value => Number(value || 0), showToast: value => { notice = value; },
+  });
+  await c.deleteContact('lead');
+  assert.equal(c.state.contacts.length, 1);
+  assert.match(notice, /invoice or payment history/i);
+});
+
+test('legacy inline HTML and SVG documents are never opened as same-origin blobs', async () => {
+  for (const dataUrl of ['data:text/html,<script>opener.pwned=1</script>', 'data:image/svg+xml,<svg onload="opener.pwned=1"/>']) {
+    let replaced = false;
+    const preview = { opener: {}, close() {}, location: { replace() { replaced = true; } } };
+    const c = functions('app.js', ['downloadManagedDocument'], {
+      state: { contacts: [{ documents: [{ id: 'doc', dataUrl }] }], companyDocuments: [] },
+      window: { open: () => preview }, cloudClient: null, SUPABASE_DOCUMENT_BUCKET: 'crm-documents', showToast() {},
+    });
+    assert.equal(await c.downloadManagedDocument('doc'), false);
+    assert.equal(replaced, false);
+  }
+});
+
+test('storage paths sanitize every legacy display-name segment', async () => {
+  let storedPath = '';
+  const c = functions('app.js', ['safeStorageFileName', 'safeStoragePathSegment', 'storeDocumentFile'], {
+    cloudReady: true, authSession: { user: { id: 'user' } }, canUseCloudSync: () => true,
+    supabaseStateId: () => 'company id', uid: () => 'version id', SUPABASE_DOCUMENT_BUCKET: 'crm-documents',
+    cloudClient: { storage: { from: () => ({ upload: async pathValue => { storedPath = pathValue; return {}; } }) } },
+  });
+  await c.storeDocumentFile({ name: 'File name.pdf', type: 'application/pdf' }, {
+    documentId: 'document id', leadId: 'company', categoryId: 'Sales Reference',
+  });
+  assert.equal(storedPath, 'company-id/company/Sales-Reference/document-id/version-id/File-name.pdf');
+});
+
 test('upload batch retains successes when one file fails and bounds concurrency', async () => {
   let active=0,peak=0;
   const c=functions('app.js',['uploadDocumentBatch']);
@@ -383,7 +459,7 @@ test('upload batch fails explicitly if no file is stored',async()=>{
 });
 test('cloud file revisions use distinct immutable paths',async()=>{
   const uploads=[];let next=0;
-  const c=functions('app.js',['storeDocumentFile'],{
+  const c=functions('app.js',['safeStorageFileName','safeStoragePathSegment','storeDocumentFile'],{
     cloudReady:true,authSession:{user:{id:'user'}},supabaseStateId:()=> 'company',
     SUPABASE_DOCUMENT_BUCKET:'crm-documents',uid:()=>`v${++next}`,safeStorageFileName:x=>x,
     cloudClient:{storage:{from(){return{async upload(...args){uploads.push(args);return{};}};}}},

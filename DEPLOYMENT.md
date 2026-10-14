@@ -1,87 +1,37 @@
 # Public Deployment Checklist
 
-Use this when you are ready for sales representatives to sign in from outside your computer.
+JobCrest runs as a long-lived Node web service on Render.
 
-## Recommended Host
+## Render service
 
-Deploy this CRM as a Node web service. Render and Railway are good fits because this project is a plain Node server, not a Next.js app.
-
-For Render:
-
-- Service type: Web Service
 - Runtime: Node
-- Build command: `npm install`
+- Build command: `npm ci`
 - Start command: `npm start`
+- Health path: `/api/health`
 
-## Required Environment Variables
+Configure production values from `.env.example` in Render. Require authentication, enable Supabase synchronization, use the private database credential only on the server, and configure Square and integration secrets only when those services are enabled. Never commit `.env` files or private credentials.
 
-Set these in the hosting provider's environment variable screen:
+## Database rollout
 
-```env
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_ANON_KEY=your-supabase-publishable-key
-SUPABASE_SYNC_ENABLED=true
-SUPABASE_STATE_ID=coastal-crest
-ALLOWED_EMAIL_DOMAIN=coastalcrestroofing.com
-DEFAULT_AUTH_ROLE=sales
-ADMIN_EMAILS=owner@coastalcrestroofing.com
-AUTH_REQUIRED=true
-```
+1. Take and verify a production backup.
+2. Apply reviewed files from `supabase/migrations` in order. Do not rerun an old schema snapshot over a migrated database.
+3. Keep the `crm-documents` bucket private.
+4. Verify durable record counts, relationships, storage paths, conversations, audit history, and recovery backups with `supabase/go-live-verification.sql`.
 
-Do not upload the local `.env` or `.env.local` files to GitHub.
+## Authentication and roles
 
-## Supabase Auth Settings
+An Auth account and a company-domain email are not sufficient for CRM access. Every user needs an explicitly approved `public.crm_user_access` row.
 
-After the app is deployed and you have a public URL:
+- `admin`: all CRM and company settings
+- `office_manager`: team business records; company settings remain admin-only
+- `sales_manager`: team leads, jobs, estimates, documents, tasks, and sales activity
+- `operations_manager`: team contacts, jobs, documents, tasks, financial details, and email; no estimates or company settings
+- `sales`: assigned leads, jobs, estimates, documents, tasks, and email
+- `production`: assigned jobs, documents, and tasks
+- `viewer`: read-only
 
-1. Open Supabase Dashboard.
-2. Go to Authentication > URL Configuration.
-3. Set Site URL to your production URL.
-4. Add these Redirect URLs:
-   - `https://your-public-crm-url/login`
-   - `https://your-public-crm-url/**`
-   - `http://localhost:4173/login`
-   - `http://localhost:4173/**`
+JWT user metadata, environment admin-email lists, and browser configuration do not grant or promote roles.
 
-## User Setup
+## Release gate
 
-Sales users must use `@coastalcrestroofing.com` email addresses.
-
-For each sales rep:
-
-1. Have them open the public CRM URL.
-2. Click Create Account.
-3. Use their company email and password.
-4. If Supabase requires email confirmation, they must confirm from their inbox.
-
-Owner/admin users should be listed in `ADMIN_EMAILS` on Render and in the Supabase `crm_admins` table from `supabase/schema.sql`.
-
-Roles for other users can be set in Supabase app metadata:
-
-```json
-{
-  "role": "sales"
-}
-```
-
-Supported roles are `admin`, `office_manager`, `sales_manager`, `operations_manager`, `sales`, `production`, and `viewer`.
-
-Example manager metadata:
-
-```json
-{
-  "role": "sales_manager"
-}
-```
-
-- `office_manager`: team records, estimates, documents, tasks, and company settings
-- `sales_manager`: team leads, jobs, estimates, tasks, and sales reports
-- `operations_manager`: team jobs, projects, documents, tasks, and operational reports
-
-You can enter roles with spaces or hyphens in Supabase metadata, but underscore values such as `sales_manager` are preferred.
-# Vercel deployment
-
-`vercel.json` selects the explicit `api/index.js` function and routes requests through the same authenticated handler as `server.js`. Do not select the browser `app.js` as a Node backend entrypoint. Browser assets and the PDF.js module/worker are included in the function bundle, while private repository paths remain blocked by the server allowlist.
-
-Configure the required production environment variables in Vercel as described below. Persistent Square payment and recovery backup workers continue to run on the long-lived Render server; importing the Vercel handler does not start them.
-
+Run `npm ci`, `npm run check:go-live`, and the local browser pilot. Review the diff, migration plan, and rollback plan. Push and deploy only after explicit approval. After Render reports healthy, verify sign-in, role boundaries, one full lead workflow, estimate PDF generation, document upload/download, payment refresh, and `/api/health` on the production domain.

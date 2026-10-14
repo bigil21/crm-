@@ -8,13 +8,32 @@ const COMPANY_STATE_SUFFIX = "company";
 const COMPANY_DOCUMENT_LEAD_ID = "company";
 const JOB_PHOTO_CATEGORY_ID = "job_photos";
 const MAX_DOCUMENT_FILE_SIZE = 250 * 1024 * 1024;
+const SAFE_RECORD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/;
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const isSafeRecordId = (value) => SAFE_RECORD_ID_PATTERN.test(String(value || ""));
+
+const localDateISO = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const todayISO = () => localDateISO();
 
 const addDaysISO = (days) => {
   const date = new Date();
   date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  return localDateISO(date);
+};
+
+const dateTimeLocalValue = (value) => {
+  const text = String(value || "");
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(text)) return text.slice(0, 16);
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${localDateISO(date)}T${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 };
 
 const money = new Intl.NumberFormat("en-US", {
@@ -214,19 +233,19 @@ const rolePolicies = {
   },
   operations_manager: {
     views: [...sharedCrmViews],
-    actions: [...sharedCrmActions],
+    actions: ["manageContacts", "manageJobs", "manageDocuments", "manageTasks", "manageJobFinancials", "sendEmail"],
   },
   sales: {
     views: [...sharedCrmViews],
-    actions: [...sharedCrmActions],
+    actions: ["manageContacts", "manageJobs", "manageEstimates", "manageDocuments", "manageTasks", "sendEmail"],
   },
   production: {
     views: [...sharedCrmViews],
-    actions: [...sharedCrmActions],
+    actions: ["manageJobs", "manageDocuments", "manageTasks"],
   },
   viewer: {
     views: [...sharedCrmViews],
-    actions: [...sharedCrmActions],
+    actions: [],
   },
 };
 
@@ -849,7 +868,15 @@ function normalizeState(nextState) {
   const company = normalizeCompany(nextState.company);
   company.companyDocumentFolders = companyDocumentFoldersWithLegacy(company.companyDocumentFolders, nextState.companyDocuments || []);
   company.documentCategories = categoriesWithLegacyDocuments(company.documentCategories, nextState.contacts || []);
-  const contacts = (nextState.contacts || []).map((contact) => normalizeContact(contact, company.documentCategories));
+  const contacts = (nextState.contacts || [])
+    .map((contact) => normalizeContact(contact, company.documentCategories))
+    .filter((contact) => isSafeRecordId(contact.id))
+    .map((contact) => ({
+      ...contact,
+      jobs: (contact.jobs || []).filter((job) => isSafeRecordId(job.id)),
+      documents: (contact.documents || []).filter((document) => isSafeRecordId(document.id)),
+      updates: (contact.updates || []).filter((update) => isSafeRecordId(update.id)),
+    }));
   return {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
@@ -862,9 +889,9 @@ function normalizeState(nextState) {
     company,
     currentUser: { ...defaultCurrentUser, ...(nextState.currentUser || {}) },
     contacts,
-    companyDocuments: (nextState.companyDocuments || []).map((document) => normalizeDocument(document)),
-    calendarTasks: (nextState.calendarTasks || []).map(normalizeCalendarTask),
-    estimates: (nextState.estimates || []).map((estimate) => normalizeEstimate(estimate, contacts)),
+    companyDocuments: (nextState.companyDocuments || []).map((document) => normalizeDocument(document)).filter((document) => isSafeRecordId(document.id)),
+    calendarTasks: (nextState.calendarTasks || []).map(normalizeCalendarTask).filter((task) => isSafeRecordId(task.id)),
+    estimates: (nextState.estimates || []).map((estimate) => normalizeEstimate(estimate, contacts)).filter((estimate) => isSafeRecordId(estimate.id)),
   };
 }
 
@@ -1299,11 +1326,11 @@ function normalizeEstimate(estimate, contacts = []) {
 }
 
 function normalizeLineItem(item) {
-  const title = item.title || item.name || item.product || item.description || "Line item";
+  const title = item.title || item.name || item.product || "Line item";
   return {
     ...item,
     title,
-    description: item.title ? item.description || "" : item.details || "",
+    description: item.description || item.details || "",
     quantity: number(item.quantity),
     unit: item.unit || "ea",
     rate: number(item.rate),
@@ -2213,33 +2240,33 @@ function showUnmappedRecordNotice(count) {
 async function fetchDurableRows() {
   const [rows, auditRows] = await Promise.all([
     fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"]),
-    fetchAllCompanyRows(SUPABASE_AUDIT_TABLE, ["created_at", "id"]),
+    fetchAllCompanyRows(SUPABASE_AUDIT_TABLE, ["created_at", "id"], {
+      configure(query) { return query.neq("event_type", "record_commit"); },
+    }),
   ]);
   return { rows, auditRows };
 }
 
-async function fetchAllCompanyRows(table, orderColumns = ["id"]) {
+async function fetchAllCompanyRows(table, orderColumns = ["id"], { configure = (query) => query } = {}) {
   const rows = [];
   const seen = new Set();
-  let expectedCount = null;
-  do {
-    let query = cloudClient.from(table).select("*", { count: "exact" }).eq("company_state_id", supabaseStateId());
+  let pageStart = 0;
+  while (true) {
+    let query = cloudClient.from(table).select("*").eq("company_state_id", supabaseStateId());
+    query = configure(query) || query;
     for (const column of orderColumns) query = query.order(column, { ascending: true });
-    const { data, error, count } = await query.range(rows.length, rows.length + 499);
+    const { data, error } = await query.range(pageStart, pageStart + 499);
     if (error) throw error;
-    if (!Number.isSafeInteger(count) || count < 0 || (expectedCount !== null && count !== expectedCount)) {
-      throw new Error("CRM records changed during loading. Retrying is required before applying this snapshot.");
-    }
-    expectedCount = count;
-    if (!Array.isArray(data) || (!data.length && rows.length < count)) throw new Error("Incomplete CRM response; existing data was preserved.");
+    if (!Array.isArray(data)) throw new Error("Incomplete CRM response; existing data was preserved.");
+    if (!data.length) break;
     for (const row of data) {
       const key = JSON.stringify(orderColumns.map((column) => row[column]));
       if (seen.has(key)) throw new Error("CRM page overlap detected; existing data was preserved.");
       seen.add(key);
       rows.push(row);
     }
-    if (rows.length > expectedCount) throw new Error("CRM response count mismatch; existing data was preserved.");
-  } while (rows.length < expectedCount);
+    pageStart += data.length;
+  }
   return rows;
 }
 
@@ -2655,6 +2682,9 @@ async function initializeDurableRecords() {
     })
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
+      // Internal commit telemetry is never rendered and the matching record
+      // change already drives one debounced reload.
+      if (row?.event_type === "record_commit") return;
       if (row?.actor_user_id && row.actor_user_id === authSession?.user?.id) {
         if (row.id) durableAuditIds.add(row.id);
         return;
@@ -2707,7 +2737,7 @@ function canManageTeamData() {
 }
 
 function canManageJobFinancials() {
-  return Boolean(rolePolicies[currentRole()]);
+  return ["admin", "office_manager", "sales_manager", "operations_manager"].includes(currentRole());
 }
 
 function canManageManualPayments() {
@@ -2778,12 +2808,12 @@ function setView(view) {
   if (!canView(view)) {
     showToast(`Your ${roleLabel()} role cannot access that section`);
     state.view = firstAllowedView();
-    saveState();
+    saveState({ localOnly: true });
     render();
     return;
   }
   state.view = view;
-  saveState();
+  saveState({ localOnly: true });
   render();
 }
 
@@ -2804,7 +2834,7 @@ function openLeadDetail(contactId, tab = "overview", jobId = "") {
   state.selectedProfitJobId = state.selectedLeadJobId;
   state.leadDetailTab = tab;
   state.view = "leadDetail";
-  saveState();
+  saveState({ localOnly: true });
   render();
 }
 
@@ -2823,16 +2853,16 @@ function setSelectedEstimate(id) {
   state.selectedEstimateId = id;
   const estimate = getSelectedEstimate();
   if (estimate) state.selectedContactId = estimate.contactId;
-  saveState();
+  saveState({ localOnly: true });
   renderEstimates();
 }
 
 function getSelectedContact() {
-  return state.contacts.find((contact) => contact.id === state.selectedContactId) || state.contacts[0];
+  return state.contacts.find((contact) => contact.id === state.selectedContactId) || null;
 }
 
 function getSelectedEstimate() {
-  return state.estimates.find((estimate) => estimate.id === state.selectedEstimateId) || state.estimates[0];
+  return state.estimates.find((estimate) => estimate.id === state.selectedEstimateId) || null;
 }
 
 function getContact(id) {
@@ -2989,14 +3019,29 @@ function filteredContacts() {
 }
 
 async function ensureExistingSharedSalesNumbers() {
+  const missing = [];
   for (const estimate of state.estimates) {
     const contact = getEstimateContact(estimate);
     const job = getEstimateJob(estimate);
     if (!contact || !job) continue;
     if (contact.leadNumber && job.projectNumber && estimate.leadNumber === contact.leadNumber &&
         estimate.projectNumber === job.projectNumber && estimate.estimateNumber) continue;
-    await reserveSharedSalesNumbers(contact.id, job.id, estimate.id);
+    missing.push({ contactId: contact.id, jobId: job.id, estimateId: estimate.id });
   }
+  const failures = [];
+  // Numbering repairs are independent and bounded. A historical record that
+  // cannot be numbered must not lock users out of the rest of the CRM.
+  for (let offset = 0; offset < missing.length; offset += 4) {
+    const batch = missing.slice(offset, offset + 4);
+    const results = await Promise.allSettled(batch.map((item) =>
+      reserveSharedSalesNumbers(item.contactId, item.jobId, item.estimateId),
+    ));
+    results.forEach((result, index) => {
+      if (result.status === "rejected") failures.push({ ...batch[index], error: result.reason });
+    });
+  }
+  if (failures.length) console.warn(`${failures.length} historical estimate number${failures.length === 1 ? "" : "s"} could not be repaired during startup.`, failures);
+  return { repaired: missing.length - failures.length, failures };
 }
 
 function getSalesNumbering() {
@@ -3208,6 +3253,17 @@ function totalsFor(estimate) {
   const total = (subtotalCents + taxCents) / 100;
   const balance = Math.max(subtotalCents + taxCents - Math.round(number(estimate.deposit) * 100), 0) / 100;
   return { subtotal, tax, total, balance };
+}
+
+function estimateLineAmount(item = {}) {
+  return Math.round(number(item.quantity) * Math.round(number(item.rate) * 100)) / 100;
+}
+
+function invalidEstimateLineItems(estimate = {}) {
+  return (estimate.items || []).filter((item) =>
+    !String(item.title || "").trim() || !Number.isFinite(Number(item.quantity)) || number(item.quantity) <= 0 ||
+    !Number.isFinite(Number(item.rate)) || number(item.rate) < 0,
+  );
 }
 
 function statusPillClass(status = "") {
@@ -3623,7 +3679,7 @@ function parseDateToISO(value) {
   const isoDate = String(value).match(/\d{4}-\d{2}-\d{2}/)?.[0];
   if (isoDate) return isoDate;
   const parsed = new Date(value);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  if (!Number.isNaN(parsed.getTime())) return localDateISO(parsed);
   return "";
 }
 
@@ -3644,7 +3700,8 @@ function zohoLeadToContact(record) {
   const company = getCsvField(record, ["Company", "Account Name", "Organization"]);
   const email = getCsvField(record, ["Email", "Email Address"]);
   const phone = getCsvField(record, ["Phone", "Mobile", "Mobile Phone", "Home Phone"]);
-  const status = mapZohoStatus(getCsvField(record, ["Lead Status", "Status"]));
+  const rawStatus = getCsvField(record, ["Lead Status", "Status"]);
+  const status = mapZohoStatus(rawStatus);
   const street = getCsvField(record, ["Street", "Mailing Street", "Address"]);
   const city = getCsvField(record, ["City", "Mailing City"]);
   const stateName = getCsvField(record, ["State", "Province", "Mailing State"]);
@@ -3669,7 +3726,7 @@ function zohoLeadToContact(record) {
     ]).replace(/[$,]/g, ""),
   );
 
-  return normalizeContact({
+  const contact = normalizeContact({
     id: uid("contact"),
     externalSource: "Zoho CRM",
     externalId,
@@ -3687,6 +3744,14 @@ function zohoLeadToContact(record) {
     notes: getCsvField(record, ["Description", "Notes", "Lead Description"]),
     createdAt,
   });
+  contact.zohoImportFields = {
+    status: Boolean(rawStatus),
+    source: Boolean(getCsvField(record, ["Lead Source", "Source"])),
+    salesRep: Boolean(getCsvField(record, ["Lead Owner", "Owner", "Record Owner", "Sales Representative", "Sales Rep"])),
+    value: Boolean(getCsvField(record, ["Project Value", "Job Value", "Amount", "Deal Amount", "Expected Revenue", "Annual Revenue", "Lead Value"])),
+    closedDate: Boolean(closedDate),
+  };
+  return contact;
 }
 
 function findExistingContact(imported) {
@@ -3712,13 +3777,47 @@ function findExistingContact(imported) {
 }
 
 function mergeImportedContact(existing, imported) {
-  return normalizeContact({
+  const merged = normalizeContact({
     ...existing,
-    ...imported,
     id: existing.id,
+    externalSource: imported.externalSource || existing.externalSource,
+    externalId: imported.externalId || existing.externalId,
+    name: imported.name || existing.name,
+    source: imported.source || existing.source,
+    email: imported.email || existing.email,
+    phone: imported.phone || existing.phone,
+    address: imported.address || existing.address,
     createdAt: existing.createdAt || imported.createdAt,
+    updatedAt: new Date().toISOString(),
+    lastContact: [existing.lastContact, imported.lastContact].filter(Boolean).sort().at(-1) || existing.lastContact,
     notes: [existing.notes, imported.notes].filter(Boolean).join(existing.notes && imported.notes ? "\n\n" : ""),
+    type: existing.type,
+    status: existing.status,
+    salesRep: existing.salesRep,
+    value: existing.value,
+    closedDate: existing.closedDate,
+    ownerUserId: existing.ownerUserId,
+    ownerEmail: existing.ownerEmail,
+    ownerName: existing.ownerName,
+    jobs: existing.jobs,
+    documents: existing.documents,
+    updates: existing.updates,
   });
+  delete merged.zohoImportFields;
+  return merged;
+}
+
+function cleanImportedContact(imported) {
+  const clean = { ...imported };
+  delete clean.zohoImportFields;
+  return normalizeContact(clean);
+}
+
+function zohoDuplicateKey(contact = {}) {
+  if (contact.externalId) return `external:${String(contact.externalId).trim().toLowerCase()}`;
+  if (contact.email) return `email:${String(contact.email).trim().toLowerCase()}`;
+  const phone = String(contact.phone || "").replace(/\D/g, "");
+  return phone ? `phone:${phone}` : "";
 }
 
 async function importZohoCsv(file) {
@@ -3731,7 +3830,29 @@ async function importZohoCsv(file) {
   }
 
   const headers = rows[0];
-  const importedContacts = rows.slice(1).map((row) => zohoLeadToContact(rowToObject(headers, row)));
+  const dataRows = rows.slice(1).filter((row) => row.some((value) => String(value || "").trim()));
+  if (dataRows.length > 5000) {
+    showToast("Zoho import stopped: use a CSV with 5,000 leads or fewer.");
+    return;
+  }
+  const importedContacts = dataRows.map((row) => zohoLeadToContact(rowToObject(headers, row)));
+  const duplicateKeys = new Set();
+  const seenKeys = new Set();
+  importedContacts.forEach((contact) => {
+    const key = zohoDuplicateKey(contact);
+    if (key && seenKeys.has(key)) duplicateKeys.add(key);
+    if (key) seenKeys.add(key);
+  });
+  if (duplicateKeys.size) {
+    showToast(`Zoho import stopped: ${duplicateKeys.size} duplicate lead identifier${duplicateKeys.size === 1 ? " was" : "s were"} found in the CSV.`);
+    return;
+  }
+  const preview = importedContacts.reduce((summary, contact) => {
+    if (findExistingContact(contact)) summary.updated += 1;
+    else summary.added += 1;
+    return summary;
+  }, { added: 0, updated: 0 });
+  if (!window.confirm(`Import ${preview.added} new lead${preview.added === 1 ? "" : "s"} and update ${preview.updated} matched lead${preview.updated === 1 ? "" : "s"}? Existing jobs, documents, stages, ownership, and financial history will be preserved.`)) return;
   let added = 0;
   let updated = 0;
 
@@ -3742,7 +3863,7 @@ async function importZohoCsv(file) {
       state.contacts = state.contacts.map((item) => (item.id === existing.id ? merged : item));
       updated += 1;
     } else {
-      state.contacts.unshift(contact);
+      state.contacts.unshift(cleanImportedContact(contact));
       added += 1;
     }
   });
@@ -3899,7 +4020,7 @@ function renderTopbarProfile() {
     end.setDate(start.getDate() + 6);
     els.dashboardDateRange.innerHTML = `
       <span aria-hidden="true" data-icon="calendar"></span>
-      <span>${formatDate(start.toISOString().slice(0, 10))} - ${formatDate(end.toISOString().slice(0, 10))}</span>
+      <span>${formatDate(localDateISO(start))} - ${formatDate(localDateISO(end))}</span>
     `;
     hydrateIcons(els.dashboardDateRange);
   }
@@ -3999,11 +4120,11 @@ function renderSummary() {
   const metrics = dashboardMetrics();
 
   const cards = [
-    ["New Leads", metrics.leads, "27% vs prior period", "user", "blue"],
-    ["Estimates Sent", metrics.estimatesSent, "14% vs prior period", "file", "green"],
-    ["Jobs Won", metrics.closedJobs, "29% vs prior period", "check", "purple"],
-    ["Revenue Won", money.format(metrics.closedValue), "38% vs prior period", "dollar", "orange"],
-    ["Pipeline Value", money.format(metrics.pipelineValue), "22% vs prior period", "bar-chart", "cyan"],
+    ["New Leads", metrics.leads, "Open sales opportunities", "user", "blue"],
+    ["Estimates Sent", metrics.estimatesSent, "Sent or won estimates", "file", "green"],
+    ["Jobs Won", metrics.closedJobs, "Won production jobs", "check", "purple"],
+    ["Revenue Won", money.format(metrics.closedValue), "Confirmed won job value", "dollar", "orange"],
+    ["Pipeline Value", money.format(metrics.pipelineValue), "All non-lost job value", "bar-chart", "cyan"],
   ];
 
   els.summaryStrip.innerHTML = cards
@@ -4014,7 +4135,7 @@ function renderSummary() {
           <div>
             <span class="eyebrow">${label}</span>
             <strong>${value}</strong>
-            <span class="trend-line">Up ${caption}</span>
+          <span class="trend-line">${caption}</span>
           </div>
         </article>
       `,
@@ -4117,10 +4238,14 @@ async function loadWeather({ force = false } = {}) {
 
   let location = fallbackWeatherLocation;
   let locationNote = "";
-  try {
-    location = await getBrowserWeatherLocation();
-  } catch {
-    locationNote = fallbackWeatherLocation.note;
+  if (force) {
+    try {
+      location = await getBrowserWeatherLocation();
+    } catch {
+      locationNote = fallbackWeatherLocation.note;
+    }
+  } else {
+    locationNote = "Using the office forecast. Choose refresh to use this device's location.";
   }
 
   try {
@@ -4192,7 +4317,7 @@ function renderDashboard() {
   const rangeStartDate = rangeStart(state.leaderboardRange);
   if (els.leaderboardRangeLabel) {
     els.leaderboardRangeLabel.textContent = `${leaderboardRanges[state.leaderboardRange]} results since ${formatDate(
-      rangeStartDate.toISOString().slice(0, 10),
+      localDateISO(rangeStartDate),
     )}`;
   }
 
@@ -4409,14 +4534,11 @@ function renderTodaySchedule() {
   const tasks = state.calendarTasks
     .filter((task) => !task.completed && String(task.dueAt).startsWith(today))
     .sort((a, b) => taskDueTime(a) - taskDueTime(b));
-  const schedule = tasks.length
-    ? tasks
-    : [
-        { title: "Follow Up Call", rep: "Sales team", dueAt: `${today}T09:00`, contactId: state.contacts[0]?.id },
-        { title: "Site Inspection", rep: "Sales team", dueAt: `${today}T11:00`, contactId: state.contacts[1]?.id },
-        { title: "Send Proposal", rep: "Sales team", dueAt: `${today}T13:00`, contactId: state.contacts[0]?.id },
-        { title: "Team Meeting", rep: "Office", dueAt: `${today}T16:30`, contactId: "" },
-      ];
+  const schedule = tasks;
+  if (!schedule.length) {
+    els.todayScheduleList.innerHTML = '<div class="empty-state">No tasks scheduled for today</div>';
+    return;
+  }
   els.todayScheduleList.innerHTML = schedule
     .slice(0, 5)
     .map((task) => {
@@ -5958,7 +6080,7 @@ async function refreshLeadEmailThreads() {
       updateContact(contact.id, (current) => ({ ...current, jobs: contactJobs(current).map((item) => item.id === job.id ? { ...item, emails: [...additions, ...(item.emails || [])] } : item) }));
       const saved = canUseCloudSync() ? await persistLeadJobRecord(job.id, "") : true;
       if (!saved) queueDurableRecordsSave();
-      saveState({ localOnly: true });
+      saveState();
       renderLeadEmail(getSelectedContact());
     }
     setSaveState(els.leadEmailSaveStatus, additions.length ? `${additions.length} new Gmail message${additions.length === 1 ? "" : "s"} saved to this job.` : "No new Gmail replies found.", "success");
@@ -6340,8 +6462,20 @@ function syncEstimatePipelineStage(estimate, estimateStatus = estimate?.status) 
   if (!nextStage) return;
   const linkedContact = getEstimateContact(estimate);
   const linkedJob = getEstimateJob(estimate);
+  if (!linkedContact || !linkedJob || linkedJob.status === nextStage) return true;
+  const stages = window.RooflineWorkflowChecklist?.stages || [];
+  const currentIndex = stages.indexOf(linkedJob.status);
+  const targetIndex = stages.indexOf(nextStage);
+  // An estimate can never move a completed job backward or skip the workflow
+  // checklist. The workflow module owns the transition rules used by the UI.
+  if (!stages.length || currentIndex < 0 || targetIndex !== currentIndex + 1) return false;
+  const transition = window.RooflineWorkflowChecklist.transitionCheck(linkedContact, linkedJob, nextStage);
+  if (!transition.allowed) {
+    showToast(transition.reason || `Complete the ${linkedJob.status} checklist before moving to ${nextStage}.`);
+    return false;
+  }
   const numbered = canUseCloudSync() ? { contact: linkedContact, job: linkedJob } : ensureLeadProjectNumbers(estimate.contactId, estimate.jobId);
-  if (!numbered) return;
+  if (!numbered) return false;
   estimate.leadNumber = numbered.contact.leadNumber;
   estimate.projectNumber = numbered.job?.projectNumber || estimate.projectNumber || "";
   const linkedJobId = estimate.jobId || numbered.job?.id || "";
@@ -6378,10 +6512,15 @@ function syncEstimatePipelineStage(estimate, estimateStatus = estimate?.status) 
           ],
     };
   });
+  return true;
 }
 
 function safeStorageFileName(name = "document") {
   return String(name || "document").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "document";
+}
+
+function safeStoragePathSegment(value, fallback) {
+  return String(value || fallback || "item").replace(/[^A-Za-z0-9._:-]+/g, "-").replace(/^-+|-+$/g, "") || fallback || "item";
 }
 
 function validateDocumentFiles(files) {
@@ -6429,8 +6568,14 @@ async function storeDocumentFile(file, { documentId, leadId = "company", jobId =
     if (file.size > 5 * 1024 * 1024) throw new Error("Files larger than 5 MB require connected cloud storage; the signed-in CRM supports up to 250 MB.");
     return { dataUrl: await readFileAsDataUrl(file), storagePath: "" };
   }
-  const recordScope = jobId ? `${leadId}/jobs/${jobId}` : leadId;
-  const storagePath = `${supabaseStateId()}/${recordScope}/${categoryId}/${documentId}/${uid("version")}/${safeStorageFileName(file.name)}`;
+  const companySegment = safeStoragePathSegment(supabaseStateId(), "company");
+  const leadSegment = safeStoragePathSegment(leadId, "company");
+  const jobSegment = safeStoragePathSegment(jobId, "job");
+  const categorySegment = safeStoragePathSegment(categoryId, "other");
+  const documentSegment = safeStoragePathSegment(documentId, "document");
+  const versionSegment = safeStoragePathSegment(uid("version"), "version");
+  const recordScope = jobId ? `${leadSegment}/jobs/${jobSegment}` : leadSegment;
+  const storagePath = `${companySegment}/${recordScope}/${categorySegment}/${documentSegment}/${versionSegment}/${safeStorageFileName(file.name)}`;
   const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
     cacheControl: "3600",
     contentType: file.type || "application/octet-stream",
@@ -6504,7 +6649,17 @@ async function downloadManagedDocument(documentId) {
   }
   let objectUrl = "";
   if (url.startsWith("data:")) {
-    const blob = await fetch(url).then((response) => response.blob());
+    const mime = String(url.match(/^data:([^;,]+)/i)?.[1] || "").toLowerCase();
+    const safeMime = ["application/pdf", "text/plain", "image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime)
+      ? mime
+      : "";
+    if (!safeMime) {
+      previewWindow?.close();
+      showToast("This legacy document type cannot be opened safely. Upload it again as a PDF or supported image.");
+      return false;
+    }
+    const bytes = await fetch(url).then((response) => response.arrayBuffer());
+    const blob = new Blob([bytes], { type: safeMime });
     objectUrl = URL.createObjectURL(blob);
     url = objectUrl;
   }
@@ -7796,19 +7951,16 @@ async function saveNativeSmartDocument(status) {
   }
   setSmartDocumentButtonsDisabled(true);
   setSaveState(els.smartDocumentSaveStatus, status === "completed" ? "Creating and securely saving the completed PDF…" : "Saving Smart Document…", "saving");
-  let trustedMutationLocked = false;
   let reloadNeeded = false;
   try {
-    if (canUseCloudSync()) {
-      window.clearTimeout(durableSaveTimer);
-      durableSaveInFlight = true;
-      trustedMutationLocked = true;
-    }
+    // Rendering a completed PDF can take up to 90 seconds. It is a trusted,
+    // document-scoped server mutation and must not hold the global CRM record
+    // writer lock while unrelated checklists, costs, or lead edits are saved.
     const headers = await squareApiHeaders();
     const response = await fetch("/api/smart-documents/save", { method: "POST", headers, signal: AbortSignal.timeout(90000), body: JSON.stringify(payload) });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.saved !== true) throw new Error(result.error || "The Smart Document could not be saved.");
-    const appliedRows = await reloadDurableRecords({ showUpdateToast: false, allowInFlight: trustedMutationLocked });
+    const appliedRows = await reloadDurableRecords({ showUpdateToast: false });
     reloadNeeded = appliedRows === null;
     const completedCopy = result.status === "completed" && result.completedDocumentId;
     if (result.status === "completed" && (!completedCopy || result.completedDocument?.id !== completedCopy)) throw new Error("The completed PDF copy could not be confirmed in its document category.");
@@ -7840,7 +7992,6 @@ async function saveNativeSmartDocument(status) {
     setSaveState(els.smartDocumentSaveStatus, error.message || "The Smart Document could not be saved.", "error");
     return false;
   } finally {
-    if (trustedMutationLocked) durableSaveInFlight = false;
     if (reloadNeeded) queueDurableRecordsReload({ showUpdateToast: false });
     setSmartDocumentButtonsDisabled(false);
   }
@@ -8008,14 +8159,14 @@ function renderCalendarMonth() {
 
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const todayStr = now.toISOString().slice(0, 10);
+  const todayStr = localDateISO(now);
 
   // Group tasks by date string YYYY-MM-DD
   const tasksByDay = {};
   state.calendarTasks.forEach((task) => {
     const d = new Date(task.dueAt);
     if (d.getFullYear() === year && d.getMonth() === month) {
-      const key = d.toISOString().slice(0, 10);
+      const key = localDateISO(d);
       if (!tasksByDay[key]) tasksByDay[key] = [];
       tasksByDay[key].push(task);
     }
@@ -8132,16 +8283,24 @@ async function saveCalendarTask(event) {
   const taskId = formData.get("taskId");
   const existingTask = state.calendarTasks.find((task) => task.id === taskId);
   const contact = getContact(formData.get("contactId"));
-  const owner = contact?.ownerUserId
+  const rep = formData.get("rep").trim();
+  const knownOwners = [...cloudKnownOwners.values(), currentOwner()];
+  const repKey = normalizePersonName(rep).toLowerCase();
+  const matchedOwner = knownOwners.find((candidate) =>
+    normalizePersonName(candidate.name).toLowerCase() === repKey || String(candidate.email || "").toLowerCase() === rep.toLowerCase()
+  );
+  const contactOwner = contact?.ownerUserId
     ? { userId: contact.ownerUserId, email: contact.ownerEmail, name: contact.ownerName }
-    : currentOwner();
+    : null;
+  const owner = matchedOwner || (!rep || normalizePersonName(contactOwner?.name).toLowerCase() === repKey ? contactOwner : null) ||
+    { userId: "", email: "", name: rep || "Unassigned" };
   const ownerChanged = Boolean(existingTask?.googleEventId && existingTask.ownerEmail && existingTask.ownerEmail !== owner.email);
   if (ownerChanged && !(await removeCalendarTaskFromGoogle(existingTask))) return;
   const task = normalizeCalendarTask({
     ...(existingTask || {}),
     id: taskId || uid("task"),
     title: formData.get("title").trim(),
-    rep: formData.get("rep").trim(),
+    rep,
     contactId: formData.get("contactId"),
     dueAt: formData.get("dueAt"),
     duration: number(formData.get("duration")),
@@ -8194,16 +8353,19 @@ function fillCalendarTaskForm(task) {
   form.elements.rep.value = task.rep || "";
   form.elements.contactId.value = task.contactId || "";
   form.elements.title.value = task.title || "";
-  form.elements.dueAt.value = String(task.dueAt || "").slice(0, 16);
+  form.elements.dueAt.value = dateTimeLocalValue(task.dueAt);
   form.elements.duration.value = task.duration || 30;
   form.elements.reminder.value = task.reminder || "popup";
   form.elements.notes.value = task.notes || "";
 }
 
-function completeCalendarTask(taskId) {
+async function completeCalendarTask(taskId) {
   if (!requireAction("manageTasks")) return;
+  const existing = state.calendarTasks.find((task) => task.id === taskId);
+  if (!existing) return;
+  if (!(await removeCalendarTaskFromGoogle(existing))) return;
   state.calendarTasks = state.calendarTasks.map((task) =>
-    task.id === taskId ? { ...task, completed: true } : task,
+    task.id === taskId ? { ...task, completed: true, googleEventId: "", googleEventUrl: "", googleSyncStatus: "synced", googleSyncedAt: new Date().toISOString(), googleSyncError: "" } : task,
   );
   saveState();
   render();
@@ -8372,7 +8534,7 @@ const squareInvoiceSends = new Map();
 
 function squareSendIdentity() {
   return JSON.stringify([authSession?.user?.id || "", String(authSession?.user?.email || "").toLowerCase(),
-    authSession?.user?.app_metadata?.role || "", currentRole()]);
+    authSession?.role || "", currentRole()]);
 }
 
 function showSquareSendNotice(estimateId, message) {
@@ -8429,6 +8591,11 @@ function squareSendPreProviderRefusal(response, result) {
     return beginErrors[result.code];
   }
   if (response.status === 400 && result.error === "Send only the saved estimate ID and its current version.") return result.error;
+  if ([401, 403].includes(response.status) && ["authentication_required", "admin_required"].includes(result.error)) {
+    return result.error === "admin_required"
+      ? "Your account is not currently approved to send Square invoices. Ask an administrator to review your assigned role."
+      : "Your sign-in expired before Square was contacted. Sign in again and retry.";
+  }
   if (response.status === 503 && result.error === "Reliable Square invoice storage is not configured. No invoice was sent.") return result.error;
   return "";
 }
@@ -8639,7 +8806,7 @@ async function pollSquarePayments() {
         Object.assign(estimate, JSON.parse(JSON.stringify(patch.fields)));
       });
       plan.touchedJobs.forEach(({ contactId, jobId }) => updateJobPaymentSnapshot(contactId, jobId));
-      saveState();
+      saveState({ localOnly: true });
       if (!["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) render();
     }
     setPaymentRefreshStatus(plan.message);
@@ -8684,8 +8851,8 @@ function renderInvoicesView() {
         <span class="invoice-summary-value" style="color:var(--gold)">${money.format(totalPending)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Total Invoices</span>
-        <span class="invoice-summary-value">${estimates.length}</span>
+        <span class="invoice-summary-label">Square Invoices</span>
+        <span class="invoice-summary-value">${estimates.filter((estimate) => estimate.squareInvoiceId).length}</span>
       </div>
       <span class="invoice-poll-indicator" id="squarePollIndicator" title="Checking Square for payments every 30s">⟳ Live</span>
     </div>
@@ -8762,29 +8929,13 @@ function renderInvoicesView() {
 
   hydrateIcons(els.invoicesList);
 
-  // Wire up send/mark-paid buttons
+  // Wire up provider-backed invoice actions only. Payment state is reconciled
+  // by the server and cannot be fabricated by an unrendered client control.
   els.invoicesList.querySelectorAll("[data-square-send]").forEach((btn) => {
     btn.addEventListener("click", () => sendToSquare(btn.dataset.squareSend));
   });
   els.invoicesList.querySelectorAll("[data-square-copy]").forEach((btn) => {
     btn.addEventListener("click", () => copySquareInvoiceLink(btn.dataset.squareCopy));
-  });
-  els.invoicesList.querySelectorAll("[data-square-mark-paid]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const estimate = state.estimates.find((e) => e.id === btn.dataset.squareMarkPaid);
-      if (!estimate) return;
-      const contractValue = number(estimate.contractValue) || totalsFor(estimate).total;
-      estimate.squareStatus = "PAID";
-      estimate.paidAt = new Date().toISOString();
-      estimate.paymentUpdatedAt = estimate.paidAt;
-      estimate.contractValue = contractValue;
-      estimate.paidAmount = contractValue;
-      estimate.paymentPercent = 100;
-      updateJobPaymentSnapshot(estimate.contactId, estimate.jobId);
-      saveState();
-      renderInvoicesView();
-      showToast("Invoice marked as paid");
-    });
   });
 }
 
@@ -8835,7 +8986,6 @@ function renderReviewsView() {
               ${email ? `
                 <a class="primary-button"
                   href="${mailtoUrl(email, reviewRequestEmail(contact).subject, reviewRequestEmail(contact).message)}"
-                  data-action="log-review-request"
                   data-contact-id="${contact.id}"
                   data-job-id="${job.id}">
                   <span aria-hidden="true" data-icon="star"></span>
@@ -9089,6 +9239,7 @@ function renderEstimateForm(estimate) {
     .join("");
 
   els.estimateNumber.value = estimate.estimateNumber;
+  els.estimateNumber.readOnly = true;
   els.estimateTitle.value = estimate.projectTitle;
   els.estimateStatus.value = estimate.status;
   els.projectManager.value = estimate.projectManager;
@@ -9204,7 +9355,7 @@ function renderEstimatePreview(estimate) {
                 <td class="est-td-r est-td-muted">${number(item.quantity).toLocaleString("en-US")}</td>
                 <td class="est-td-muted">${escapeHtml(item.unit || "ea")}</td>
                 <td class="est-td-r est-td-muted">${money.format(number(item.rate))}</td>
-                <td class="est-td-r est-td-amt">${money.format(number(item.quantity) * number(item.rate))}</td>
+                <td class="est-td-r est-td-amt">${money.format(estimateLineAmount(item))}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -9764,21 +9915,62 @@ function saveContactFromForm(event) {
   showToast(`${contact.name} saved`);
 }
 
-function deleteContact(contactId) {
+function contactHasFinancialHistory(contactId) {
+  const contact = getContact(contactId);
+  if (!contact) return false;
+  const jobs = contactJobs(contact);
+  const estimates = state.estimates.filter((estimate) => estimate.contactId === contactId);
+  return jobs.some((job) =>
+    (job.manualPayments || []).length || number(job.paidAmount) > 0 || number(job.squarePaidAmount) > 0 ||
+    Boolean(job.squareInvoiceId || job.squareOrderId || job.paidAt || job.lastPaymentAt || job.squareLastPaymentAt) ||
+    (job.paymentRequests || []).length
+  ) || estimates.some((estimate) =>
+    number(estimate.paidAmount) > 0 || Boolean(estimate.squareInvoiceId || estimate.squareOrderId || estimate.paidAt) ||
+    (estimate.paymentRequests || []).length
+  );
+}
+
+async function deleteContact(contactId) {
   if (!requireAction("manageContacts")) return;
   const contact = getContact(contactId);
   if (!contact) return;
+  if (contactHasFinancialHistory(contactId)) {
+    showToast("This lead has invoice or payment history and must be retained for financial records.");
+    return;
+  }
   const hasEstimates = state.estimates.some((estimate) => estimate.contactId === contactId);
-  const message = hasEstimates
-    ? "This contact has estimates. Delete the contact and those estimates?"
-    : `Delete ${contact.name}?`;
+  const documentCount = (contact.documents || []).length;
+  const affected = [
+    hasEstimates ? "its estimates" : "",
+    documentCount ? `${documentCount} document record${documentCount === 1 ? "" : "s"} (stored file revisions will be retained)` : "",
+  ].filter(Boolean).join(" and ");
+  const message = affected ? `Delete ${contact.name} and archive ${affected}?` : `Delete ${contact.name}?`;
   if (!window.confirm(message)) return;
 
+  if (!(await settleDurableWritesBeforeTrustedMutation())) {
+    showToast("This lead was not deleted because pending shared changes could not be confirmed.");
+    return;
+  }
+  const previousContacts = state.contacts;
+  const previousEstimates = state.estimates;
+  const previousContactId = state.selectedContactId;
+  const previousEstimateId = state.selectedEstimateId;
   state.contacts = state.contacts.filter((item) => item.id !== contactId);
   state.estimates = state.estimates.filter((estimate) => estimate.contactId !== contactId);
   state.selectedContactId = state.contacts[0]?.id || null;
   state.selectedEstimateId = state.estimates[0]?.id || null;
-  saveState();
+  saveState({ localOnly: true });
+  if (canUseCloudSync() && !(await flushDurableRecordsSave())) {
+    state.contacts = previousContacts;
+    state.estimates = previousEstimates;
+    state.selectedContactId = previousContactId;
+    state.selectedEstimateId = previousEstimateId;
+    saveState({ localOnly: true });
+    showToast("The lead was not deleted because the shared CRM did not confirm the archive.");
+    render();
+    return;
+  }
+  queueCloudSave();
   els.contactDialog.close();
   render();
   showToast("Contact deleted");
@@ -9933,6 +10125,10 @@ function updateSelectedEstimateFromField(fieldName, value) {
   if (!canAction("manageEstimates")) return;
   const estimate = getSelectedEstimate();
   if (!estimate) return;
+  if (fieldName === "estimateNumber") {
+    els.estimateNumber.value = estimate.estimateNumber;
+    return;
+  }
   if (canUseCloudSync() && estimate.estimateNumber && ["contactId", "jobId"].includes(fieldName) && value !== estimate[fieldName]) {
     showToast("A numbered estimate stays with its original lead and job. Create a new estimate for a different project.");
     renderEstimateForm(estimate);
@@ -10030,7 +10226,7 @@ function estimateText(estimate = getSelectedEstimate()) {
       (item) =>
         `- ${item.title || "Line item"}: ${number(item.quantity)} ${item.unit} x ${money.format(
           number(item.rate),
-        )} = ${money.format(number(item.quantity) * number(item.rate))}${
+        )} = ${money.format(estimateLineAmount(item))}${
           item.description ? `\n  ${item.description}` : ""
         }`,
     )
@@ -10452,7 +10648,7 @@ async function downloadEstimatePdf(options = {}) {
     doc.setTextColor(55, 55, 60);
     doc.text(money.format(number(item.rate)), 468, cursor.y + 13, { align: "right" });
     doc.setFont("helvetica", "bold");
-    doc.text(money.format(number(item.quantity) * number(item.rate)), right - 8, cursor.y + 13, { align: "right" });
+    doc.text(money.format(estimateLineAmount(item)), right - 8, cursor.y + 13, { align: "right" });
     cursor.y += rowH;
   });
 
@@ -10611,54 +10807,26 @@ async function sendEstimate() {
   const estimate = getSelectedEstimate();
   const contact = getEstimateContact(estimate);
   if (!estimate || !contact) return;
+  const invalidItems = invalidEstimateLineItems(estimate);
+  if (invalidItems.length) {
+    showToast("Every estimate line needs a description, a quantity greater than zero, and a valid rate before sending.");
+    return;
+  }
   if (!contact.email) {
     showToast("Add an email address before sending");
     return;
   }
 
-  estimate.status = "Sent";
-  estimate.sentAt = todayISO();
-  syncEstimatePipelineStage(estimate, "Sent");
-  const job = getEstimateJob(estimate);
   const rawSubject = `${estimate.estimateNumber} from ${state.company.name}`;
   const rawMessage = `Hi ${contact.name},\n\nPlease review the estimate below. I also downloaded the PDF so it can be attached to this email.\n\n${estimateText(
     estimate,
   )}`;
-  if (job) {
-    updateContact(contact.id, (current) => ({
-      ...current,
-      jobs: contactJobs(current).map((item) =>
-        item.id === job.id
-          ? {
-              ...item,
-              emails: [
-                normalizeJobEmail({
-                  fromEmail: state.currentUser.email || state.company.email || "",
-                  toEmail: contact.email,
-                  subject: rawSubject,
-                  message: rawMessage,
-                  createdBy: state.currentUser.name || "CRM user",
-                }),
-                ...(item.emails || []),
-              ],
-            }
-          : item,
-      ),
-    }));
-    addContactUpdate(contact.id, {
-      author: state.currentUser.name || "CRM user",
-      jobId: job.id,
-      message: `Opened estimate email draft: ${rawSubject}.`,
-    });
-  }
-  saveState();
-  render();
   await downloadEstimatePdf({ silent: true });
 
   const subject = encodeURIComponent(rawSubject);
   const body = encodeURIComponent(rawMessage);
   window.location.href = `mailto:${encodeURIComponent(contact.email)}?subject=${subject}&body=${body}`;
-  showToast("Email draft opened");
+  showToast("Email draft opened. Mark the estimate Sent only after the email is actually sent.");
 }
 
 function printEstimate() {
@@ -10777,7 +10945,7 @@ function saveCompany(event) {
 
 function showToast(message) {
   const text = String(message || "");
-  const isFailure = /\b(?:not saved|failed|failure|error|retry|unavailable|still retrying|cloud sync is off)\b/i.test(text);
+  const isFailure = /\b(?:not saved|not confirmed|failed|failure|error|retry|retries|retrying|unavailable|needs attention|must connect|cloud sync is off)\b/i.test(text);
   const isRoutineSaveNotice = /\b(?:saved|uploaded|stored)\b/i.test(text) || /\bupdated from (?:the )?(?:cloud|supabase|crm)\b/i.test(text);
   const isWorkflowBlocker = /^Complete before moving\b/i.test(text);
   if (isRoutineSaveNotice && !isFailure && !isWorkflowBlocker && !/\bdownloaded\b/i.test(text)) return;
@@ -10890,7 +11058,7 @@ function bindEvents() {
       state.leadStageFilter = dashboardStage.dataset.dashboardStage || "";
       state.search = "";
       state.view = "leads";
-      saveState();
+      saveState({ localOnly: true });
       render();
       return;
     }
@@ -10904,14 +11072,14 @@ function bindEvents() {
     const filterButton = event.target.closest("[data-pipeline-filter]");
     if (filterButton) {
       state.pipelineFilter = filterButton.dataset.pipelineFilter;
-      saveState();
+      saveState({ localOnly: true });
       renderPipeline();
     }
 
     const leaderboardButton = event.target.closest("[data-leaderboard-range]");
     if (leaderboardButton) {
       state.leaderboardRange = leaderboardButton.dataset.leaderboardRange;
-      saveState();
+      saveState({ localOnly: true });
       renderDashboard();
     }
 
@@ -10950,44 +11118,8 @@ function bindEvents() {
     if (action === "go-to-settings") { state.view = "company"; render(); }
     if (action === "clear-lead-stage-filter") {
       state.leadStageFilter = "";
-      saveState();
+      saveState({ localOnly: true });
       renderLeadsView();
-    }
-    if (action === "log-review-request") {
-      if (contactId) {
-        const contact = getContact(contactId);
-        const job = contactJobs(contact).find((item) => item.id === actionButton.dataset.jobId) || primaryJob(contact);
-        const draft = reviewRequestEmail(contact);
-        if (job) {
-          updateContact(contactId, (current) => ({
-            ...current,
-            jobs: contactJobs(current).map((item) =>
-              item.id === job.id
-                ? {
-                    ...item,
-                    emails: [
-                      normalizeJobEmail({
-                        toEmail: contact.email,
-                        fromEmail: state.currentUser.email || state.company.email || "",
-                        subject: draft.subject,
-                        message: draft.message,
-                        createdBy: state.currentUser.name || "CRM",
-                      }),
-                      ...(item.emails || []),
-                    ],
-                  }
-                : item,
-            ),
-          }));
-        }
-        addContactUpdate(contactId, {
-          author: state.currentUser.name || "CRM",
-          jobId: job?.id || "",
-          message: "Sent review request email.",
-        });
-        saveState();
-        showToast("Review request logged");
-      }
     }
     if (action === "select-estimate") {
       state.view = "estimates";
@@ -11099,7 +11231,7 @@ function bindEvents() {
       return;
     }
     state.leadDetailTab = tabButton.dataset.leadTab;
-    saveState();
+    saveState({ localOnly: true });
     renderLeadDetail();
   });
 
@@ -11724,6 +11856,33 @@ function pauseForSessionChange() {
   document.body.appendChild(panel);
 }
 
+// Explicit extension boundary for the three legacy feature modules. This keeps
+// replacement names allowlisted and removes eval-style global mutation and
+// timing polls while the features are progressively moved into the core app.
+window.JobCrestApp = {
+  ready: false,
+  replaceFunction(name, value) {
+    if (typeof value !== "function") return false;
+    switch (name) {
+      case "statusPillClass": statusPillClass = value; break;
+      case "staleClass": staleClass = value; break;
+      case "dashboardMetrics": dashboardMetrics = value; break;
+      case "renderSummary": renderSummary = value; break;
+      case "applyStatusUpdate": applyStatusUpdate = value; break;
+      case "renderLeadCard": renderLeadCard = value; break;
+      case "renderDashboard": renderDashboard = value; break;
+      case "renderRevenueOverview": renderRevenueOverview = value; break;
+      case "renderDashboardDonuts": renderDashboardDonuts = value; break;
+      case "renderProjectsView": renderProjectsView = value; break;
+      case "renderReviewsView": renderReviewsView = value; break;
+      case "renderLeadDetail": renderLeadDetail = value; break;
+      case "render": render = value; break;
+      default: return false;
+    }
+    return true;
+  },
+};
+
 async function startApp() {
   if (!window.RooflineAuth) {
     location.replace("/login?reason=auth-loader");
@@ -11774,8 +11933,8 @@ async function startApp() {
     return;
   }
   if (canUseCloudSync()) {
-    try { await ensureExistingSharedSalesNumbers(); }
-    catch (error) { console.warn("Shared sales numbering is unavailable", error); showStartupDataError(); return; }
+    const numbering = await ensureExistingSharedSalesNumbers();
+    if (numbering.failures.length) showToast("The CRM is ready, but some historical estimate numbers need administrator attention.");
   } else if (ensureExistingSalesNumbers()) saveState();
   void migrateInlineDocumentsToStorage();
   hydrateIcons();
@@ -11805,6 +11964,7 @@ async function startApp() {
   // Add-on modules can finish downloading long before durable CRM records have
   // hydrated. Give them a deterministic startup signal instead of making them
   // guess when the core application is ready from a short polling window.
+  window.JobCrestApp.ready = true;
   window.dispatchEvent(new CustomEvent("jobcrest:app-ready"));
   durableWritesEnabled = durableRecordsReady;
   if (durableWritesEnabled) queueDurableRecordsSave();

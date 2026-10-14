@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { PDFDocument, degrees } = require('pdf-lib');
+const { PDFDocument, degrees } = require('@cantoo/pdf-lib');
 
 const app = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
 const analysisSource = app.slice(app.indexOf('function smartFieldTypeFromAnnotation('), app.indexOf('async function renderSmartDocumentCanvas('));

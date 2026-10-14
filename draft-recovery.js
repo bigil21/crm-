@@ -37,7 +37,18 @@
             // Keep raw content even when malformed, so it can still be exported.
             entries.push({ key, raw });
           }
-          return { entries, available: true };
+          // Bound abandoned tab copies. Active tabs continually refresh their
+          // timestamp; keep the ten newest recoveries and at most 30 days.
+          const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+          const ranked = entries.map((entry) => {
+            let updatedAt = Date.now();
+            try { updatedAt = new Date(JSON.parse(entry.raw).updatedAt || 0).getTime() || Date.now(); } catch {}
+            return { ...entry, updatedAt };
+          }).sort((a, b) => b.updatedAt - a.updatedAt);
+          const retained = ranked.filter((entry, index) => entry.updatedAt >= cutoff && index < 10);
+          const retainedKeys = new Set(retained.map((entry) => entry.key));
+          ranked.forEach((entry) => { if (!retainedKeys.has(entry.key)) storage.removeItem(entry.key); });
+          return { entries: retained.map(({ key, raw }) => ({ key, raw })), available: true };
         } catch { return { entries, available: false }; }
       },
       acknowledge(entries) {

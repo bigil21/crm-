@@ -26,6 +26,30 @@ create table if not exists public.crm_admins (
   created_at timestamptz not null default now()
 );
 
+-- Explicit access registry. Existing company users are approved during the
+-- reviewed migration; future signups remain blocked until an administrator
+-- approves them and assigns a role.
+create table if not exists public.crm_user_access (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  email text not null unique,
+  role text not null default 'viewer' check (role in ('admin','office_manager','sales_manager','operations_manager','sales','production','viewer')),
+  approved boolean not null default false,
+  approved_by uuid references auth.users(id),
+  approved_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+insert into public.crm_user_access(user_id,email,role,approved,approved_at)
+select id,lower(email),
+  case when replace(replace(lower(trim(coalesce(raw_app_meta_data->>'role','viewer'))),'-','_'),' ','_')
+    in ('admin','office_manager','sales_manager','operations_manager','sales','production','viewer')
+    then replace(replace(lower(trim(coalesce(raw_app_meta_data->>'role','viewer'))),'-','_'),' ','_') else 'viewer' end,
+  true,clock_timestamp()
+from auth.users
+where lower(coalesce(email,'')) like '%@coastalcrestroofing.com'
+on conflict(user_id) do nothing;
+
 -- Durable, append-only project conversation messages. Each message is stored
 -- independently so another user's CRM save cannot overwrite conversation history.
 create table if not exists public.crm_conversation_messages (
@@ -122,6 +146,7 @@ create or replace function public.crm_base_state_id()
 returns text
 language sql
 stable
+set search_path = ''
 as $$
   select 'coastal-crest';
 $$;
@@ -130,50 +155,52 @@ create or replace function public.is_coastal_crest_user()
 returns boolean
 language sql
 stable
+set search_path = ''
+security definer
 as $$
-  select lower(coalesce(auth.jwt() ->> 'email', '')) like '%@coastalcrestroofing.com';
+  select exists (
+    select 1 from public.crm_user_access
+    where user_id = auth.uid() and approved and lower(email) = lower(coalesce(auth.jwt()->>'email',''))
+  );
 $$;
 
 create or replace function public.crm_app_role()
 returns text
 language sql
 stable
+set search_path = ''
+security definer
 as $$
-  select replace(
-    replace(
-      lower(trim(coalesce(auth.jwt() -> 'app_metadata' ->> 'role', 'viewer'))),
-      '-',
-      '_'
-    ),
-    ' ',
-    '_'
-  );
+  select coalesce((select role from public.crm_user_access where user_id = auth.uid() and approved), 'viewer');
 $$;
+
+create or replace function public.crm_access_profile()
+returns jsonb language sql stable security definer set search_path = ''
+as $$
+  select jsonb_build_object(
+    'approved', coalesce(a.approved,false),
+    'role', coalesce(a.role,'viewer'),
+    'email', coalesce(a.email,'')
+  ) from (select 1) seed left join public.crm_user_access a on a.user_id = auth.uid();
+$$;
+revoke all on function public.crm_access_profile() from public, anon;
+grant execute on function public.crm_access_profile() to authenticated;
 
 create or replace function public.is_crm_admin()
 returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = ''
 as $$
-  select
-    public.crm_app_role() = 'admin'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) in (
-      'gil@coastalcrestroofing.com',
-      'devon@coastalcrestroofing.com'
-    )
-    or exists (
-      select 1
-      from public.crm_admins
-      where lower(email) = lower(coalesce(auth.jwt() ->> 'email', ''))
-    );
+  select public.crm_app_role() = 'admin';
 $$;
 
 create or replace function public.can_manage_team_crm()
 returns boolean
 language sql
 stable
+set search_path = ''
 as $$
   select public.is_crm_admin()
     or public.crm_app_role() in ('office_manager', 'sales_manager', 'operations_manager');
@@ -182,6 +209,7 @@ $$;
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   new.updated_at = now();
@@ -194,6 +222,62 @@ create trigger set_crm_state_updated_at
 before update on public.crm_state
 for each row
 execute function public.set_updated_at();
+
+create or replace function public.crm_protect_conversation_message()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.author_user_id := (select auth.uid())::text;
+    new.author_email := lower(coalesce(auth.jwt()->>'email', ''));
+    new.author_name := new.author_email;
+    new.author_role := public.crm_app_role();
+    new.created_at := clock_timestamp();
+    new.updated_at := new.created_at;
+  else
+    new.id := old.id;
+    new.company_state_id := old.company_state_id;
+    new.lead_id := old.lead_id;
+    new.job_id := old.job_id;
+    new.contact_name := old.contact_name;
+    new.job_name := old.job_name;
+    new.job_status := old.job_status;
+    new.author_user_id := old.author_user_id;
+    new.author_email := old.author_email;
+    new.author_name := old.author_name;
+    new.author_role := old.author_role;
+    new.message_text := old.message_text;
+    new.mentions := old.mentions;
+    new.created_at := old.created_at;
+    new.updated_at := clock_timestamp();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists crm_protect_conversation_message on public.crm_conversation_messages;
+create trigger crm_protect_conversation_message
+before insert or update on public.crm_conversation_messages
+for each row execute function public.crm_protect_conversation_message();
+revoke execute on function public.crm_protect_conversation_message() from public, anon, authenticated;
+
+create or replace function public.crm_protect_audit_event()
+returns trigger language plpgsql security invoker set search_path=''
+as $$
+begin
+  new.actor_user_id := auth.uid();
+  new.actor_name := lower(coalesce(auth.jwt()->>'email','CRM user'));
+  new.created_at := clock_timestamp();
+  return new;
+end;
+$$;
+drop trigger if exists crm_protect_audit_event on public.crm_audit_events;
+create trigger crm_protect_audit_event before insert on public.crm_audit_events
+for each row execute function public.crm_protect_audit_event();
+revoke execute on function public.crm_protect_audit_event() from public,anon,authenticated;
 
 drop trigger if exists set_crm_conversation_messages_updated_at on public.crm_conversation_messages;
 create trigger set_crm_conversation_messages_updated_at
@@ -209,6 +293,7 @@ execute function public.set_updated_at();
 
 alter table public.crm_state enable row level security;
 alter table public.crm_admins enable row level security;
+alter table public.crm_user_access enable row level security;
 alter table public.crm_conversation_messages enable row level security;
 alter table public.crm_records enable row level security;
 alter table public.crm_audit_events enable row level security;
@@ -288,6 +373,14 @@ on public.crm_admins
 for select
 to authenticated
 using (public.is_crm_admin());
+
+drop policy if exists "Users read own CRM access" on public.crm_user_access;
+drop policy if exists "CRM admins read access registry" on public.crm_user_access;
+create policy "Users read own CRM access" on public.crm_user_access
+for select to authenticated using (user_id = auth.uid());
+create policy "CRM admins read access registry" on public.crm_user_access
+for select to authenticated using (public.is_crm_admin());
+revoke insert, update, delete on public.crm_user_access from public, anon, authenticated;
 
 drop policy if exists "Company users read conversation messages" on public.crm_conversation_messages;
 drop policy if exists "Company users create conversation messages" on public.crm_conversation_messages;
@@ -382,13 +475,7 @@ create policy "Company users read CRM audit events"
 on public.crm_audit_events for select to authenticated
 using (public.is_coastal_crest_user() and company_state_id = public.crm_base_state_id());
 
-create policy "Company users create CRM audit events"
-on public.crm_audit_events for insert to authenticated
-with check (
-  public.is_coastal_crest_user()
-  and company_state_id = public.crm_base_state_id()
-  and (actor_user_id = auth.uid() or public.can_manage_team_crm())
-);
+revoke insert, update, delete on public.crm_audit_events from public, anon, authenticated;
 
 drop policy if exists "CRM managers read backups" on public.crm_backups;
 drop policy if exists "CRM managers create backups" on public.crm_backups;
@@ -410,22 +497,57 @@ drop policy if exists "Company users upload CRM document objects" on storage.obj
 drop policy if exists "Company users update CRM document objects" on storage.objects;
 drop policy if exists "Company users delete CRM document objects" on storage.objects;
 
-create policy "Company users read CRM document objects"
+create policy "Approved CRM users read company document objects"
 on storage.objects for select to authenticated
-using (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+using (
+  bucket_id = 'crm-documents'
+  and public.is_coastal_crest_user()
+  and (storage.foldername(name))[1] = public.crm_base_state_id()
+);
 
-create policy "Company users upload CRM document objects"
+create policy "Approved CRM users append company document objects"
 on storage.objects for insert to authenticated
-with check (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+with check (
+  bucket_id = 'crm-documents'
+  and public.is_coastal_crest_user()
+  and (storage.foldername(name))[1] = public.crm_base_state_id()
+  and owner_id = (select auth.uid())::text
+);
 
-create policy "Company users update CRM document objects"
-on storage.objects for update to authenticated
-using (bucket_id = 'crm-documents' and public.is_coastal_crest_user())
-with check (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+create index if not exists crm_audit_record_commit_retention_idx
+  on public.crm_audit_events(created_at) where event_type = 'record_commit';
+create index if not exists crm_backups_retention_idx on public.crm_backups(created_at);
 
-create policy "Company users delete CRM document objects"
-on storage.objects for delete to authenticated
-using (bucket_id = 'crm-documents' and public.is_coastal_crest_user());
+create or replace function public.crm_prune_operational_history()
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  audit_count integer := 0;
+  receipt_count integer := 0;
+  backup_count integer := 0;
+begin
+  delete from public.crm_audit_events
+    where event_type = 'record_commit' and created_at < clock_timestamp() - interval '90 days';
+  get diagnostics audit_count = row_count;
+  if to_regclass('public.crm_write_receipts') is not null then
+    execute 'delete from public.crm_write_receipts where created_at < clock_timestamp() - interval ''30 days''';
+    get diagnostics receipt_count = row_count;
+  end if;
+  delete from public.crm_backups where created_at < clock_timestamp() - interval '30 days';
+  get diagnostics backup_count = row_count;
+  return jsonb_build_object('recordCommits', audit_count, 'writeReceipts', receipt_count, 'backups', backup_count);
+end;
+$$;
+revoke all on function public.crm_prune_operational_history() from public, anon, authenticated;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.crm_prune_operational_history() to service_role;
+  end if;
+end $$;
 
 do $$
 begin

@@ -27,7 +27,7 @@ test('recovery notice dismissal is stable for the same draft and changes for new
   assert.match(source, /aria-label/);
 });
 
-test('an external CRM entry clears only tab auth while normal refresh keeps it', () => {
+test('external links do not destroy a valid signed-in tab session', () => {
   const source = fs.readFileSync(path.join(__dirname, '../auth.js'), 'utf8');
   const functions = ['removeAuthKeys', 'isExternalCrmEntry'];
   const sessionStorage = memory();
@@ -37,9 +37,8 @@ test('an external CRM entry clears only tab auth while normal refresh keeps it',
     location: { pathname: '/', origin: 'https://jobcrestcrm.com' },
     document: { referrer: 'https://www.google.com/search?q=jobcrest' } });
   vm.runInContext(functions.map(name => extract(source, name)).join('\n'), context);
-  assert.equal(context.isExternalCrmEntry(), true);
-  context.removeAuthKeys(sessionStorage);
-  assert.equal(sessionStorage.getItem('sb-project-auth-token'), null);
+  assert.equal(context.isExternalCrmEntry(), false);
+  assert.equal(sessionStorage.getItem('sb-project-auth-token'), 'session');
   assert.equal(sessionStorage.getItem('jobcrest.crm.sign-in-unlock'), 'pending');
   context.document.referrer = 'https://jobcrestcrm.com/login';
   assert.equal(context.isExternalCrmEntry(), false);

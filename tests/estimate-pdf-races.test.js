@@ -162,7 +162,7 @@ test('PDF renderer uses a detached explicit snapshot without changing the drawin
       return () => {};
     } });
   }
-  const c = load(['downloadEstimatePdf'], {
+  const c = load(['estimateLineAmount', 'downloadEstimatePdf'], {
     window: { jspdf: { jsPDF: Pdf } }, getEstimateContact: item => ({ id: item.contactId, name: item.contactId }),
     getEstimateJob: item => ({ id: item.jobId }), estimateSalesRep: () => ({}), companyOfficeAddress: () => '',
     totalsFor: () => ({ subtotal: 35250.75, tax: 0, total: 35250.75, balance: 35250.75 }),

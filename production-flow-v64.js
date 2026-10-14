@@ -27,12 +27,7 @@
   }
 
   function assignGlobal(name, value) {
-    try {
-      window[name] = value;
-    } catch {}
-    try {
-      Function("value", `${name} = value;`)(value);
-    } catch {}
+    if (!window.JobCrestApp?.replaceFunction?.(name, value)) throw new Error(`Unsupported JobCrest extension: ${name}`);
   }
 
   function safeNumber(value) {
@@ -142,7 +137,7 @@
     const jobs = allJobs();
     const openContracts = jobs.filter((job) => activeContractStatuses.includes(job.status));
     const closedJobs = jobs.filter((job) => isClosedProductionStatus(job.status));
-    const estimatesSent = state.estimates.filter((estimate) => ["Sent", "Approved"].includes(estimate.status)).length;
+    const estimatesSent = state.estimates.filter((estimate) => ["Sent", "Won"].includes(estimate.status)).length;
     const pipelineValue = jobs
       .filter((job) => job.status !== "Lost")
       .reduce((sum, job) => sum + safeNumber(job.value), 0);
@@ -163,7 +158,7 @@
     const metrics = patchedDashboardMetrics();
     const cards = [
       ["Total Leads", metrics.leads, "Open sales opportunities", "user", "blue"],
-      ["Estimates Sent", metrics.estimatesSent, "Sent or approved", "file", "green"],
+      ["Estimates Sent", metrics.estimatesSent, "Sent or won", "file", "green"],
       ["Open Contracts", metrics.openContracts, money.format(metrics.openValue), "briefcase", "purple"],
       ["Closed Jobs", metrics.closedJobs, money.format(metrics.closedValue), "check", "orange"],
       ["Pipeline Value", money.format(metrics.pipelineValue), "All non-lost job value", "bar-chart", "cyan"],
@@ -295,7 +290,7 @@
     const rangeStartDate = rangeStart(state.leaderboardRange);
     if (els.leaderboardRangeLabel) {
       els.leaderboardRangeLabel.textContent = `${leaderboardRanges[state.leaderboardRange]} sold jobs since ${formatDate(
-        rangeStartDate.toISOString().slice(0, 10),
+        localDateISO(rangeStartDate),
       )}`;
     }
 
@@ -465,7 +460,7 @@
                   </div>
                   <div class="row-actions" style="margin-top:8px">
                     ${email ? `
-                      <a class="primary-button" href="${mailtoUrl(email, reviewRequestEmail(contact).subject, reviewRequestEmail(contact).message)}" data-action="log-review-request" data-contact-id="${contact.id}">
+                      <a class="primary-button" href="${mailtoUrl(email, reviewRequestEmail(contact).subject, reviewRequestEmail(contact).message)}">
                         <span aria-hidden="true" data-icon="star"></span>
                         Send Review Request
                       </a>
@@ -654,7 +649,6 @@
     };
 
     syncStatuses();
-    normalizeProductionState();
     assignGlobal("statusPillClass", patchedStatusPillClass);
     assignGlobal("staleClass", patchedStaleClass);
     assignGlobal("dashboardMetrics", patchedDashboardMetrics);
@@ -666,7 +660,8 @@
     assignGlobal("renderDashboardDonuts", patchedRenderDashboardDonuts);
     assignGlobal("renderProjectsView", patchedRenderProjectsView);
     assignGlobal("renderReviewsView", patchedRenderReviewsView);
-    installFormInterceptors();
+    // Keep the canonical form handlers in app.js. They normalize names and
+    // phone numbers, stamp updatedAt, and wait for verified durable saving.
 
     const previousRender = typeof render === "function" ? render : null;
     if (previousRender && !window.__rooflineProductionRenderWrappedV64) {
@@ -678,7 +673,6 @@
       });
     }
 
-    saveState();
     try {
       render();
     } catch {
@@ -687,15 +681,6 @@
     return true;
   }
 
-  const timer = window.setInterval(() => {
-    if (installProductionFlow()) window.clearInterval(timer);
-  }, 200);
-  window.addEventListener(
-    "jobcrest:app-ready",
-    () => {
-      if (installProductionFlow()) window.clearInterval(timer);
-    },
-    { once: true },
-  );
-  window.setTimeout(() => window.clearInterval(timer), 60000);
+  if (window.JobCrestApp?.ready) installProductionFlow();
+  else window.addEventListener("jobcrest:app-ready", installProductionFlow, { once: true });
 })();
