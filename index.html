@@ -470,7 +470,7 @@
                     </label>
                     <label>
                       Sales Representative
-                      <input name="salesRep" autocomplete="name" />
+                      <input name="salesRep" list="salesRepOptions" autocomplete="off" />
                     </label>
                     <label>
                       Last Contact
@@ -905,7 +905,7 @@
                   <div class="form-grid two estimate-details-content">
                     <label>
                       Project Manager
-                      <input id="projectManager" name="projectManager" autocomplete="off" />
+                      <input id="projectManager" name="projectManager" list="salesRepOptions" autocomplete="off" />
                     </label>
                     <label>
                       Sales Rep Email
@@ -1123,8 +1123,7 @@
                 <div class="form-grid two">
                   <label>
                     Sales Representative
-                    <input name="rep" list="salesRepOptions" required autocomplete="name" />
-                    <datalist id="salesRepOptions"></datalist>
+                    <input name="rep" list="salesRepOptions" required autocomplete="off" />
                   </label>
                   <label>
                     Related Lead
@@ -1375,6 +1374,8 @@
       </main>
     </div>
 
+    <datalist id="salesRepOptions"></datalist>
+
     <dialog class="contact-dialog" id="contactDialog">
       <form method="dialog" id="contactForm">
         <div class="dialog-header">
@@ -1417,7 +1418,7 @@
           </label>
           <label>
             Sales Representative
-            <input name="salesRep" autocomplete="off" />
+            <input name="salesRep" list="salesRepOptions" autocomplete="off" />
           </label>
           <label>
             Email
@@ -1599,7 +1600,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=153" defer></script>
+    <script src="app.js?v=154" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

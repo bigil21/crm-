@@ -3266,7 +3266,11 @@ function escapeHtml(value = "") {
 }
 
 function normalizePersonName(value = "") {
-  const name = String(value || "").trim().replace(/\s+/g, " ");
+  const name = String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
   const parts = name.split(" ").filter(Boolean);
   if (parts.length >= 4 && parts.length % 2 === 0) {
     const midpoint = parts.length / 2;
@@ -3324,6 +3328,13 @@ function uniqueSalesReps() {
     if (name && name !== "Unassigned" && !unique.has(key)) unique.set(key, name);
   });
   return [...unique.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function renderSalesRepOptions() {
+  if (!els.salesRepOptions) return;
+  els.salesRepOptions.innerHTML = uniqueSalesReps()
+    .map((rep) => `<option value="${escapeHtml(rep)}"></option>`)
+    .join("");
 }
 
 function taskDueTime(task) {
@@ -3834,6 +3845,7 @@ function render() {
     element.classList.toggle("hidden", view !== state.view);
   });
   renderBrandLogo();
+  renderSalesRepOptions();
   els.summaryStrip.classList.toggle("hidden", state.view !== "dashboard");
   els.workspace?.classList.toggle("dashboard-watermark", state.view === "dashboard");
   renderTopbarProfile();
@@ -4900,7 +4912,7 @@ function renderLeadDetail() {
   }
 
   els.leadDetailTitle.textContent = contact.name;
-  els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${contact.status} - ${contact.salesRep || "Unassigned"}`;
+  els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${contact.status}`;
 
   if (
     (state.leadDetailTab === "profit" && !canManageJobFinancials()) ||
@@ -4966,7 +4978,7 @@ function renderLeadDetail() {
       <div class="lead-card-avatar ${avatarClass}" style="width:52px;height:52px;font-size:19px;flex-shrink:0">${initials}</div>
       <div class="overview-hero-text">
         <h2 style="margin:0;font-size:20px">${escapeHtml(contact.name)}</h2>
-        <p style="margin:4px 0 0;color:var(--muted);font-size:13px">${escapeHtml(contact.source || "No source")} &middot; ${escapeHtml(contact.salesRep || "Unassigned")}</p>
+        <p style="margin:4px 0 0;color:var(--muted);font-size:13px">${escapeHtml(contact.source || "No source")}</p>
       </div>
       <span class="status-pill ${statusPillClass(contact.status)}" style="align-self:flex-start">${escapeHtml(contact.status)}</span>
     </div>
@@ -8069,9 +8081,6 @@ function renderCalendar() {
 
 function renderCalendarFormOptions() {
   if (!els.salesRepOptions || !els.calendarTaskContact) return;
-  els.salesRepOptions.innerHTML = uniqueSalesReps()
-    .map((rep) => `<option value="${escapeHtml(rep)}"></option>`)
-    .join("");
   els.calendarTaskContact.innerHTML = [
     '<option value="">No related lead</option>',
     ...state.contacts.map(
