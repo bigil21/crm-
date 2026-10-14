@@ -138,7 +138,7 @@ const checks = [
   ["realtime CRM updates are batched before a full redraw", app.includes("function queueDurableRecordsReload") && app.includes("queueDurableRecordsReload();")],
   ["workflow checks do not trigger legacy full-CRM saves", app.includes("syncLegacy: false") && workflowChecklists.includes("queueDurableRecordsSave();") && !workflowChecklists.includes("queueCloudSave();")],
   ["local cloud echoes do not redraw the active workflow", app.includes("function consumeRecentCloudEcho") && app.includes("consumeRecentCloudEcho(row)")],
-  ["lead intake is ordered by creation time", app.includes("function sortLeadIntakeChronologically") && app.includes("sortLeadIntakeChronologically(filteredContacts()") && app.includes("Date.parse(left.contact.createdAt")],
+  ["lead intake is ordered by newest activity", app.includes("function leadActivityTimestamp") && app.includes("sortLeadIntakeChronologically(filteredContacts()") && app.includes("leadActivityTimestamp(right.contact) - leadActivityTimestamp(left.contact)")],
 ];
 
 let failed = 0;

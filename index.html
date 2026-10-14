@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=69" />
+    <link rel="stylesheet" href="styles.css?v=70" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -297,6 +297,7 @@
             <div>
               <p class="eyebrow">Lead center</p>
               <h2>Open sales opportunities</h2>
+              <p class="lead-intake-order-note">Newest and most recently updated leads appear first.</p>
             </div>
             <div class="lead-intake-actions">
               <label class="stage-filter-control" for="leadStageFilter">
@@ -309,7 +310,7 @@
               </button>
             </div>
           </div>
-          <div id="leadsList" class="record-grid"></div>
+          <div id="leadsList" class="leads-list lead-intake-list"></div>
         </section>
 
         <section class="view-panel hidden" id="pipelineView">
@@ -1598,7 +1599,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=151" defer></script>
+    <script src="app.js?v=152" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

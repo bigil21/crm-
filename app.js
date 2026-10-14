@@ -1001,6 +1001,7 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
     salesRep: savedRep || contact.rep || contact.owner || seeded?.salesRep || "Unassigned",
     value: number(contact.value),
     createdAt: contact.createdAt || todayISO(),
+    updatedAt: contact.updatedAt || contact.modifiedAt || contact.createdAt || todayISO(),
     lastContact: contact.lastContact || todayISO(),
     closedDate,
     documents: (contact.documents || []).map((document) =>
@@ -1073,6 +1074,7 @@ function normalizeJob(job, contact = {}) {
     emails: (job.emails || []).map(normalizeJobEmail),
     profitNotes: job.profitNotes || "",
     createdAt: job.createdAt || contact.createdAt || todayISO(),
+    updatedAt: job.updatedAt || job.modifiedAt || job.createdAt || contact.updatedAt || contact.createdAt || todayISO(),
   };
 }
 
@@ -2859,7 +2861,7 @@ function updateContact(contactId, updater) {
   let updatedContact = null;
   state.contacts = state.contacts.map((contact) => {
     if (contact.id !== contactId) return contact;
-    updatedContact = normalizeContact(updater({ ...contact }));
+    updatedContact = normalizeContact({ ...updater({ ...contact }), updatedAt: new Date().toISOString() });
     return updatedContact;
   });
   return updatedContact;
@@ -3025,15 +3027,33 @@ async function reserveSharedSalesNumbers(leadId, jobId = "", estimateId = "") {
   return result;
 }
 
+function leadActivityTimestamp(contact = {}) {
+  const candidates = [contact.updatedAt, contact.createdAt];
+  (contact.updates || []).forEach((update) => candidates.push(update.createdAt));
+  contactJobs(contact).forEach((job) => {
+    candidates.push(job.updatedAt, job.createdAt, job.lastPaymentAt, job.squareLastPaymentAt);
+    (job.costItems || []).forEach((item) => candidates.push(item.updatedAt, item.createdAt, item.date));
+    (job.emails || []).forEach((email) => candidates.push(email.updatedAt, email.createdAt));
+    (job.manualPayments || []).forEach((payment) => candidates.push(payment.updatedAt, payment.createdAt, payment.date));
+  });
+  (contact.documents || []).forEach((document) => candidates.push(document.updatedAt, document.uploadedAt));
+  state.estimates
+    .filter((estimate) => estimate.contactId === contact.id)
+    .forEach((estimate) => candidates.push(estimate.updatedAt, estimate.sentAt, estimate.createdAt, estimate.issueDate));
+  return candidates.reduce((latest, value) => {
+    const timestamp = Date.parse(value || "");
+    return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
+  }, 0);
+}
+
 function sortLeadIntakeChronologically(contacts = []) {
   return contacts
     .map((contact, index) => ({ contact, index }))
     .sort((left, right) => {
-      const leftTime = Date.parse(left.contact.createdAt || "");
-      const rightTime = Date.parse(right.contact.createdAt || "");
-      const safeLeft = Number.isFinite(leftTime) ? leftTime : Number.POSITIVE_INFINITY;
-      const safeRight = Number.isFinite(rightTime) ? rightTime : Number.POSITIVE_INFINITY;
-      return safeLeft - safeRight || left.index - right.index;
+      const activityDifference = leadActivityTimestamp(right.contact) - leadActivityTimestamp(left.contact);
+      if (activityDifference) return activityDifference;
+      const createdDifference = (Date.parse(right.contact.createdAt || "") || 0) - (Date.parse(left.contact.createdAt || "") || 0);
+      return createdDifference || left.index - right.index;
     })
     .map(({ contact }) => contact);
 }
@@ -4772,24 +4792,36 @@ function renderRecordCard(contact) {
   const staleTag = sc ? `<span class="stale-badge ${sc}">${days}d no contact</span>` : "";
   const initials = contactInitials(contact.name);
   const avatarClass = initialsColor(contact.name);
+  const activityTimestamp = leadActivityTimestamp(contact);
+  const createdTimestamp = Date.parse(contact.createdAt || "") || 0;
+  const activityLabel = activityTimestamp > createdTimestamp ? "Updated" : "Added";
+  const activityDate = activityTimestamp ? formatDateTime(new Date(activityTimestamp).toISOString()) : "Date unavailable";
   return `
-    <article class="record-card ${sc}">
-      <div class="record-card-top">
-        <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <strong>${escapeHtml(contact.name)}</strong>
-            <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(contact.status)}</span>
-          </div>
-          <span>${escapeHtml(contact.salesRep || "Unassigned")} &middot; ${jobs.length} job${jobs.length === 1 ? "" : "s"} &middot; ${money.format(value)}</span>
+    <article class="lead-intake-row ${sc}">
+      <div class="lead-intake-person">
+        <div class="lead-card-avatar ${avatarClass}">${initials}</div>
+        <div class="lead-intake-person-copy">
+          <button class="link-button lead-intake-name" type="button" data-action="open-contact" data-contact-id="${contact.id}">${escapeHtml(contact.name)}</button>
+          <span>${escapeHtml(contact.leadNumber || "Lead not numbered yet")}</span>
+          <small>${activityLabel} ${escapeHtml(activityDate)}</small>
         </div>
       </div>
-      ${staleTag}
-      <p>${telLink(contact.phone) || "No phone"}<br />${escapeHtml(contact.email || "No email")}</p>
-      <div class="row-actions">
+      <div class="lead-intake-stage">
+        <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(contact.status)}</span>
+        ${staleTag}
+      </div>
+      <div class="lead-intake-contact">
+        <span>${telLink(contact.phone) || "No phone"}</span>
+        <span>${escapeHtml(contact.email || "No email")}</span>
+      </div>
+      <div class="lead-intake-summary">
+        <strong>${money.format(value)}</strong>
+        <span>${escapeHtml(contact.salesRep || "Unassigned")} &middot; ${jobs.length} job${jobs.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="row-actions lead-intake-row-actions">
         <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
           <span aria-hidden="true" data-icon="open"></span>
-          Open
+          Open Lead
         </button>
         <button class="mini-button" type="button" title="Email client" aria-label="Email ${escapeHtml(
           contact.name,
@@ -5576,6 +5608,7 @@ async function saveLeadJob(event) {
         (soldJobStatuses.includes(formData.get("status")) ? existing?.closedDate || todayISO() : ""),
       address: formData.get("address").trim(),
       notes: formData.get("notes").trim(),
+      updatedAt: new Date().toISOString(),
     },
     contact,
   );
@@ -9659,6 +9692,7 @@ function saveContactFromForm(event) {
     documents: existing?.documents || [],
     updates: existing?.updates || [],
     notes: formData.get("notes").trim(),
+    updatedAt: new Date().toISOString(),
   };
   const currentJobs = existing?.jobs?.length ? existing.jobs : [normalizeJob({}, contact)];
   const primary = normalizeJob(
@@ -9671,6 +9705,7 @@ function saveContactFromForm(event) {
       address: contact.address,
       lastContact: contact.lastContact,
       closedDate: contact.closedDate,
+      updatedAt: contact.updatedAt,
     },
     contact,
   );
