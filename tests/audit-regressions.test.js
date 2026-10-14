@@ -130,6 +130,14 @@ test('high-frequency navigation handlers use the small UI preference writer', ()
   assert.match(source, /leadStageFilter\?\.addEventListener[^]*?saveUiState\(\)[^]*?renderLeadsView\(\)/);
 });
 
+test('dashboard uses a dark brand canvas without a company-logo watermark', () => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+  assert.doesNotMatch(app, /--dashboard-logo-watermark/);
+  assert.doesNotMatch(styles, /var\(--dashboard-logo-watermark\)/);
+  assert.match(styles, /\.workspace\.dashboard-watermark\s*\{[^]*?linear-gradient\(145deg, #070a10/);
+});
+
 test('durable mode never duplicates business rows in legacy background saves', () => {
   for (const admin of [true, false]) {
     const c = functions('app.js', ['companyStatePayload', 'cloudRowsForSave', 'cloudSnapshotPayload'], {

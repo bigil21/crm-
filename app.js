@@ -4049,10 +4049,6 @@ function renderBrandLogo() {
     els.brandLogo.src = logoSource;
     els.brandLogo.alt = state.company.logoDataUrl ? `${state.company.name || "Company"} logo` : "";
   }
-  if (els.workspace) {
-    const logoUrl = logoSource.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-    els.workspace.style.setProperty("--dashboard-logo-watermark", `url("${logoUrl}")`);
-  }
 }
 
 function renderTopbarProfile() {
