@@ -297,6 +297,18 @@ const defaultDocumentCategories = [
   updatedAt: DOCUMENT_CATEGORY_CREATED_AT,
 }));
 
+const defaultCompanyDocumentFolders = [
+  { id: "companyfolder_blank_contract", name: "Blank Contract" },
+  { id: "companyfolder_sample_estimate", name: "Sample Estimate" },
+  { id: "companyfolder_sales_reference", name: "Sales Reference" },
+  { id: "companyfolder_other", name: "Other" },
+].map((folder, displayOrder) => ({
+  ...folder,
+  displayOrder,
+  createdAt: DOCUMENT_CATEGORY_CREATED_AT,
+  updatedAt: DOCUMENT_CATEGORY_CREATED_AT,
+}));
+
 const documentCategoryIcons = ["folder", "file", "check", "dollar", "invoice", "upload"];
 
 const estimateTemplates = [
@@ -562,6 +574,7 @@ let selectedSmartDocumentFieldId = "";
 let smartDocumentRenderToken = 0;
 let smartDocumentAnalysisPdf = null;
 let smartDocumentZoom = 1;
+let selectedCompanyDocumentFolderId = "";
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -728,6 +741,7 @@ const els = {
   reviewsList: document.querySelector("#reviewsList"),
   reportsContent: document.querySelector("#reportsContent"),
   companyDocumentCategory: document.querySelector("#companyDocumentCategory"),
+  createCompanyDocumentFolderButton: document.querySelector("#createCompanyDocumentFolderButton"),
   uploadCompanyDocumentButton: document.querySelector("#uploadCompanyDocumentButton"),
   companyDocumentInput: document.querySelector("#companyDocumentInput"),
   companyDocumentUploadStatus: document.querySelector("#companyDocumentUploadStatus"),
@@ -833,6 +847,7 @@ function loadState(storageKey = activeStorageKey()) {
 
 function normalizeState(nextState) {
   const company = normalizeCompany(nextState.company);
+  company.companyDocumentFolders = companyDocumentFoldersWithLegacy(company.companyDocumentFolders, nextState.companyDocuments || []);
   company.documentCategories = categoriesWithLegacyDocuments(company.documentCategories, nextState.contacts || []);
   const contacts = (nextState.contacts || []).map((contact) => normalizeContact(contact, company.documentCategories));
   return {
@@ -862,7 +877,41 @@ function normalizeCompany(company = {}) {
     officeAddress,
     logoDataUrl: merged.logoDataUrl || "",
     documentCategories: normalizeDocumentCategories(merged.documentCategories),
+    companyDocumentFolders: normalizeCompanyDocumentFolders(merged.companyDocumentFolders),
   };
+}
+
+function normalizeCompanyDocumentFolders(folders) {
+  const source = Array.isArray(folders) ? folders : defaultCompanyDocumentFolders;
+  const seenNames = new Set();
+  return source
+    .map((folder, index) => ({
+      id: String(folder?.id || uid("companyfolder")),
+      name: String(folder?.name || `Folder ${index + 1}`).trim().slice(0, 120),
+      displayOrder: Number.isFinite(Number(folder?.displayOrder)) ? Number(folder.displayOrder) : index,
+      createdAt: folder?.createdAt || new Date().toISOString(),
+      updatedAt: folder?.updatedAt || folder?.createdAt || new Date().toISOString(),
+    }))
+    .filter((folder) => {
+      const key = documentCategoryNameKey(folder.name);
+      if (!key || seenNames.has(key)) return false;
+      seenNames.add(key);
+      return true;
+    })
+    .sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name))
+    .map((folder, displayOrder) => ({ ...folder, displayOrder }));
+}
+
+function companyDocumentFoldersWithLegacy(folders, documents = []) {
+  const migrated = [...normalizeCompanyDocumentFolders(folders)];
+  documents.forEach((document) => {
+    const name = String(document?.category || "Other").trim() || "Other";
+    const key = documentCategoryNameKey(name);
+    if (migrated.some((folder) => folder.id === document.folderId || documentCategoryNameKey(folder.name) === key)) return;
+    const createdAt = document.uploadedAt || DOCUMENT_CATEGORY_CREATED_AT;
+    migrated.push({ id: document.folderId || `companyfolder_${key || migrated.length + 1}`, name, displayOrder: migrated.length, createdAt, updatedAt: createdAt });
+  });
+  return normalizeCompanyDocumentFolders(migrated);
 }
 
 function normalizeDocumentCategory(category = {}, index = 0) {
@@ -1056,6 +1105,7 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     leadId: resolvedLeadId,
     categoryId: isLeadDocument ? document.categoryId || categoryId || category?.id || "" : document.categoryId || "",
     category: isLeadDocument ? category?.name || document.category || "Other" : document.category || "Other",
+    folderId: isLeadDocument ? "" : document.folderId || "",
     type: document.type || "application/octet-stream",
     size: number(document.size),
     dataUrl: document.dataUrl || "",
@@ -5886,7 +5936,7 @@ function nativeSmartDocumentButton(record) {
   const title = supported
     ? "Create, fill, save, and email this document without leaving JobCrest"
     : "Smart Documents currently support saved PDF, PNG, and JPEG files up to 25 MB";
-  return `<button class="secondary-button smart-document-button" type="button" data-action="open-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}"><span aria-hidden="true" data-icon="edit"></span>${label}</button>`;
+  return `<button class="secondary-button smart-document-button" type="button" data-action="open-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}" aria-label="${escapeHtml(label)}"><span aria-hidden="true" data-icon="edit"></span>${label}</button>`;
 }
 
 function zohoSmartDocumentButton(record) {
@@ -5898,7 +5948,7 @@ function zohoSmartDocumentButton(record) {
     ? linked ? "Continue preparing this Smart Document in Zoho Sign" : "Turn this file into a Zoho Sign Smart Document"
     : "Zoho Sign supports common PDF, image, document, and spreadsheet files up to 25 MB";
   return `
-    <button class="secondary-button zoho-smart-button" type="button" data-action="prepare-zoho-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}">
+    <button class="secondary-button zoho-smart-button" type="button" data-action="prepare-zoho-smart-document" data-document-id="${escapeHtml(record.id)}" ${supported ? "" : "disabled"} title="${escapeHtml(title)}" aria-label="${linked ? "Continue Zoho Sign" : "Prepare in Zoho Sign"}">
       <span aria-hidden="true" data-icon="send"></span>${linked ? "Continue Zoho Sign" : "Zoho Sign"}
     </button>`;
 }
@@ -5906,10 +5956,10 @@ function zohoSmartDocumentButton(record) {
 function googleDriveDocumentButton(record) {
   const currentCopy = record.googleDrive?.fileId && record.googleDrive.versionNumber === record.versionNumber;
   if (currentCopy) {
-    return `<a class="secondary-button" href="${escapeHtml(record.googleDrive.webViewLink)}" target="_blank" rel="noopener noreferrer" title="Open the company Drive copy"><span aria-hidden="true" data-icon="folder"></span>Drive</a>`;
+    return `<a class="secondary-button" href="${escapeHtml(record.googleDrive.webViewLink)}" target="_blank" rel="noopener noreferrer" title="Open the company Drive copy" aria-label="Open in Google Drive"><span aria-hidden="true" data-icon="folder"></span>Drive</a>`;
   }
   if (!googleDriveState.configured) return "";
-  return `<button class="secondary-button" type="button" data-action="sync-google-drive-document" data-document-id="${escapeHtml(record.id)}" title="Copy this saved CRM file to the company Drive"><span aria-hidden="true" data-icon="upload"></span>Copy to Drive</button>`;
+  return `<button class="secondary-button" type="button" data-action="sync-google-drive-document" data-document-id="${escapeHtml(record.id)}" title="Copy this saved CRM file to the company Drive" aria-label="Copy to Google Drive"><span aria-hidden="true" data-icon="upload"></span>Copy to Drive</button>`;
 }
 
 async function refreshGoogleDriveStatus(force = false) {
@@ -6768,57 +6818,123 @@ async function submitLeadConversation(event) {
   showToast("Update posted to the shared CRM");
 }
 
+function companyDocumentFolders() {
+  return companyDocumentFoldersWithLegacy(state.company.companyDocumentFolders, state.companyDocuments);
+}
+
+function companyDocumentFolderFor(document, folders = companyDocumentFolders()) {
+  return folders.find((folder) => folder.id === document.folderId) ||
+    folders.find((folder) => documentCategoryNameKey(folder.name) === documentCategoryNameKey(document.category || "Other")) ||
+    folders.find((folder) => documentCategoryNameKey(folder.name) === "other") || folders[0];
+}
+
+function refreshCompanyDocumentFolderOptions(folders = companyDocumentFolders()) {
+  if (!els.companyDocumentCategory) return;
+  const current = selectedCompanyDocumentFolderId || els.companyDocumentCategory.value;
+  els.companyDocumentCategory.innerHTML = folders.map((folder) => `<option value="${escapeHtml(folder.id)}">${escapeHtml(folder.name)}</option>`).join("");
+  els.companyDocumentCategory.value = folders.some((folder) => folder.id === current) ? current : folders[0]?.id || "";
+}
+
+function companyDocumentStatus(document) {
+  if (document.smartDocument?.status) return `Smart Doc · ${document.smartDocument.status}`;
+  if (document.zohoSign?.requestId) return `Zoho Sign · ${document.zohoSign.status || "draft"}`;
+  if (document.googleDrive?.fileId) return `Drive · Version ${document.googleDrive.versionNumber}`;
+  return `Version ${document.versionNumber || 1}`;
+}
+
+function renderCompanyDocumentRow(document, folders = companyDocumentFolders()) {
+  const extension = String(document.name || "").split(".").pop()?.toUpperCase().slice(0, 5) || "FILE";
+  const currentFolder = companyDocumentFolderFor(document, folders);
+  return `<article class="company-document-row">
+    <div class="company-document-file-mark ${extension === "PDF" ? "pdf" : ""}" aria-hidden="true"><span data-icon="file"></span><small>${escapeHtml(extension)}</small></div>
+    <div class="company-document-file-info"><strong>${escapeHtml(document.name)}</strong><span>${escapeHtml(companyDocumentStatus(document))}</span></div>
+    <span class="company-document-date">${escapeHtml(formatDateTime(document.uploadedAt))}</span>
+    <span class="company-document-size">${escapeHtml(formatBytes(document.size))}</span>
+    <div class="row-actions company-document-row-actions">
+      <select class="company-document-move-select" data-company-document-folder="${escapeHtml(document.id)}" aria-label="Move ${escapeHtml(document.name)} to folder" title="Move to another folder">${folders.map((folder) => `<option value="${escapeHtml(folder.id)}" ${folder.id === currentFolder?.id ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}</select>
+      <button class="mini-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}" title="Open ${escapeHtml(document.name)}" aria-label="Open ${escapeHtml(document.name)}"><span aria-hidden="true" data-icon="open"></span></button>
+      ${nativeSmartDocumentButton(document)}
+      ${zohoSmartDocumentButton(document)}
+      ${googleDriveDocumentButton(document)}
+      <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(document.name)}" data-action="rename-company-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="edit"></span></button>
+      <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(document.name)}" data-action="remove-company-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="trash"></span></button>
+    </div>
+  </article>`;
+}
+
 function renderCompanyDocuments() {
   if (!els.companyDocumentsList) return;
   if (canUseCloudSync() && !googleDriveState.loaded && !googleDriveState.loading) void refreshGoogleDriveStatus().then(renderCompanyDocuments);
-  const documents = [...state.companyDocuments].sort(
-    (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
-  );
-  els.companyDocumentsList.innerHTML = documents.length
-    ? documents
-        .map(
-          (document) => `
-        <article class="document-card">
-          <div>
-            <span class="document-category">${escapeHtml(document.category || "Other")}</span>
-            <strong>${escapeHtml(document.name)}</strong>
-            <span>${escapeHtml(formatBytes(document.size))} - ${escapeHtml(formatDateTime(document.uploadedAt))}</span>
-            ${document.smartDocument ? `<span class="smart-document-meta">Smart Document · ${escapeHtml(document.smartDocument.status)}${document.smartDocument.lastEmailedTo ? ` · Emailed to ${escapeHtml(document.smartDocument.lastEmailedTo)}` : ""}</span>` : ""}
-            ${document.zohoSign?.requestId ? `<span class="zoho-smart-meta">Zoho Sign ${escapeHtml(document.zohoSign.status || "draft")} · ${escapeHtml(document.zohoSign.recipientEmail || "recipient pending")}</span>` : ""}
-            ${document.googleDrive?.fileId ? `<span class="zoho-smart-meta">Company Drive copy · Version ${escapeHtml(document.googleDrive.versionNumber)}</span>` : ""}
-          </div>
-          <div class="row-actions">
-            <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}">
-              <span aria-hidden="true" data-icon="download"></span>
-              Download
-            </button>
-            ${nativeSmartDocumentButton(document)}
-            ${zohoSmartDocumentButton(document)}
-            ${googleDriveDocumentButton(document)}
-            <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(
-              document.name,
-            )}" data-action="rename-company-document" data-document-id="${document.id}">
-              <span aria-hidden="true" data-icon="edit"></span>
-            </button>
-            <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(
-              document.name,
-            )}" data-action="remove-company-document" data-document-id="${document.id}">
-              <span aria-hidden="true" data-icon="trash"></span>
-            </button>
-          </div>
-        </article>
-      `,
-        )
-        .join("")
-    : '<div class="empty-state">Upload blank contracts, sample estimates, and sales reference files here</div>';
+  const folders = companyDocumentFolders();
+  state.company.companyDocumentFolders = folders;
+  refreshCompanyDocumentFolderOptions(folders);
+  if (els.createCompanyDocumentFolderButton) els.createCompanyDocumentFolderButton.hidden = !canAction("manageCompany");
+  const documents = [...state.companyDocuments].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+  const activeFolder = folders.find((folder) => folder.id === selectedCompanyDocumentFolderId);
+  if (!activeFolder) {
+    selectedCompanyDocumentFolderId = "";
+    els.companyDocumentsList.innerHTML = `<div class="company-folder-list-header"><span>Name</span><span>Files</span><span>Last updated</span><span></span></div>${folders.map((folder) => {
+      const folderDocuments = documents.filter((document) => companyDocumentFolderFor(document, folders)?.id === folder.id);
+      const updatedAt = folderDocuments[0]?.uploadedAt || folder.updatedAt;
+      return `<article class="company-folder-row" data-action="open-company-document-folder" data-folder-id="${escapeHtml(folder.id)}" tabindex="0" role="button" aria-label="Open ${escapeHtml(folder.name)} folder">
+        <span class="company-folder-icon" aria-hidden="true" data-icon="folder"></span>
+        <div><strong>${escapeHtml(folder.name)}</strong><span>${folderDocuments.length ? `${folderDocuments.length} document${folderDocuments.length === 1 ? "" : "s"}` : "Empty folder"}</span></div>
+        <span>${folderDocuments.length}</span><span>${escapeHtml(formatDateTime(updatedAt))}</span><span class="company-folder-chevron" aria-hidden="true">›</span>
+      </article>`;
+    }).join("") || '<div class="empty-state">Create a folder to organize company documents.</div>'}`;
+  } else {
+    const folderDocuments = documents.filter((document) => companyDocumentFolderFor(document, folders)?.id === activeFolder.id);
+    if (els.companyDocumentCategory) els.companyDocumentCategory.value = activeFolder.id;
+    els.companyDocumentsList.innerHTML = `<div class="company-document-folder-toolbar">
+      <button class="ghost-button" type="button" data-action="close-company-document-folder"><span aria-hidden="true" data-icon="arrow-left"></span>All folders</button>
+      <div><span class="company-folder-icon" aria-hidden="true" data-icon="folder"></span><div><strong>${escapeHtml(activeFolder.name)}</strong><span>${folderDocuments.length} document${folderDocuments.length === 1 ? "" : "s"}</span></div></div>
+    </div><div class="company-document-list-header"><span>Document</span><span>Uploaded</span><span>Size</span><span>Actions</span></div>
+    <div class="company-document-file-list">${folderDocuments.map((document) => renderCompanyDocumentRow(document, folders)).join("") || '<div class="empty-state">This folder is empty. Choose it above and upload documents.</div>'}</div>`;
+  }
   hydrateIcons(els.companyDocumentsList);
+}
+
+function createCompanyDocumentFolder() {
+  if (!requireAction("manageCompany")) return;
+  const name = String(window.prompt("New folder name", "") || "").trim().slice(0, 120);
+  if (!name) return;
+  const folders = companyDocumentFolders();
+  if (folders.some((folder) => documentCategoryNameKey(folder.name) === documentCategoryNameKey(name))) return showToast("A folder with that name already exists");
+  const now = new Date().toISOString();
+  const folder = { id: uid("companyfolder"), name, displayOrder: folders.length, createdAt: now, updatedAt: now };
+  state.company.companyDocumentFolders = [...folders, folder];
+  selectedCompanyDocumentFolderId = folder.id;
+  saveState();
+  renderCompanyDocuments();
+}
+
+async function moveCompanyDocumentToFolder(documentId, folderId) {
+  if (!requireAction("manageDocuments")) return false;
+  const folders = companyDocumentFolders();
+  const folder = folders.find((item) => item.id === folderId);
+  const document = state.companyDocuments.find((item) => item.id === documentId);
+  if (!folder || !document) return false;
+  if (companyDocumentFolderFor(document, folders)?.id === folder.id) return true;
+  state.companyDocuments = state.companyDocuments.map((item) => item.id === documentId ? { ...item, folderId: folder.id, category: folder.name } : item);
+  saveState({ localOnly: true });
+  renderCompanyDocuments();
+  const saved = !canUseCloudSync() || await persistCompanyDocumentRecords([documentId]);
+  if (!saved) {
+    queueDurableRecordsSave();
+    setSaveState(els.companyDocumentUploadStatus, "The document moved locally, but the shared folder change is still retrying.", "error");
+    return false;
+  }
+  queueCloudSave();
+  return true;
 }
 
 async function uploadCompanyDocuments(files) {
   if (!requireAction("manageDocuments")) return;
   if (!files?.length) return;
   const selectedFiles = validateDocumentFiles(files);
-  const category = els.companyDocumentCategory.value || "Other";
+  const folders = companyDocumentFolders();
+  const folder = folders.find((item) => item.id === els.companyDocumentCategory.value) || folders[0];
+  if (!folder) return showToast("Create or select a folder first");
   els.uploadCompanyDocumentButton.disabled = true;
   setSaveState(
     els.companyDocumentUploadStatus,
@@ -6831,11 +6947,12 @@ async function uploadCompanyDocuments(files) {
     const { documents, failures } = await uploadDocumentBatch(
       selectedFiles, async (file) => {
         const id = uid("doc");
-        const stored = await storeDocumentFile(file, { documentId: id, leadId: "company", categoryId: category });
+        const stored = await storeDocumentFile(file, { documentId: id, leadId: "company", categoryId: folder.id });
         return normalizeDocument({
           id,
           name: file.name,
-          category,
+          folderId: folder.id,
+          category: folder.name,
           type: file.type || "application/octet-stream",
           size: file.size,
           ...stored,
@@ -10847,6 +10964,14 @@ function bindEvents() {
     if (action === "rename-company-document") {
       renameCompanyDocument(actionButton.dataset.documentId);
     }
+    if (action === "open-company-document-folder") {
+      selectedCompanyDocumentFolderId = actionButton.dataset.folderId || "";
+      renderCompanyDocuments();
+    }
+    if (action === "close-company-document-folder") {
+      selectedCompanyDocumentFolderId = "";
+      renderCompanyDocuments();
+    }
     if (action === "edit-document-category") {
       editDocumentCategory(actionButton.dataset.categoryId, actionButton.closest(".document-category-admin-row"));
     }
@@ -11085,6 +11210,18 @@ function bindEvents() {
     if (!requireAction("manageDocuments")) return;
     els.companyDocumentInput.value = "";
     els.companyDocumentInput.click();
+  });
+  els.createCompanyDocumentFolderButton?.addEventListener("click", createCompanyDocumentFolder);
+  els.companyDocumentsList?.addEventListener("keydown", (event) => {
+    const folder = event.target.closest('[data-action="open-company-document-folder"]');
+    if (!folder || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    selectedCompanyDocumentFolderId = folder.dataset.folderId || "";
+    renderCompanyDocuments();
+  });
+  els.companyDocumentsList?.addEventListener("change", (event) => {
+    const selector = event.target.closest("[data-company-document-folder]");
+    if (selector) void moveCompanyDocumentToFolder(selector.dataset.companyDocumentFolder, selector.value);
   });
   els.companyDocumentInput.addEventListener("change", async (event) => {
     const files = [...(event.target.files || [])];

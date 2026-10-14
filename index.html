@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=68" />
+    <link rel="stylesheet" href="styles.css?v=69" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1080,18 +1080,17 @@
           <div class="view-toolbar">
             <div>
               <p class="eyebrow">Company library</p>
-              <h2>Blank contracts and sample estimates</h2>
+              <h2>Company files and folders</h2>
             </div>
             <div class="detail-actions">
               <label>
-                Category
-                <select id="companyDocumentCategory">
-                  <option>Blank Contract</option>
-                  <option>Sample Estimate</option>
-                  <option>Sales Reference</option>
-                  <option>Other</option>
-                </select>
+                Folder
+                <select id="companyDocumentCategory"></select>
               </label>
+              <button class="secondary-button" type="button" id="createCompanyDocumentFolderButton">
+                <span aria-hidden="true" data-icon="plus"></span>
+                New Folder
+              </button>
               <button class="secondary-button" type="button" id="uploadCompanyDocumentButton">
                 <span aria-hidden="true" data-icon="upload"></span>
                 Upload Document
@@ -1599,7 +1598,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=150" defer></script>
+    <script src="app.js?v=151" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>
