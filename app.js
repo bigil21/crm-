@@ -998,7 +998,7 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
     ownerUserId: contact.ownerUserId || contact.owner_id || "",
     ownerEmail: contact.ownerEmail || contact.owner_email || "",
     ownerName: contact.ownerName || contact.owner_name || "",
-    salesRep: savedRep || contact.rep || contact.owner || seeded?.salesRep || "Unassigned",
+    salesRep: normalizePersonName(savedRep || contact.rep || contact.owner || seeded?.salesRep || "Unassigned"),
     value: number(contact.value),
     createdAt: contact.createdAt || todayISO(),
     updatedAt: contact.updatedAt || contact.modifiedAt || contact.createdAt || todayISO(),
@@ -1066,7 +1066,7 @@ function normalizeJob(job, contact = {}) {
     ownerUserId: job.ownerUserId || contact.ownerUserId || "",
     ownerEmail: job.ownerEmail || contact.ownerEmail || "",
     ownerName: job.ownerName || contact.ownerName || "",
-    salesRep: job.salesRep || contact.salesRep || "Unassigned",
+    salesRep: normalizePersonName(job.salesRep || contact.salesRep || "Unassigned"),
     lastContact: job.lastContact || contact.lastContact || todayISO(),
     closedDate,
     notes: job.notes || "",
@@ -1268,7 +1268,7 @@ function normalizeEstimate(estimate, contacts = []) {
       estimate.projectTitle ||
       estimate.title ||
       `${job?.name || contact?.name || "Customer"} Exterior Estimate`,
-    projectManager: estimate.projectManager || job?.salesRep || contact?.salesRep || "",
+    projectManager: normalizePersonName(estimate.projectManager || job?.salesRep || contact?.salesRep || ""),
     ownerUserId: estimate.ownerUserId || contact?.ownerUserId || "",
     ownerEmail: estimate.ownerEmail || contact?.ownerEmail || "",
     ownerName: estimate.ownerName || contact?.ownerName || "",
@@ -2716,11 +2716,12 @@ function canManageManualPayments() {
 
 function currentUserFromAuthSession(session) {
   return {
-    name:
+    name: normalizePersonName(
       session.user?.user_metadata?.name ||
       session.user?.user_metadata?.full_name ||
       session.user?.email?.split("@")[0] ||
       "CRM User",
+    ),
     email: session.user?.email || "",
     role: window.RooflineAuth?.normalizeRole(session.role || session.user?.app_metadata?.role) || "viewer",
   };
@@ -3264,6 +3265,18 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
+function normalizePersonName(value = "") {
+  const name = String(value || "").trim().replace(/\s+/g, " ");
+  const parts = name.split(" ").filter(Boolean);
+  if (parts.length >= 4 && parts.length % 2 === 0) {
+    const midpoint = parts.length / 2;
+    const first = parts.slice(0, midpoint).join(" ");
+    const second = parts.slice(midpoint).join(" ");
+    if (first.localeCompare(second, undefined, { sensitivity: "accent" }) === 0) return first;
+  }
+  return name;
+}
+
 function nl2br(value = "") {
   return escapeHtml(value).replaceAll("\n", "<br />");
 }
@@ -3299,13 +3312,18 @@ function formatBytes(size) {
 }
 
 function uniqueSalesReps() {
-  return [
-    ...new Set([
-      ...state.contacts.map((contact) => contact.salesRep).filter(Boolean),
-      ...allJobs().map((job) => job.salesRep).filter(Boolean),
-      ...state.calendarTasks.map((task) => task.rep).filter(Boolean),
-    ]),
-  ].sort((a, b) => a.localeCompare(b));
+  const unique = new Map();
+  [
+    ...state.contacts.map((contact) => contact.salesRep),
+    ...allJobs().map((job) => job.salesRep),
+    ...state.calendarTasks.map((task) => task.rep),
+    state.currentUser.name,
+  ].forEach((value) => {
+    const name = normalizePersonName(value);
+    const key = name.toLocaleLowerCase();
+    if (name && name !== "Unassigned" && !unique.has(key)) unique.set(key, name);
+  });
+  return [...unique.values()].sort((a, b) => a.localeCompare(b));
 }
 
 function taskDueTime(task) {
@@ -5601,7 +5619,7 @@ async function saveLeadJob(event) {
       status: formData.get("status"),
       value: number(formData.get("value")),
       contractValue: number(formData.get("value")),
-      salesRep: formData.get("salesRep").trim() || contact.salesRep || "Unassigned",
+      salesRep: normalizePersonName(formData.get("salesRep").trim() || contact.salesRep || "Unassigned"),
       lastContact: formData.get("lastContact"),
       closedDate:
         formData.get("closedDate") ||
@@ -9684,7 +9702,7 @@ function saveContactFromForm(event) {
     phone: formatPhoneNumber(formData.get("phone")),
     address: formData.get("address").trim(),
     value: number(formData.get("value")),
-    salesRep: formData.get("salesRep").trim() || "Unassigned",
+    salesRep: normalizePersonName(formData.get("salesRep").trim() || "Unassigned"),
     lastContact: formData.get("lastContact"),
     closedDate:
       formData.get("closedDate") ||
@@ -9788,7 +9806,7 @@ async function createEstimate(contactId, shouldRender = true, jobId = "") {
     estimateNumber: reservation?.estimateNumber || nextEstimateNumber(),
     projectTitle: job?.name || "Exterior Restoration Estimate",
     status: "Draft",
-    projectManager: job?.salesRep || contact.salesRep || state.currentUser.name || "",
+    projectManager: normalizePersonName(job?.salesRep || contact.salesRep || state.currentUser.name || ""),
     salesRepEmail: state.currentUser.email || state.company.email || "",
     salesRepPhone: state.currentUser.phone || state.company.phone || "",
     issueDate: todayISO(),
@@ -9928,6 +9946,8 @@ function updateSelectedEstimateFromField(fieldName, value) {
 
   if (["taxRate", "deposit"].includes(fieldName)) {
     estimate[fieldName] = number(value);
+  } else if (fieldName === "projectManager") {
+    estimate[fieldName] = normalizePersonName(value);
   } else {
     estimate[fieldName] = value;
   }
@@ -9942,7 +9962,7 @@ function updateSelectedEstimateFromField(fieldName, value) {
     estimate.jobId = numbered?.job?.id || primaryJob(contact)?.id || "";
     estimate.leadNumber = contact?.leadNumber || "";
     estimate.projectNumber = numbered?.job?.projectNumber || "";
-    estimate.projectManager = contact?.salesRep || estimate.projectManager;
+    estimate.projectManager = normalizePersonName(contact?.salesRep || estimate.projectManager);
     state.selectedContactId = value;
     renderEstimateForm(estimate);
   }
@@ -10720,7 +10740,7 @@ function saveCompany(event) {
   if (!requireAction("manageCompany")) return;
   const formData = new FormData(els.companyForm);
   state.currentUser = {
-    name: formData.get("userName").trim() || defaultCurrentUser.name,
+    name: normalizePersonName(formData.get("userName").trim() || defaultCurrentUser.name),
     email: formData.get("userEmail").trim() || state.company.email || defaultCurrentUser.email,
     phone: formatPhoneNumber(formData.get("userPhone")) || state.currentUser.phone || "",
     role: formData.get("userRole").trim() || defaultCurrentUser.role,
