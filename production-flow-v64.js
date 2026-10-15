@@ -227,7 +227,7 @@
     return `
       <article class="lead-card ${sc}">
         <header>
-          <div class="lead-card-avatar ${avatarClass}">${initials}</div>
+          <div class="lead-card-avatar ${avatarClass}">${escapeHtml(initials)}</div>
           <div class="lead-card-header-text">
             <h4>
               <button class="link-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
@@ -336,7 +336,9 @@
     allJobs()
       .filter((job) => isSoldStatus(job.status) && (job.closedDate || job.lastContact || job.createdAt))
       .forEach((job) => {
-        const d = new Date(job.closedDate || job.lastContact || job.createdAt);
+        const raw = String(job.closedDate || job.lastContact || job.createdAt);
+        // Date-only values are local days; new Date("2026-10-01") would be Sept 30 in New York.
+        const d = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(`${raw}T00:00:00`) : new Date(raw);
         const bucket = months.find((m) => m.year === d.getFullYear() && m.month === d.getMonth());
         if (bucket) bucket.value += safeNumber(job.value);
       });
@@ -449,7 +451,7 @@
               return `
                 <article class="record-card">
                   <div class="record-card-top">
-                    <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
+                    <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${escapeHtml(initials)}</div>
                     <div style="flex:1;min-width:0">
                       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                         <strong>${escapeHtml(contact.name)}</strong>

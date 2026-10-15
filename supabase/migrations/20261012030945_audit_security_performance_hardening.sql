@@ -9,15 +9,21 @@ alter function public.crm_app_role() set search_path = '';
 alter function public.can_manage_team_crm() set search_path = '';
 alter function public.set_updated_at() set search_path = '';
 alter function public.is_crm_admin() set search_path = '';
-alter function public.apply_crm_admin_metadata() set search_path = '';
 
 -- Generic trigger helpers are implementation details, not public RPCs.
 revoke execute on function public.set_updated_at() from public, anon, authenticated;
 
 -- The Auth trigger helper is not an RPC. It must never be directly callable
 -- from PostgREST. The trigger itself continues to execute as its owner.
-revoke execute on function public.apply_crm_admin_metadata() from public, anon, authenticated;
-grant execute on function public.apply_crm_admin_metadata() to supabase_auth_admin;
+-- Older databases have this helper; databases built from the current schema
+-- do not, so only harden it when it exists (otherwise this migration aborts).
+do $$ begin
+  if to_regprocedure('public.apply_crm_admin_metadata()') is not null then
+    alter function public.apply_crm_admin_metadata() set search_path = '';
+    revoke execute on function public.apply_crm_admin_metadata() from public, anon, authenticated;
+    grant execute on function public.apply_crm_admin_metadata() to supabase_auth_admin;
+  end if;
+end $$;
 
 -- Anonymous sessions have no reason to call these authorization helpers.
 -- Authenticated access is retained because RLS policies and the intentional

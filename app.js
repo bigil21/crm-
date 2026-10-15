@@ -3129,7 +3129,7 @@ function leadActivityTimestamp(contact = {}) {
     .filter((estimate) => estimate.contactId === contact.id)
     .forEach((estimate) => candidates.push(estimate.updatedAt, estimate.sentAt, estimate.createdAt, estimate.issueDate));
   return candidates.reduce((latest, value) => {
-    const timestamp = Date.parse(value || "");
+    const timestamp = localTimestamp(value);
     return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
   }, 0);
 }
@@ -3333,11 +3333,21 @@ function initialsColor(name = "") {
   return colors[Math.abs(hash) % colors.length];
 }
 
+// Date-only strings ("2026-10-01") are local calendar days, not UTC midnight.
+function localTimestamp(value) {
+  const text = String(value || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00`).getTime() : Date.parse(text);
+}
+
 function staleLeadDays(contact) {
   if (!contact.lastContact) return 0;
-  const last = new Date(contact.lastContact);
-  const now = new Date();
-  return Math.floor((now - last) / (1000 * 60 * 60 * 24));
+  const last = localTimestamp(contact.lastContact);
+  if (!Number.isFinite(last)) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const lastDay = new Date(last);
+  lastDay.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.round((today - lastDay) / (1000 * 60 * 60 * 24)));
 }
 
 function staleClass(contact) {
@@ -3385,7 +3395,10 @@ function nl2br(value = "") {
 
 function formatDate(value) {
   if (!value) return "Not set";
-  const date = new Date(`${value}T00:00:00`);
+  const text = String(value);
+  // Date-only values are local calendar days; full timestamps (e.g. Square's paidAt) parse as-is.
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00`) : new Date(text);
+  if (Number.isNaN(date.getTime())) return "Not set";
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -4761,7 +4774,7 @@ function renderLeadCard(contact) {
   return `
     <article class="lead-card ${sc}">
       <header>
-        <div class="lead-card-avatar ${avatarClass}">${initials}</div>
+        <div class="lead-card-avatar ${avatarClass}">${escapeHtml(initials)}</div>
         <div class="lead-card-header-text">
           <h4>
             <button class="link-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
@@ -4983,13 +4996,13 @@ function renderRecordCard(contact) {
   const initials = contactInitials(contact.name);
   const avatarClass = initialsColor(contact.name);
   const activityTimestamp = leadActivityTimestamp(contact);
-  const createdTimestamp = Date.parse(contact.createdAt || "") || 0;
+  const createdTimestamp = localTimestamp(contact.createdAt) || 0;
   const activityLabel = activityTimestamp > createdTimestamp ? "Updated" : "Added";
   const activityDate = activityTimestamp ? formatDateTime(new Date(activityTimestamp).toISOString()) : "Date unavailable";
   return `
     <article class="lead-intake-row ${sc}">
       <div class="lead-intake-person">
-        <div class="lead-card-avatar ${avatarClass}">${initials}</div>
+        <div class="lead-card-avatar ${avatarClass}">${escapeHtml(initials)}</div>
         <div class="lead-intake-person-copy">
           <button class="link-button lead-intake-name" type="button" data-action="open-contact" data-contact-id="${contact.id}">${escapeHtml(contact.name)}</button>
           <span>${escapeHtml(contact.leadNumber || "Lead not numbered yet")}</span>
@@ -5046,9 +5059,14 @@ function contactPaymentMetrics(contact) {
   );
 }
 
+// Round down so "100%" only appears when the balance is actually paid.
+function floorPercent(value) {
+  return Math.floor(Number(value || 0) + 1e-6);
+}
+
 function paymentProgressMarkup(metrics, { compact = false } = {}) {
   const percentage = metrics.contractValue ? Math.min(100, (metrics.paidAmount / metrics.contractValue) * 100) : 0;
-  const rounded = Math.round(percentage);
+  const rounded = floorPercent(percentage);
   return `
     <div class="payment-progress ${compact ? "payment-progress-compact" : ""}">
       <div class="payment-progress-ring" style="--payment-progress:${rounded * 3.6}deg">
@@ -5135,7 +5153,7 @@ function renderLeadDetail() {
   const days = staleLeadDays(contact);
   els.leadOverviewPanel.innerHTML = `
     <div class="overview-hero">
-      <div class="lead-card-avatar ${avatarClass}" style="width:52px;height:52px;font-size:19px;flex-shrink:0">${initials}</div>
+      <div class="lead-card-avatar ${avatarClass}" style="width:52px;height:52px;font-size:19px;flex-shrink:0">${escapeHtml(initials)}</div>
       <div class="overview-hero-text">
         <h2 style="margin:0;font-size:20px">${escapeHtml(contact.name)}</h2>
         <p style="margin:4px 0 0;color:var(--muted);font-size:13px">${escapeHtml(contact.source || "No source")}</p>
@@ -5380,7 +5398,7 @@ function renderLeadPayments(contact) {
   const overpayment = Math.max(metrics.paidAmount - metrics.contractValue, 0);
   const balanceLabel = overpayment ? "Customer Credit" : "Balance Due";
   const balanceAmount = overpayment || metrics.balance;
-  const roundedPercent = Math.round(metrics.percentage);
+  const roundedPercent = floorPercent(metrics.percentage);
 
   if (els.paymentSummary) {
     els.paymentSummary.innerHTML = [
@@ -5761,6 +5779,48 @@ function fillJobForm(job = {}) {
     const field = els.leadJobForm.elements[key];
     if (field) field.value = key === "value" ? formatCurrencyInput(value) : value ?? "";
   });
+  rememberFormBaseline(els.leadJobForm);
+}
+
+// Remember what an edit form showed when it was filled. On save, fields this
+// user did not touch keep the latest saved value, so a teammate's edit made
+// while the form was open is not silently overwritten.
+function rememberFormBaseline(form) {
+  if (!form) return;
+  const values = {};
+  new FormData(form).forEach((value, key) => {
+    if (typeof value === "string") values[key] = value;
+  });
+  form.dataset.baseline = JSON.stringify(values);
+}
+
+function unchangedFormFields(form, formData) {
+  let baseline = null;
+  try { baseline = JSON.parse(form?.dataset.baseline || "null"); } catch { baseline = null; }
+  if (!baseline) return new Set();
+  return new Set(Object.keys(baseline).filter((key) => String(formData.get(key) ?? "") === baseline[key]));
+}
+
+function keepLatestUnchanged(target, latest, unchanged, fields) {
+  if (!latest) return;
+  fields.forEach((key) => {
+    if (unchanged.has(key) && Object.prototype.hasOwnProperty.call(latest, key)) target[key] = latest[key];
+  });
+  // closedDate is filled automatically when the status changes, so only keep the
+  // saved one when neither field was touched.
+  if (unchanged.has("closedDate") && unchanged.has("status") && Object.prototype.hasOwnProperty.call(latest, "closedDate")) {
+    target.closedDate = latest.closedDate;
+  }
+}
+
+function latestUnchangedJobFields(existing, unchanged) {
+  const kept = {};
+  keepLatestUnchanged(kept, existing, unchanged, ["name", "status", "salesRep", "lastContact", "address", "notes"]);
+  if (existing && unchanged.has("value")) {
+    kept.value = existing.value;
+    kept.contractValue = existing.contractValue ?? existing.value;
+  }
+  return kept;
 }
 
 async function saveLeadJob(event) {
@@ -5799,6 +5859,7 @@ async function saveLeadJob(event) {
       address: formData.get("address").trim(),
       notes: formData.get("notes").trim(),
       updatedAt: new Date().toISOString(),
+      ...latestUnchangedJobFields(existing, unchangedFormFields(els.leadJobForm, formData)),
     },
     contact,
   );
@@ -8431,7 +8492,7 @@ function renderTasksView() {
 }
 
 function squareStatusPill(estimate) {
-  const percent = Math.round(number(estimate.paymentPercent));
+  const percent = floorPercent(number(estimate.paymentPercent));
   if (percent >= 100 || estimate.squareStatus === "PAID") return `<span class="status-pill pill-won">Paid 100%</span>`;
   if (number(estimate.paidAmount) > 0) return `<span class="status-pill pill-inspection">${percent}% paid</span>`;
   if (estimate.squareStatus === "PAID" || estimate.paidAt) return `<span class="status-pill pill-won">Paid ✓</span>`;
@@ -8456,7 +8517,8 @@ async function squareApiHeaders() {
 function squareInvoiceEmailDraft(estimate, contact) {
   const totals = totalsFor(estimate);
   const contractValue = number(estimate.contractValue) || totals.total;
-  const amountDueNow = number(estimate.deposit) || contractValue;
+  const paid = number(estimate.paidAmount);
+  const amountDueNow = Math.max(number(estimate.deposit) - paid, 0) || Math.max(contractValue - paid, 0);
   const firstName = String(contact?.name || "there").trim().split(/\s+/)[0] || "there";
   const invoiceLabel = estimate.squareInvoiceNumber
     ? `#${estimate.squareInvoiceNumber}`
@@ -8906,7 +8968,7 @@ function renderInvoicesView() {
         const isPaid = paymentPercent >= 100 || estimate.squareStatus === "PAID";
         const isSent = !!estimate.squareInvoiceId && !isPaid;
         const canSend = currentRole() === "admin" && !estimate.squareInvoiceId && estimate.status === "Won" && Boolean(contact?.email);
-        const emailDraft = estimate.squareInvoiceUrl
+        const emailDraft = estimate.squareInvoiceUrl && !isPaid
           ? squareInvoiceEmailDraft(estimate, contact)
           : null;
         const emailPaymentUrl = emailDraft
@@ -8918,7 +8980,7 @@ function renderInvoicesView() {
         return `
           <article class="record-card ${isPaid ? "invoice-paid" : ""}">
             <div class="record-card-top">
-              <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
+              <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${escapeHtml(initials)}</div>
               <div style="flex:1;min-width:0">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <strong>${escapeHtml(estimate.projectNumber || estimate.leadNumber || estimate.estimateNumber)}</strong>
@@ -9011,7 +9073,7 @@ function renderReviewsView() {
         return `
           <article class="record-card">
             <div class="record-card-top">
-              <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${initials}</div>
+              <div class="lead-card-avatar ${avatarClass}" style="width:36px;height:36px;font-size:13px;flex-shrink:0">${escapeHtml(initials)}</div>
               <div style="flex:1;min-width:0">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <strong>${escapeHtml(contact.name)}</strong>
@@ -9879,6 +9941,7 @@ function openContactDialog(contactId, defaults = {}) {
       field.value = key === "phone" ? formatPhoneNumber(value) : key === "value" ? formatCurrencyInput(value) : value ?? "";
     }
   });
+  rememberFormBaseline(els.contactForm);
 
   els.contactDialog.showModal();
 }
@@ -9910,6 +9973,8 @@ function saveContactFromForm(event) {
     notes: formData.get("notes").trim(),
     updatedAt: new Date().toISOString(),
   };
+  keepLatestUnchanged(contact, existing, unchangedFormFields(els.contactForm, formData),
+    ["type", "status", "name", "source", "email", "phone", "address", "value", "salesRep", "lastContact", "notes"]);
   const currentJobs = existing?.jobs?.length ? existing.jobs : [normalizeJob({}, contact)];
   const primary = normalizeJob(
     {
@@ -9917,6 +9982,7 @@ function saveContactFromForm(event) {
       name: currentJobs[0]?.name || `${contact.name} Job`,
       status: contact.status,
       value: contact.value,
+      contractValue: contact.value,
       salesRep: contact.salesRep,
       address: contact.address,
       lastContact: contact.lastContact,
@@ -10187,8 +10253,13 @@ function updateSelectedEstimateFromField(fieldName, value) {
     }
   }
 
+  if (fieldName === "deposit" && /%/.test(String(value))) {
+    showToast("Enter the deposit as a dollar amount, not a percentage.");
+    renderEstimateForm(estimate);
+    return;
+  }
   if (["taxRate", "deposit"].includes(fieldName)) {
-    estimate[fieldName] = number(value);
+    estimate[fieldName] = Math.max(0, number(value));
   } else if (fieldName === "projectManager") {
     estimate[fieldName] = normalizePersonName(value);
   } else {

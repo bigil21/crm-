@@ -726,6 +726,8 @@
     });
   }
 
+  let postingConversation = false;
+
   async function submitJobConversation(event) {
     const form = event.target;
     if (form?.id !== "leadConversationForm" || form.dataset.jobConversationEnhanced !== VERSION) return;
@@ -740,15 +742,23 @@
       showToast("Add a project update before posting");
       return;
     }
-
-    const posted = await appendMessage(contact, job, message);
+    // Ignore repeat clicks while the first post is still saving.
+    if (postingConversation) return;
+    postingConversation = true;
+    let posted;
+    try {
+      posted = await appendMessage(contact, job, message);
+    } finally {
+      postingConversation = false;
+    }
     selectedMentionKeys = new Set();
     mentionSuggestionQuery = "";
     state.leadDetailTab = "conversation";
     render();
     if (posted.syncState === "saved") {
       const textarea = document.querySelector("#jobConversationMessage");
-      if (textarea) textarea.value = "";
+      // Only clear what was posted; keep anything typed while it was saving.
+      if (textarea && textarea.value.trim() === message) textarea.value = "";
     }
     const mentionCount = posted.mentions.length;
     if (posted.syncState === "failed") {

@@ -268,9 +268,9 @@ async function sendGmailMessage(fetchImpl, accessToken, email) {
     body: JSON.stringify(gmailMessageResource(email)),
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok || typeof result.id !== "string" || typeof result.threadId !== "string") {
-    throw new Error(response.status === 401 ? "google_access_expired" : "gmail_send_failed");
-  }
+  if (!response.ok) throw new Error(response.status === 401 ? "google_access_expired" : "gmail_send_failed");
+  // Gmail accepted the request but the reply is unreadable: the email may have gone out.
+  if (typeof result.id !== "string" || typeof result.threadId !== "string") throw new Error("gmail_send_unconfirmed");
   return { messageId: safeIdentifier(result.id, "gmail_message"), threadId: safeIdentifier(result.threadId, "gmail_thread") };
 }
 

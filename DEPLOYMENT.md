@@ -15,6 +15,8 @@ Configure production values from `.env.example` in Render. Require authenticatio
 
 1. Take and verify a production backup.
 2. Apply reviewed files from `supabase/migrations` in order. Do not rerun an old schema snapshot over a migrated database.
+   Several files share a date prefix, so sorting by name is not enough: apply `20260915_square_webhook_inbox.sql` before `20260915_square_payment_reconciliation.sql` (the second depends on the first).
+   Apply `20261015120000_smart_document_single_email_send.sql` to stop two people emailing the same Smart Document at once.
 3. Keep the `crm-documents` bucket private.
 4. Verify durable record counts, relationships, storage paths, conversations, audit history, and recovery backups with `supabase/go-live-verification.sql`.
 
@@ -35,3 +37,7 @@ JWT user metadata, environment admin-email lists, and browser configuration do n
 ## Release gate
 
 Run `npm ci`, `npm run check:go-live`, and the local browser pilot. Review the diff, migration plan, and rollback plan. Push and deploy only after explicit approval. After Render reports healthy, verify sign-in, role boundaries, one full lead workflow, estimate PDF generation, document upload/download, payment refresh, and `/api/health` on the production domain.
+
+## Vercel (alternative to Render)
+
+`vercel.json` routes every request through `api/index.js` so sign-in, the APIs, OAuth callbacks and the Square webhook work, and only the allowlisted browser files are served. Background jobs do not run on Vercel: the Square payment worker and the daily recovery backup only run under `npm start` (Render). On Vercel the browser reads Square balances directly instead, and recovery backups need Render or a scheduled job.

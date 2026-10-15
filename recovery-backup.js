@@ -56,9 +56,9 @@ async function createDailyBackup(config, date = new Date()) {
   const companyFilter = `eq.${config.companyId}`;
   const [companyRows, records, auditEvents, conversationMessages] = await Promise.all([
     fetchRows(config, "crm_state", { id: `eq.${config.companyId}:company` }),
-    fetchRows(config, "crm_records", { company_state_id: companyFilter, order: "updated_at.asc" }),
-    fetchRows(config, "crm_audit_events", { company_state_id: companyFilter, order: "created_at.asc" }),
-    fetchRows(config, "crm_conversation_messages", { company_state_id: companyFilter, order: "created_at.asc" }),
+    fetchRows(config, "crm_records", { company_state_id: companyFilter, order: "record_type.asc,id.asc" }),
+    fetchRows(config, "crm_audit_events", { company_state_id: companyFilter, order: "created_at.asc,id.asc" }),
+    fetchRows(config, "crm_conversation_messages", { company_state_id: companyFilter, order: "created_at.asc,id.asc" }),
   ]);
   const payload = {
     schemaVersion: 3,

@@ -5,7 +5,7 @@ const crypto = require("node:crypto");
 const {
   createOAuthState, verifyOAuthState, createAuthorizationUrl, exchangeAuthorizationCode,
   refreshAccessToken, revokeGoogleToken, fetchGoogleIdentity, encryptSecret, decryptSecret, upsertCalendarEvent, deleteCalendarEvent,
-  GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE, sendGmailMessage, fetchGmailThread,
+  GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE, sendGmailMessage, fetchGmailThread, gmailMessageResource,
 } = require(path.join(__dirname, "google-workspace"));
 const {
   safeDriveId, exchangeServiceAccountToken, ensureDocumentFolder, uploadDocument: uploadGoogleDriveDocument,
@@ -109,7 +109,9 @@ function authConfigScript() {
     syncEnabled: process.env.SUPABASE_SYNC_ENABLED === "true",
     stateId: process.env.SUPABASE_STATE_ID || "coastal-crest",
     stagingTestIdentity: stagingTestIdentity(),
-    squarePaymentWorkerEnabled: process.env.SQUARE_PAYMENT_WORKER_ENABLED === "true" && Boolean(squareWorkerConfig() && squareToken() && squareStatusSafeId(process.env.SQUARE_MERCHANT_ID)),
+    // Background workers never run inside a Vercel function, so don't tell the
+    // browser to rely on them there.
+    squarePaymentWorkerEnabled: !process.env.VERCEL && process.env.SQUARE_PAYMENT_WORKER_ENABLED === "true" && Boolean(squareWorkerConfig() && squareToken() && squareStatusSafeId(process.env.SQUARE_MERCHANT_ID)),
   };
   return `window.ROOFLINE_SUPABASE_CONFIG = ${JSON.stringify(config)};`;
 }
@@ -413,13 +415,25 @@ async function handleGoogleCallback(url, res) {
   }
 }
 
+function driveCategoryId(data = {}) {
+  const valid = (value) => /^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(String(value || "")) ? String(value) : "";
+  const slug = String(data.category || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120);
+  // Keep the IDs earlier versions used (e.g. "Other") so existing Drive folders are reused.
+  return valid(data.categoryId) || valid(data.category) || valid(data.folderId) || (slug ? `category-${slug}` : "other");
+}
+
 async function handleGoogleDisconnect(req, res, user) {
   const config = googleWorkspaceConfig();
   const store = integrationStoreConfig();
   if (!config || !store) { sendJson(res, 503, { error: "Google Workspace is not configured." }); return; }
   const connection = await getGoogleConnection(store, user.email);
   if (connection?.encrypted_refresh_token) {
-    await revokeGoogleToken(fetch, decryptSecret(connection.encrypted_refresh_token, config.encryptionKey));
+    try {
+      await revokeGoogleToken(fetch, decryptSecret(connection.encrypted_refresh_token, config.encryptionKey));
+    } catch (error) {
+      // Access may already be removed on Google's side; still disconnect here.
+      console.warn("Google token revoke failed during disconnect:", error.message);
+    }
   }
   await revokeGoogleConnection(store, user.email);
   sendJson(res, 200, { disconnected: true });
@@ -613,7 +627,12 @@ async function handleZohoDisconnect(req, res, user) {
   if (!config || !store) { sendJson(res, 503, { error: "Zoho Sign is not configured." }); return; }
   const connection = await getProviderConnection(store, "zoho", user.email);
   if (connection?.encrypted_refresh_token) {
-    await revokeZohoRefreshToken(fetch, config, decryptSecret(connection.encrypted_refresh_token, config.encryptionKey));
+    try {
+      await revokeZohoRefreshToken(fetch, config, decryptSecret(connection.encrypted_refresh_token, config.encryptionKey));
+    } catch (error) {
+      // Access may already be removed on Zoho's side; still disconnect here.
+      console.warn("Zoho token revoke failed during disconnect:", error.message);
+    }
   }
   await revokeProviderConnection(store, "zoho", user.email);
   sendJson(res, 200, { disconnected: true });
@@ -740,6 +759,8 @@ async function saveTrustedSmartDocument(store, user, record, smartDocument) {
     body: JSON.stringify({ p_company: store.companyId, p_document_id: record.id, p_smart_document: smartDocument, p_actor: user.id }),
   });
   const result = await response.json().catch(() => null);
+  // The database refuses a second "sending" lock while another send is in flight.
+  if (!response.ok && String(result?.message || "").includes("smart_document_email_pending")) throw new Error("smart_document_email_pending");
   if (!response.ok || !result?.saved || result.document_id !== record.id || result.status !== smartDocument.status) throw new Error("smart_document_record_unconfirmed");
   return result;
 }
@@ -808,6 +829,19 @@ async function handleSmartDocumentEmail(req, res, user) {
     const completedFile = smartDocument?.completedFile;
     if (smartDocument?.status !== "completed" || !completedFile?.storagePath) throw new Error("smart_document_not_completed");
     if (smartDocument?.emailDelivery?.status === "sending") throw new Error("smart_document_email_pending");
+    // Check everything that can fail without contacting the recipient before
+    // taking the "sending" lock, so a typo or a missing Google connection never
+    // locks the document.
+    const bytes = await downloadTrustedStorageObject(store, completedFile.storagePath, 20 * 1024 * 1024);
+    const { accessToken, connection } = await googleAccessForUser(user, GOOGLE_GMAIL_SEND_SCOPE);
+    const outgoing = {
+      fromEmail: connection.provider_email,
+      toEmail: payload?.toEmail,
+      subject: payload?.subject,
+      message: payload?.message,
+      attachment: { bytes, name: completedFile.name, type: "application/pdf" },
+    };
+    gmailMessageResource(outgoing);
     const deliveryId = crypto.randomUUID();
     const deliveryStartedAt = new Date().toISOString();
     pendingDelivery = {
@@ -825,15 +859,22 @@ async function handleSmartDocumentEmail(req, res, user) {
       },
     };
     await saveTrustedSmartDocument(store, user, record, pendingDelivery);
-    const bytes = await downloadTrustedStorageObject(store, completedFile.storagePath, 20 * 1024 * 1024);
-    const { accessToken, connection } = await googleAccessForUser(user, GOOGLE_GMAIL_SEND_SCOPE);
-    const sent = await sendGmailMessage(fetch, accessToken, {
-      fromEmail: connection.provider_email,
-      toEmail: payload?.toEmail,
-      subject: payload?.subject,
-      message: payload?.message,
-      attachment: { bytes, name: completedFile.name, type: "application/pdf" },
-    });
+    let sent;
+    try {
+      sent = await sendGmailMessage(fetch, accessToken, outgoing);
+    } catch (sendError) {
+      // Gmail answered with an error, so nothing was sent: release the lock.
+      // Timeouts and network failures stay "sending" because delivery is unknown.
+      if (["gmail_send_failed", "google_access_expired"].includes(sendError.message)) {
+        await saveTrustedSmartDocument(store, user, record, {
+          ...pendingDelivery,
+          revision: pendingDelivery.revision + 1,
+          updatedAt: new Date().toISOString(),
+          emailDelivery: { ...pendingDelivery.emailDelivery, status: "failed", failedAt: new Date().toISOString(), code: sendError.message },
+        }).catch(() => {});
+      }
+      throw sendError;
+    }
     const emailReceipt = {
       ...pendingDelivery,
       revision: pendingDelivery.revision + 1,
@@ -861,8 +902,10 @@ async function handleSmartDocumentEmail(req, res, user) {
       google_scope_missing: "Reconnect Google Workspace to approve Gmail sending.",
       invalid_gmail_attachment: "The completed PDF is too large for direct Gmail delivery.",
       gmail_send_failed: "Gmail rejected the message.",
+      google_access_expired: "Google access expired. Reconnect Google Workspace in Settings and try again.",
+      gmail_send_unconfirmed: "Gmail may have sent this email but did not confirm it. Check Sent mail before trying again.",
     };
-    const status = badRequest ? 400 : ["google_not_connected", "google_scope_missing", "smart_document_not_completed", "smart_document_email_pending"].includes(error.message) ? 409 : error.message === "document_not_found" ? 404 : 502;
+    const status = badRequest ? 400 : ["google_not_connected", "google_scope_missing", "google_access_expired", "smart_document_not_completed", "smart_document_email_pending"].includes(error.message) ? 409 : error.message === "document_not_found" ? 404 : 502;
     sendJson(res, status, { error: messages[error.message] || "The completed Smart Document could not be emailed.", code: error.message });
   }
 }
@@ -972,7 +1015,7 @@ async function handleGoogleDriveDocument(req, res, user) {
       jobId: record.job_id,
       projectNumber: job?.data?.projectNumber || "",
       jobName: job?.data?.name || "Job",
-      categoryId: record.data.categoryId || record.data.category || "other",
+      categoryId: driveCategoryId(record.data),
       categoryName: record.data.category || "Other",
     });
     const document = await downloadTrustedDocument(store, record, { maxBytes: 50 * 1024 * 1024, tooLargeCode: "google_drive_file_too_large" });
@@ -1398,7 +1441,7 @@ async function handleSquareWebhook(req, res) {
     let event;
     try { event = JSON.parse(rawBody); } catch { sendJson(res, 400, { error: "Invalid webhook JSON" }); return; }
     const environment = process.env.SQUARE_ENVIRONMENT === "sandbox" ? "sandbox" : "production";
-    if (event?.merchant_id !== merchantId || (req.headers["square-environment"] && req.headers["square-environment"] !== environment)) {
+    if (event?.merchant_id !== merchantId || (req.headers["square-environment"] && String(req.headers["square-environment"]).trim().toLowerCase() !== environment)) {
       sendJson(res, 403, { error: "Webhook merchant or environment mismatch" }); return;
     }
     const events = ["invoice.created", "invoice.published", "invoice.updated", "invoice.payment_made",
