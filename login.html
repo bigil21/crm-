@@ -34,6 +34,10 @@
             Password
             <input id="loginPassword" type="password" autocomplete="current-password" required />
           </label>
+          <label class="hidden" id="confirmPasswordLabel">
+            Confirm New Password
+            <input id="confirmPassword" type="password" autocomplete="new-password" />
+          </label>
           <button class="primary-button" type="submit">Sign In</button>
           <button class="secondary-button" id="createAccountButton" type="button">Create Account</button>
           <button class="secondary-button" id="magicLinkButton" type="button">Send Magic Link</button>
@@ -47,7 +51,7 @@
 
     <script src="auth-config.js?v=46" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0" integrity="sha384-JBR+x8blGwjDRO63aHCGiZMD4VNiTR4ZUGA+N6ZKLf3zNt1fK8IBpcgPaMrxqWBp" crossorigin="anonymous" defer></script>
-    <script src="auth.js?v=83" defer></script>
-    <script src="login.js?v=93" defer></script>
+    <script src="auth.js?v=85" defer></script>
+    <script src="login.js?v=94" defer></script>
   </body>
 </html>

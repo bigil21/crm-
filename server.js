@@ -20,6 +20,7 @@ const {
   normalizeResponses: normalizeSmartDocumentResponses,
   renderCompletedDocument,
 } = require(path.join(__dirname, "smart-documents"));
+const { createTeamInviteService } = require(path.join(__dirname, "team-invite-service"));
 
 const root = __dirname;
 const envPaths = process.env.CRM_SKIP_ENV_FILES === "true" ? [] : [path.join(root, ".env"), path.join(root, ".env.local")];
@@ -44,7 +45,7 @@ const allowedEmailDomain = process.env.ALLOWED_EMAIL_DOMAIN || "coastalcrestroof
 const publicAssets = new Set([
   "/index.html", "/login.html", "/logout.html", "/reset-session.html",
   "/styles.css", "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/sw.js",
-  "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js",
+  "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js", "/team-onboarding.js",
   "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png",
 ]);
 const publicAssetFiles = new Map([
@@ -1063,6 +1064,60 @@ async function requireApiAdmin(req, res, handler) {
   }
 }
 
+function crmPublicOrigin() {
+  const value = String(process.env.CRM_PUBLIC_ORIGIN || "https://jobcrestcrm.com").trim().replace(/\/$/, "");
+  try {
+    const url = new URL(value);
+    const loopback = ["localhost", "127.0.0.1"].includes(url.hostname);
+    if ((!loopback && url.protocol !== "https:") || (loopback && !["http:", "https:"].includes(url.protocol)) ||
+        url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function handleTeamInvitation(req, res) {
+  let payload;
+  try {
+    payload = JSON.parse(await readRequestBody(req));
+    if (!payload || Array.isArray(payload) || typeof payload.email !== "string" ||
+        Object.keys(payload).some((key) => key !== "email")) throw new Error("invalid_payload");
+  } catch {
+    sendJson(res, 400, { error: "Enter one company email address to invite." });
+    return;
+  }
+
+  const config = squareWorkerConfig();
+  const appOrigin = crmPublicOrigin();
+  if (!config || !appOrigin) {
+    sendJson(res, 503, { error: "Team invitations are not configured on this server." });
+    return;
+  }
+
+  try {
+    const result = await createTeamInviteService({
+      fetchImpl: fetch,
+      origin: config.origin,
+      key: config.key,
+      companyId: config.companyId,
+      allowedEmailDomain,
+      appOrigin,
+    }).invite(payload.email);
+    sendJson(res, 200, result);
+  } catch (error) {
+    const rateLimited = error?.status === 429 || /rate|too many|security purposes/i.test(String(error?.message || ""));
+    const invalid = error?.status === 400 && ["invalid_email", "invalid_email_domain"].includes(error?.code);
+    const status = rateLimited ? 429 : invalid ? 400 : 503;
+    const message = rateLimited
+      ? "Email sending is temporarily rate-limited. Wait a few minutes, then send the invitation again."
+      : invalid ? error.message
+        : error?.code === "access_provision_failed" ? error.message
+          : "The invitation could not be completed. No password was created; try again shortly.";
+    sendJson(res, status, { error: message });
+  }
+}
+
 async function squareRequest(method, path, body) {
   const https = require("https");
   return new Promise((resolve, reject) => {
@@ -1641,6 +1696,11 @@ const handleRequest = (req, res) => {
 
   if (url.pathname === "/api/square/sync-status" && req.method === "GET") {
     requireApiAdmin(req, res, handleSquareSyncStatus);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/team-invitations" && req.method === "POST") {
+    requireApiAdmin(req, res, handleTeamInvitation);
     return;
   }
 

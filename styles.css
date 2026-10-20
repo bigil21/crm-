@@ -1981,6 +1981,36 @@ button:disabled {
   padding: 20px;
 }
 
+.team-invite-settings {
+  margin-bottom: 22px;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.team-invite-form {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(190px, 0.45fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.team-invite-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.team-invite-form .primary-button {
+  min-height: 44px;
+}
+
+@media (max-width: 820px) {
+  .team-invite-form { grid-template-columns: 1fr; }
+}
+
 .section-description {
   max-width: 760px;
   margin: 6px 0 0;

@@ -24,12 +24,24 @@ function server(env = {}, user = null) {
     },
   });
   vm.runInContext(serverSource, context);
-  const request = (url, method = 'GET', authorization = '') => new Promise((resolve, reject) => {
+  const request = (url, method = 'GET', authorization = '', requestBody = '') => new Promise((resolve, reject) => {
     const headers = {};
     const response = { setHeader(key, value) { headers[key] = value; },
       writeHead(status, values) { this.status = status; Object.assign(headers, values); },
       end(body) { resolve({ status: this.status, headers, body: body?.toString() || '' }); } };
-    try { route({ url, method, headers: { host: 'localhost', authorization } }, response); } catch (error) { reject(error); }
+    const listeners = {};
+    const request = { url, method, headers: { host: 'localhost', authorization },
+      on(name, callback) {
+        listeners[name] = callback;
+        if (name === 'end') queueMicrotask(() => {
+          if (requestBody && listeners.data) listeners.data(Buffer.from(requestBody));
+          callback();
+        });
+        return request;
+      },
+      destroy(error) { listeners.error?.(error); },
+    };
+    try { route(request, response); } catch (error) { reject(error); }
   });
   return { request, reads, outbound, context };
 }
@@ -46,7 +58,7 @@ for (const url of ['/server.js', '/.env', '/.env.local', '/.git/config', '/squar
 const publicRoutes = ['/', '/login', '/logout', '/reset-session.html', '/index.html', '/login.html', '/logout.html',
   '/app.js?v=124', '/auth.js', '/login.js', '/logout.js', '/sw.js', '/styles.css', '/manifest.webmanifest',
   '/icon.svg', '/icon-192.png', '/icon-512.png', '/vendor/jspdf.umd.min.js', '/vendor/pdf.min.mjs', '/vendor/pdf.worker.min.mjs', '/production-flow-v64.js',
-  '/workflow-checklists-v65.js', '/project-conversations-v67.js'];
+  '/workflow-checklists-v65.js', '/project-conversations-v67.js', '/team-onboarding.js'];
 for (const url of publicRoutes) test(`current application asset remains available: ${url}`, async () => {
   const h = server(); const r = await h.request(url); assert.equal(r.status, 200); assert.ok(r.body.length);
   assert.equal(r.headers['X-Content-Type-Options'], 'nosniff');
@@ -86,7 +98,7 @@ test('login redirects, fresh HTML and health/config work without database migrat
 for (const env of [{}, { AUTH_REQUIRED: 'false' }, { NODE_ENV: 'production', ALLOW_LOCAL_DEMO: 'true', AUTH_REQUIRED: 'false' }]) {
   test(`authentication defaults closed: ${JSON.stringify(env)}`, async () => {
     const h = server(env);
-    for (const url of ['/api/square/create-invoice', '/api/square/payment-status']) assert.equal((await h.request(url, 'POST')).status, 401);
+    for (const url of ['/api/square/create-invoice', '/api/square/payment-status', '/api/admin/team-invitations']) assert.equal((await h.request(url, 'POST')).status, 401);
     assert.equal(h.outbound.length, 0);
   });
 }
@@ -100,8 +112,10 @@ test('valid company admin and sales authorization stays compatible', async () =>
   const env = { AUTH_REQUIRED: 'true', SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'sb_publishable_synthetic' };
   const admin = server(env, { id: 'admin-user', email: 'admin@coastalcrestroofing.com', app_metadata: { role: 'admin' } });
   assert.equal((await admin.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 400, 'admin reaches trusted request validation');
+  assert.equal((await admin.request('/api/admin/team-invitations', 'POST', 'Bearer synthetic', JSON.stringify({ email: 'new.rep@coastalcrestroofing.com' }))).status, 503, 'admin reaches configured invitation service');
   const sales = server(env, { id: 'sales-user', email: 'sales@coastalcrestroofing.com', app_metadata: { role: 'sales' } });
   assert.equal((await sales.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 403);
+  assert.equal((await sales.request('/api/admin/team-invitations', 'POST', 'Bearer synthetic', JSON.stringify({ email: 'new.rep@coastalcrestroofing.com' }))).status, 403);
   assert.equal((await sales.request('/api/square/payment-status', 'POST', 'Bearer synthetic')).status, 400);
   const outsider = server(env, { id: 'outsider-user', email: 'outsider@example.invalid', app_metadata: { role: 'admin' } });
   assert.equal((await outsider.request('/api/square/create-invoice', 'POST', 'Bearer synthetic')).status, 401);

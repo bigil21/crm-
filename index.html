@@ -1191,6 +1191,30 @@
         </section>
 
         <section class="view-panel hidden" id="companyView">
+          <section class="surface team-invite-settings hidden" id="teamInviteSettings" aria-labelledby="teamInviteTitle">
+            <div class="view-toolbar">
+              <div>
+                <p class="eyebrow">Team access</p>
+                <h2 id="teamInviteTitle">Invite a Sales Representative</h2>
+                <p class="section-description">Send one secure setup link. The representative creates a password for this email and receives Sales access immediately.</p>
+              </div>
+            </div>
+            <form id="teamInviteForm" class="team-invite-form">
+              <label>
+                Representative Email
+                <input id="teamInviteEmail" name="email" type="email" required maxlength="254" autocomplete="email" placeholder="name@coastalcrestroofing.com" />
+              </label>
+              <label>
+                Access Level
+                <input value="Sales Representative" disabled aria-label="Access level" />
+              </label>
+              <button class="primary-button" type="submit" id="teamInviteSubmit">
+                <span aria-hidden="true" data-icon="send"></span>
+                Send Invitation
+              </button>
+            </form>
+            <p class="save-state-message" id="teamInviteStatus" role="status" aria-live="polite"></p>
+          </section>
           <section class="surface integrations-settings" aria-labelledby="integrationsTitle">
             <div class="view-toolbar">
               <div>
@@ -1594,13 +1618,14 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0" integrity="sha384-JBR+x8blGwjDRO63aHCGiZMD4VNiTR4ZUGA+N6ZKLf3zNt1fK8IBpcgPaMrxqWBp" crossorigin="anonymous" defer></script>
     <script src="vendor/jspdf.umd.min.js?v=23" defer></script>
     <script src="session-guard.js?v=1" defer></script>
-    <script src="auth.js?v=84" defer></script>
+    <script src="auth.js?v=85" defer></script>
     <script src="record-writes.js?v=2" defer></script>
     <script src="company-settings-writes.js?v=1" defer></script>
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
     <script src="app.js?v=154" defer></script>
+    <script src="team-onboarding.js?v=2" defer></script>
     <script src="production-flow-v64.js?v=69" defer></script>
     <script src="workflow-checklists-v65.js?v=90" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

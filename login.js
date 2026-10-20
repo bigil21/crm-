@@ -2,6 +2,8 @@
   const form = document.querySelector("#loginForm");
   const emailField = document.querySelector("#loginEmail");
   const passwordField = document.querySelector("#loginPassword");
+  const confirmPasswordField = document.querySelector("#confirmPassword");
+  const confirmPasswordLabel = document.querySelector("#confirmPasswordLabel");
   const createAccountButton = document.querySelector("#createAccountButton");
   const magicLinkButton = document.querySelector("#magicLinkButton");
   const resetPasswordButton = document.querySelector("#resetPasswordButton");
@@ -14,7 +16,8 @@
   const SIGN_IN_UNLOCK_KEY = "jobcrest.crm.sign-in-unlock";
   const redirect = params.get("redirect") || CRM_ENTRY_URL;
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
-  const isPasswordRecovery = params.get("recovery") === "1";
+  const isPasswordSetup = params.get("recovery") === "1" || params.get("invite") === "1";
+  const isInvitation = params.get("invite") === "1";
 
   function setStatus(message, tone = "") {
     status.textContent = message;
@@ -150,12 +153,16 @@
   }
 
   const existing = await window.RooflineAuth.getTrustedUser();
-  if (isPasswordRecovery) {
-    setStatus("Enter and submit your new password. It must be at least 8 characters.");
+  if (isPasswordSetup) {
+    setStatus(isInvitation
+      ? "Welcome to JobCrest. Create and confirm your password to activate your Sales access."
+      : "Enter and confirm your new password. It must be at least 8 characters.");
     emailField.closest("label")?.classList.add("hidden");
     emailField.required = false;
     passwordField.autocomplete = "new-password";
-    form.querySelector('button[type="submit"]').textContent = "Save New Password";
+    confirmPasswordLabel?.classList.remove("hidden");
+    if (confirmPasswordField) confirmPasswordField.required = true;
+    form.querySelector('button[type="submit"]').textContent = isInvitation ? "Create Password & Open CRM" : "Save New Password";
     [createAccountButton, magicLinkButton, resetPasswordButton, clearSessionButton].forEach((button) => button?.classList.add("hidden"));
   } else if (existing.accessDenied || params.get("reason") === "approval") {
     await signOutCurrentSession();
@@ -178,9 +185,14 @@
     event.preventDefault();
     const email = emailField.value.trim().toLowerCase();
     const password = passwordField.value;
-    if (isPasswordRecovery) {
+    if (isPasswordSetup) {
       if (!password || password.length < 8) {
         setStatus("Enter a new password with at least 8 characters.", "error");
+        return;
+      }
+      if (password !== confirmPasswordField?.value) {
+        setStatus("The two passwords do not match.", "error");
+        confirmPasswordField?.focus();
         return;
       }
       setStatus("Saving new password...");
@@ -189,7 +201,7 @@
         setStatus(authErrorMessage(error, "password-recovery"), "error");
         return;
       }
-      setStatus("Password updated. Opening the CRM...", "success");
+      setStatus(isInvitation ? "Password created. Opening your CRM…" : "Password updated. Opening the CRM...", "success");
       queueSignInUnlock();
       window.setTimeout(() => location.replace(sanitizeRedirect(redirect)), 500);
       return;

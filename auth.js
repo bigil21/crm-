@@ -89,10 +89,11 @@
     return `/login?${params.toString()}`;
   }
 
-  function isPasswordRecoveryCallback(locationValue = window.location) {
+  function passwordSetupCallbackType(locationValue = window.location) {
     const hash = new URLSearchParams(String(locationValue?.hash || "").replace(/^#/, ""));
     const query = new URLSearchParams(String(locationValue?.search || "").replace(/^\?/, ""));
-    return hash.get("type") === "recovery" || query.get("type") === "recovery";
+    const type = hash.get("type") || query.get("type") || "";
+    return ["recovery", "invite"].includes(type) ? type : "";
   }
 
   function emailDomain(email = "") {
@@ -214,10 +215,11 @@
     // recovery tokens in the hash. Capture that intent before supabase-js
     // consumes the hash, then continue password setup in the same tab so its
     // sessionStorage-backed recovery session remains available.
-    const passwordRecoveryCallback = isPasswordRecoveryCallback();
+    const passwordSetupType = passwordSetupCallbackType();
     const auth = await getTrustedUser();
-    if (passwordRecoveryCallback && auth.user && !auth.accessDenied) {
-      location.replace("/login?recovery=1&redirect=%2F");
+    if (passwordSetupType && auth.user && !auth.accessDenied) {
+      const mode = passwordSetupType === "invite" ? "invite" : "recovery";
+      location.replace(`/login?${mode}=1&redirect=%2F`);
       return null;
     }
     if (auth.error || !auth.user) {
