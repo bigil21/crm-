@@ -43,3 +43,15 @@ test('external links do not destroy a valid signed-in tab session', () => {
   context.document.referrer = 'https://jobcrestcrm.com/login';
   assert.equal(context.isExternalCrmEntry(), false);
 });
+
+test('Supabase recovery callbacks are forwarded to password setup before their hash is consumed', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../auth.js'), 'utf8');
+  const context = vm.createContext({ URLSearchParams, window: { location: {} } });
+  vm.runInContext(extract(source, 'isPasswordRecoveryCallback'), context);
+
+  assert.equal(context.isPasswordRecoveryCallback({ hash: '#access_token=token&type=recovery', search: '' }), true);
+  assert.equal(context.isPasswordRecoveryCallback({ hash: '', search: '?type=recovery' }), true);
+  assert.equal(context.isPasswordRecoveryCallback({ hash: '#access_token=token&type=invite', search: '' }), false);
+  assert.match(source, /passwordRecoveryCallback && auth\.user && !auth\.accessDenied/);
+  assert.match(source, /\/login\?recovery=1&redirect=%2F/);
+});

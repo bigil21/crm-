@@ -89,6 +89,12 @@
     return `/login?${params.toString()}`;
   }
 
+  function isPasswordRecoveryCallback(locationValue = window.location) {
+    const hash = new URLSearchParams(String(locationValue?.hash || "").replace(/^#/, ""));
+    const query = new URLSearchParams(String(locationValue?.search || "").replace(/^\?/, ""));
+    return hash.get("type") === "recovery" || query.get("type") === "recovery";
+  }
+
   function emailDomain(email = "") {
     return String(email).split("@").pop()?.toLowerCase() || "";
   }
@@ -204,7 +210,16 @@
       return null;
     }
 
+    // Dashboard-issued recovery emails may return to the site URL with the
+    // recovery tokens in the hash. Capture that intent before supabase-js
+    // consumes the hash, then continue password setup in the same tab so its
+    // sessionStorage-backed recovery session remains available.
+    const passwordRecoveryCallback = isPasswordRecoveryCallback();
     const auth = await getTrustedUser();
+    if (passwordRecoveryCallback && auth.user && !auth.accessDenied) {
+      location.replace("/login?recovery=1&redirect=%2F");
+      return null;
+    }
     if (auth.error || !auth.user) {
       location.replace(loginUrl(auth.accessDenied ? "approval" : "auth"));
       return null;
