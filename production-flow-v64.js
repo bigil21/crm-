@@ -133,11 +133,11 @@
   }
 
   function patchedDashboardMetrics() {
-    const leads = state.contacts.filter((contact) => contact.type === "Lead" && preSaleStatuses.includes(contact.status)).length;
+    const leads = visibleContacts().filter((contact) => contact.type === "Lead" && preSaleStatuses.includes(contact.status)).length;
     const jobs = allJobs();
     const openContracts = jobs.filter((job) => activeContractStatuses.includes(job.status));
-    const closedJobs = jobs.filter((job) => isClosedProductionStatus(job.status));
-    const estimatesSent = state.estimates.filter((estimate) => ["Sent", "Won"].includes(estimate.status)).length;
+    const closedJobs = jobs.filter(jobHasFullPayment);
+    const estimatesSent = visibleEstimates().filter((estimate) => ["Sent", "Won"].includes(estimate.status)).length;
     const pipelineValue = jobs
       .filter((job) => job.status !== "Lost")
       .reduce((sum, job) => sum + safeNumber(job.value), 0);
@@ -148,7 +148,7 @@
       openContracts: openContracts.length,
       openValue: openContracts.reduce((sum, job) => sum + safeNumber(job.value), 0),
       closedJobs: closedJobs.length,
-      closedValue: closedJobs.reduce((sum, job) => sum + safeNumber(job.value), 0),
+      closedValue: closedJobs.reduce((sum, job) => sum + safeNumber(job.paidAmount), 0),
       pipelineValue,
     };
   }
@@ -160,7 +160,7 @@
       ["Total Leads", metrics.leads, "Open sales opportunities", "user", "blue"],
       ["Estimates Sent", metrics.estimatesSent, "Sent or won", "file", "green"],
       ["Open Contracts", metrics.openContracts, money.format(metrics.openValue), "briefcase", "purple"],
-      ["Closed Jobs", metrics.closedJobs, money.format(metrics.closedValue), "check", "orange"],
+      ["Jobs Paid", metrics.closedJobs, money.format(metrics.closedValue), "check", "orange"],
       ["Pipeline Value", money.format(metrics.pipelineValue), "All non-lost job value", "bar-chart", "cyan"],
     ];
 
@@ -275,21 +275,21 @@
     });
 
     const soldJobs = allJobs().filter(
-      (job) => isSoldStatus(job.status) && isInLeaderboardRange(job, state.leaderboardRange),
+      (job) => jobHasFullPayment(job) && isInLeaderboardRange(job, state.leaderboardRange),
     );
     const reps = soldJobs.reduce((acc, job) => {
-      const name = job.salesRep || "Unassigned";
+      const name = canonicalRepresentativeName(job.salesRep, job.ownerUserId, job.ownerEmail);
       if (!acc.has(name)) acc.set(name, { name, closedJobs: 0, value: 0 });
       const rep = acc.get(name);
       rep.closedJobs += 1;
-      rep.value += safeNumber(job.value);
+      rep.value += safeNumber(job.paidAmount);
       return acc;
     }, new Map());
 
     const rows = [...reps.values()].sort((a, b) => b.value - a.value || b.closedJobs - a.closedJobs);
     const rangeStartDate = rangeStart(state.leaderboardRange);
     if (els.leaderboardRangeLabel) {
-      els.leaderboardRangeLabel.textContent = `${leaderboardRanges[state.leaderboardRange]} sold jobs since ${formatDate(
+      els.leaderboardRangeLabel.textContent = `${leaderboardRanges[state.leaderboardRange]} paid jobs since ${formatDate(
         localDateISO(rangeStartDate),
       )}`;
     }
@@ -303,7 +303,7 @@
                   <td><span class="rank-pill">#${index + 1}</span></td>
                   <td class="person-cell">
                     <strong>${escapeHtml(rep.name)}</strong>
-                    <span>${rep.closedJobs === 1 ? "1 sold job" : `${rep.closedJobs} sold jobs`}</span>
+                    <span>${rep.closedJobs === 1 ? "1 paid job" : `${rep.closedJobs} paid jobs`}</span>
                   </td>
                   <td>${rep.closedJobs}</td>
                   <td>${money.format(rep.value)}</td>
@@ -312,7 +312,7 @@
               `,
             )
             .join("")
-        : '<tr><td colspan="5"><div class="empty-state">No sold jobs in this period</div></td></tr>';
+        : '<tr><td colspan="5"><div class="empty-state">No paid jobs in this period</div></td></tr>';
     }
 
     renderPipelineOverview();
@@ -334,13 +334,13 @@
     });
 
     allJobs()
-      .filter((job) => isSoldStatus(job.status) && (job.closedDate || job.lastContact || job.createdAt))
+      .filter((job) => jobHasFullPayment(job) && (job.closedDate || job.lastContact || job.createdAt))
       .forEach((job) => {
         const raw = String(job.closedDate || job.lastContact || job.createdAt);
         // Date-only values are local days; new Date("2026-10-01") would be Sept 30 in New York.
         const d = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(`${raw}T00:00:00`) : new Date(raw);
         const bucket = months.find((m) => m.year === d.getFullYear() && m.month === d.getMonth());
-        if (bucket) bucket.value += safeNumber(job.value);
+        if (bucket) bucket.value += safeNumber(job.paidAmount);
       });
 
     const max = Math.max(...months.map((m) => m.value), 1);
@@ -355,14 +355,14 @@
       const y = padT + chartH - barH;
       return { x, y, barH, barW, label: m.label, value: m.value };
     });
-    const totalSold = months.reduce((sum, month) => sum + month.value, 0);
+    const totalCollected = months.reduce((sum, month) => sum + month.value, 0);
 
     els.revenueChart.innerHTML = `
       <div class="chart-legend" style="margin-bottom:8px">
-        <span style="font-size:12px;color:var(--muted)">Sold revenue - last 6 months</span>
-        <strong style="font-size:13px">${money.format(totalSold)}</strong>
+        <span style="font-size:12px;color:var(--muted)">Collected revenue - last 6 months</span>
+        <strong style="font-size:13px">${money.format(totalCollected)}</strong>
       </div>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sold revenue by month bar chart" style="width:100%;display:block">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Collected revenue by month bar chart" style="width:100%;display:block">
         <g class="chart-grid">
           <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="var(--line)" stroke-width="0.5"/>
           <line x1="${padL}" y1="${padT + chartH / 2}" x2="${W - padR}" y2="${padT + chartH / 2}" stroke="var(--line)" stroke-width="0.5"/>
@@ -384,7 +384,7 @@
   }
 
   function patchedRenderDashboardDonuts() {
-    const leadContacts = state.contacts.filter((contact) => contact.type === "Lead" && preSaleStatuses.includes(contact.status));
+    const leadContacts = visibleContacts().filter((contact) => contact.type === "Lead" && preSaleStatuses.includes(contact.status));
     const sources = aggregateCounts(leadContacts, (contact) => contact.source || "Other");
     const jobsByType = aggregateCounts(allJobs(), jobType);
     const projectStatus = aggregateCounts(allJobs().filter((job) => job.status !== "Lost"), (job) => job.status);
@@ -411,7 +411,7 @@
                 <span>${escapeHtml(job.contactName)} - ${money.format(safeNumber(job.value))}</span>
                 <p>${escapeHtml((job.address || "No address").split("\n")[0])}</p>
                 <div class="row-actions">
-                  <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${job.contactId}" data-tab="jobs">
+                  <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${job.contactId}" data-job-id="${job.id}" data-tab="jobs">
                     <span aria-hidden="true" data-icon="open"></span>
                     Open Job
                   </button>
@@ -426,7 +426,7 @@
 
   function patchedRenderReviewsView() {
     if (!els.reviewsList) return;
-    const customers = state.contacts.filter((contact) =>
+    const customers = visibleContacts().filter((contact) =>
       contact.type === "Customer" || isSoldStatus(contact.status) || contactJobs(contact).some((job) => isSoldStatus(job.status)),
     );
     const hasReviewUrl = !!state.company.googleReviewUrl;
@@ -655,7 +655,8 @@
     assignGlobal("staleClass", patchedStaleClass);
     assignGlobal("dashboardMetrics", patchedDashboardMetrics);
     assignGlobal("renderSummary", patchedRenderSummary);
-    assignGlobal("applyStatusUpdate", patchedApplyStatusUpdate);
+    // app.js owns status transitions so checklist, payment, optimistic-save,
+    // multi-job, and server-integrity rules cannot be bypassed by this legacy UI layer.
     assignGlobal("renderLeadCard", patchedRenderLeadCard);
     assignGlobal("renderDashboard", patchedRenderDashboard);
     assignGlobal("renderRevenueOverview", patchedRenderRevenueOverview);

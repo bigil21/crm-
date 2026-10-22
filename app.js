@@ -1544,6 +1544,31 @@ function currentOwner() {
   };
 }
 
+function recordOwnedByCurrentUser(record = {}) {
+  if (!authSession?.user?.id) return true;
+  if (canManageTeamData()) return true;
+  const ownerId = record.ownerUserId || record.owner_id || "";
+  const ownerEmail = String(record.ownerEmail || record.owner_email || "").trim().toLowerCase();
+  const signedInEmail = String(authSession.user.email || "").trim().toLowerCase();
+  return ownerId === authSession.user.id || Boolean(ownerEmail && ownerEmail === signedInEmail);
+}
+
+function visibleContacts() {
+  return state.contacts.filter(recordOwnedByCurrentUser);
+}
+
+function visibleEstimates() {
+  return state.estimates.filter((estimate) =>
+    recordOwnedByCurrentUser(estimate) || recordOwnedByCurrentUser(state.contacts.find((contact) => contact.id === estimate.contactId)),
+  );
+}
+
+function visibleCalendarTasks() {
+  return state.calendarTasks.filter((task) =>
+    recordOwnedByCurrentUser(task) || recordOwnedByCurrentUser(state.contacts.find((contact) => contact.id === task.contactId)),
+  );
+}
+
 function ownerFromRow(row = {}) {
   const dataOwner = row.data?.owner || {};
   const owner = {
@@ -2900,11 +2925,11 @@ function setSelectedEstimate(id) {
 }
 
 function getSelectedContact() {
-  return state.contacts.find((contact) => contact.id === state.selectedContactId) || null;
+  return visibleContacts().find((contact) => contact.id === state.selectedContactId) || null;
 }
 
 function getSelectedEstimate() {
-  return state.estimates.find((estimate) => estimate.id === state.selectedEstimateId) || null;
+  return visibleEstimates().find((estimate) => estimate.id === state.selectedEstimateId) || null;
 }
 
 function getContact(id) {
@@ -2916,7 +2941,7 @@ function contactJobs(contact) {
 }
 
 function allJobs() {
-  return state.contacts.flatMap((contact) =>
+  return visibleContacts().flatMap((contact) =>
     contactJobs(contact).map((job) => ({
       ...job,
       contactId: contact.id,
@@ -2928,6 +2953,23 @@ function allJobs() {
 
 function primaryJob(contact) {
   return contactJobs(contact)[0];
+}
+
+function jobHasFullPayment(job = {}) {
+  const { contractValue, paidAmount } = jobPaymentMetrics(job);
+  return contractValue > 0 && paidAmount + 0.005 >= contractValue;
+}
+
+function summarizeContactJobs(contact, jobs = contactJobs(contact)) {
+  const primary = jobs[0] || normalizeJob({}, contact);
+  const totalValue = jobs.reduce((sum, job) => sum + number(job.contractValue ?? job.value), 0);
+  return {
+    jobs,
+    status: primary.status,
+    type: jobs.some((job) => soldJobStatuses.includes(job.status)) ? "Customer" : contact.type || "Lead",
+    value: Math.round(totalValue * 100) / 100,
+    closedDate: contact.closedDate || primary.closedDate || "",
+  };
 }
 
 function updateContact(contactId, updater) {
@@ -3030,8 +3072,9 @@ function ensureExistingSalesNumbers() {
 
 function filteredContacts() {
   const query = state.search.trim().toLowerCase();
-  if (!query) return state.contacts;
-  return state.contacts.filter((contact) =>
+  const contacts = visibleContacts();
+  if (!query) return contacts;
+  return contacts.filter((contact) =>
     [
       contact.name,
       contact.leadNumber,
@@ -3264,8 +3307,9 @@ function openLiveSearchResult(contactId) {
 
 function filteredEstimates() {
   const query = state.search.trim().toLowerCase();
-  if (!query) return state.estimates;
-  return state.estimates.filter((estimate) => {
+  const estimates = visibleEstimates();
+  if (!query) return estimates;
+  return estimates.filter((estimate) => {
     const contact = getEstimateContact(estimate);
     return [
       estimate.estimateNumber,
@@ -3389,6 +3433,34 @@ function normalizePersonName(value = "") {
   return name;
 }
 
+function canonicalRepresentativeName(value = "", record = {}) {
+  const rawName = normalizePersonName(value);
+  const ownerId = record.ownerUserId || record.userId || "";
+  const ownerEmail = String(record.ownerEmail || record.email || "").trim().toLowerCase();
+  const knownOwners = [...cloudKnownOwners.values(), currentOwner()].filter(Boolean);
+  const directOwner = knownOwners.find((owner) =>
+    (ownerId && owner.userId === ownerId) ||
+    (ownerEmail && String(owner.email || "").trim().toLowerCase() === ownerEmail),
+  );
+  if (directOwner?.name) return normalizePersonName(directOwner.name);
+  if (!rawName) return "";
+
+  const rawParts = rawName.toLocaleLowerCase().split(" ");
+  const compatible = [...new Set(knownOwners
+    .map((owner) => normalizePersonName(owner.name))
+    .filter(Boolean)
+    .filter((knownName) => {
+      const knownParts = knownName.toLocaleLowerCase().split(" ");
+      const firstMatches = knownParts[0] === rawParts[0] ||
+        (rawParts[0].length >= 3 && knownParts[0].startsWith(rawParts[0])) ||
+        (knownParts[0].length >= 3 && rawParts[0].startsWith(knownParts[0]));
+      if (!firstMatches) return false;
+      if (rawParts.length === 1) return true;
+      return knownParts.at(-1) === rawParts.at(-1);
+    }))];
+  return compatible.length === 1 ? compatible[0] : rawName;
+}
+
 function nl2br(value = "") {
   return escapeHtml(value).replaceAll("\n", "<br />");
 }
@@ -3429,12 +3501,12 @@ function formatBytes(size) {
 function uniqueSalesReps() {
   const unique = new Map();
   [
-    ...state.contacts.map((contact) => contact.salesRep),
+    ...visibleContacts().map((contact) => contact.salesRep),
     ...allJobs().map((job) => job.salesRep),
-    ...state.calendarTasks.map((task) => task.rep),
+    ...visibleCalendarTasks().map((task) => task.rep),
     state.currentUser.name,
   ].forEach((value) => {
-    const name = normalizePersonName(value);
+    const name = canonicalRepresentativeName(value);
     const key = name.toLocaleLowerCase();
     if (name && name !== "Unassigned" && !unique.has(key)) unique.set(key, name);
   });
@@ -3488,6 +3560,20 @@ function taskGoogleSyncLabel(task) {
   return "";
 }
 
+async function persistCalendarTaskUpdate(taskId) {
+  saveState({ localOnly: true });
+  if (!canUseCloudSync()) return true;
+  try {
+    const saved = await persistDurableRecordNow("task", taskId, (data) => data.id === taskId);
+    if (saved) queueCloudSave();
+    else queueDurableRecordsSave();
+    return saved;
+  } catch {
+    queueDurableRecordsSave();
+    return false;
+  }
+}
+
 async function syncCalendarTaskToGoogle(task) {
   const snapshot = normalizeCalendarTask(JSON.parse(JSON.stringify(task)));
   const contact = getContact(snapshot.contactId);
@@ -3510,7 +3596,7 @@ async function syncCalendarTaskToGoogle(task) {
         googleSyncStatus: notConnected ? "not_connected" : "error",
         googleSyncError: String(result?.error || "Google Calendar could not be updated.").slice(0, 300),
       });
-      saveState();
+      await persistCalendarTaskUpdate(current.id);
       if (state.view === "calendar" || state.view === "tasks") render();
       return false;
     }
@@ -3521,7 +3607,7 @@ async function syncCalendarTaskToGoogle(task) {
       googleSyncedAt: result.updated || new Date().toISOString(),
       googleSyncError: "",
     });
-    saveState();
+    await persistCalendarTaskUpdate(current.id);
     if (state.view === "calendar" || state.view === "tasks") render();
     return true;
   } catch {
@@ -3529,7 +3615,7 @@ async function syncCalendarTaskToGoogle(task) {
     if (current && current.title === snapshot.title && current.dueAt === snapshot.dueAt) {
       current.googleSyncStatus = "error";
       current.googleSyncError = "Google Calendar could not be reached.";
-      saveState();
+      await persistCalendarTaskUpdate(current.id);
       if (state.view === "calendar" || state.view === "tasks") render();
     }
     return false;
@@ -3558,7 +3644,7 @@ async function removeCalendarTaskFromGoogle(task) {
 
 function upcomingTasks(limit = 6) {
   const now = new Date();
-  return [...state.calendarTasks]
+  return [...visibleCalendarTasks()]
     .filter((task) => !task.completed && taskDueTime(task) >= now)
     .sort((a, b) => taskDueTime(a) - taskDueTime(b))
     .slice(0, limit);
@@ -3595,11 +3681,13 @@ function estimateTotal(estimate) {
 }
 
 function dashboardMetrics() {
-  const leads = state.contacts.filter((contact) => contact.type === "Lead").length;
+  const contacts = visibleContacts();
+  const estimates = visibleEstimates();
+  const leads = contacts.filter((contact) => contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status))).length;
   const jobs = allJobs();
-  const openContracts = jobs.filter((job) => !["Won", "Lost"].includes(job.status));
-  const closedJobs = jobs.filter((job) => job.status === "Won");
-  const estimatesSent = state.estimates.filter((estimate) =>
+  const openContracts = jobs.filter((job) => !["Paid", "Lost"].includes(job.status));
+  const closedJobs = jobs.filter(jobHasFullPayment);
+  const estimatesSent = estimates.filter((estimate) =>
     ["Sent", "Won"].includes(estimate.status),
   ).length;
   const pipelineValue = jobs
@@ -3612,7 +3700,7 @@ function dashboardMetrics() {
     openContracts: openContracts.length,
     openValue: openContracts.reduce((sum, job) => sum + number(job.value), 0),
     closedJobs: closedJobs.length,
-    closedValue: closedJobs.reduce((sum, job) => sum + number(job.value), 0),
+    closedValue: closedJobs.reduce((sum, job) => sum + number(job.paidAmount), 0),
     pipelineValue,
   };
 }
@@ -3639,7 +3727,7 @@ function jobType(job) {
 }
 
 function dashboardActivityItems(limit = 6) {
-  const updates = state.contacts.flatMap((contact) =>
+  const updates = visibleContacts().flatMap((contact) =>
     (contact.updates || []).map((update) => ({
       icon: update.status === "Won" ? "check" : "bell",
       title: update.status ? `Status: ${update.status}` : "Client update",
@@ -3649,7 +3737,7 @@ function dashboardActivityItems(limit = 6) {
       contactId: contact.id,
     })),
   );
-  const estimateItems = state.estimates.map((estimate) => {
+  const estimateItems = visibleEstimates().map((estimate) => {
     const contact = getEstimateContact(estimate);
     return {
       icon: "file",
@@ -3950,8 +4038,13 @@ function addContactUpdate(contactId, { author = "Local user", message, status = 
 
 function applyStatusUpdate(contactId, nextStatus, author = "Local user", message = "") {
   let contact = getContact(contactId);
-  const currentJobStatus = contact ? contactJobs(contact)[0]?.status || contact.status : "";
+  const currentJob = contact ? contactJobs(contact)[0] : null;
+  const currentJobStatus = currentJob?.status || contact?.status || "";
   if (!contact || !nextStatus || currentJobStatus === nextStatus) return contact;
+  if (nextStatus === "Paid" && !jobHasFullPayment(currentJob)) {
+    showToast("Record confirmed payments covering the full contract before moving this job to Paid.");
+    return contact;
+  }
   if (["Estimate Sent", "Won"].includes(nextStatus)) {
     contact = canUseCloudSync() ? contact : ensureLeadProjectNumbers(contactId)?.contact || contact;
   }
@@ -4173,8 +4266,8 @@ function renderSummary() {
   const cards = [
     ["New Leads", metrics.leads, "Open sales opportunities", "user", "blue"],
     ["Estimates Sent", metrics.estimatesSent, "Sent or won estimates", "file", "green"],
-    ["Jobs Won", metrics.closedJobs, "Won production jobs", "check", "purple"],
-    ["Revenue Won", money.format(metrics.closedValue), "Confirmed won job value", "dollar", "orange"],
+    ["Jobs Paid", metrics.closedJobs, "Contracts paid in full", "check", "purple"],
+    ["Revenue Collected", money.format(metrics.closedValue), "Confirmed payments received", "dollar", "orange"],
     ["Pipeline Value", money.format(metrics.pipelineValue), "All non-lost job value", "bar-chart", "cyan"],
   ];
 
@@ -4351,16 +4444,16 @@ function renderDashboard() {
   });
 
   const closedJobs = allJobs().filter(
-    (job) => job.status === "Won" && isInLeaderboardRange(job, state.leaderboardRange),
+    (job) => jobHasFullPayment(job) && isInLeaderboardRange(job, state.leaderboardRange),
   );
   const reps = closedJobs.reduce((acc, job) => {
-    const name = job.salesRep || "Unassigned";
+    const name = canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned";
     if (!acc.has(name)) {
       acc.set(name, { name, closedJobs: 0, value: 0 });
     }
     const rep = acc.get(name);
     rep.closedJobs += 1;
-    rep.value += number(job.value);
+    rep.value += number(job.paidAmount);
     return acc;
   }, new Map());
 
@@ -4381,7 +4474,7 @@ function renderDashboard() {
             <td><span class="rank-pill">#${index + 1}</span></td>
             <td class="person-cell">
               <strong>${escapeHtml(rep.name)}</strong>
-              <span>${rep.closedJobs === 1 ? "1 closed job" : `${rep.closedJobs} closed jobs`}</span>
+              <span>${rep.closedJobs === 1 ? "1 paid job" : `${rep.closedJobs} paid jobs`}</span>
             </td>
             <td>${rep.closedJobs}</td>
             <td>${money.format(rep.value)}</td>
@@ -4390,7 +4483,7 @@ function renderDashboard() {
         `,
           )
           .join("")
-      : '<tr><td colspan="5"><div class="empty-state">No closed jobs in this period</div></td></tr>';
+      : '<tr><td colspan="5"><div class="empty-state">No fully paid jobs in this period</div></td></tr>';
   }
 
   renderPipelineOverview();
@@ -4459,10 +4552,10 @@ function renderRevenueOverview() {
     };
   });
 
-  allJobs().filter((job) => job.status === "Won" && job.closedDate).forEach((job) => {
-    const d = new Date(job.closedDate);
+  allJobs().filter(jobHasFullPayment).forEach((job) => {
+    const d = new Date(job.lastPaymentAt || job.closedDate || job.updatedAt);
     const bucket = months.find((m) => m.year === d.getFullYear() && m.month === d.getMonth());
-    if (bucket) bucket.value += number(job.value);
+    if (bucket) bucket.value += number(job.paidAmount);
   });
 
   const max = Math.max(...months.map((m) => m.value), 1);
@@ -4483,7 +4576,7 @@ function renderRevenueOverview() {
 
   els.revenueChart.innerHTML = `
     <div class="chart-legend" style="margin-bottom:8px">
-      <span style="font-size:12px;color:var(--muted)">Closed revenue — last 6 months</span>
+      <span style="font-size:12px;color:var(--muted)">Collected revenue — last 6 months</span>
       <strong style="font-size:13px">${money.format(totalClosed)}</strong>
     </div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Closed revenue by month bar chart" style="width:100%;display:block">
@@ -4510,7 +4603,9 @@ function renderRevenueOverview() {
 }
 
 function renderDashboardDonuts() {
-  const leadContacts = state.contacts.filter((contact) => contact.type === "Lead");
+  const leadContacts = visibleContacts().filter((contact) =>
+    contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
+  );
   const sources = aggregateCounts(leadContacts, (contact) => contact.source || "Other");
   const jobsByType = aggregateCounts(allJobs(), jobType);
   const productionJobs = allJobs().filter((job) => soldJobStatuses.includes(job.status));
@@ -4582,7 +4677,7 @@ function renderRecentActivity() {
 function renderTodaySchedule() {
   if (!els.todayScheduleList) return;
   const today = todayISO();
-  const tasks = state.calendarTasks
+  const tasks = visibleCalendarTasks()
     .filter((task) => !task.completed && String(task.dueAt).startsWith(today))
     .sort((a, b) => taskDueTime(a) - taskDueTime(b));
   const schedule = tasks;
@@ -4672,7 +4767,7 @@ function renderPipeline() {
   if (!els.views.pipeline) return;
   const opportunities = allJobs();
   const activeLeads = opportunities.filter((job) => !["Won", "Lost"].includes(job.status));
-  const followUpsDue = state.contacts.filter((contact) => {
+  const followUpsDue = visibleContacts().filter((contact) => {
     const status = primaryJob(contact).status || contact.status;
     return !["Won", "Lost"].includes(status) && staleLeadDays(contact) >= 3;
   }).length;
@@ -4879,11 +4974,13 @@ function renderLeadsView() {
   if (!els.leadsList) return;
   const stage = statuses.includes(state.leadStageFilter) ? state.leadStageFilter : "";
   if (els.leadStageFilter) {
-    const openLeadCount = state.contacts.filter((contact) => contact.type === "Lead").length;
+    const openLeadCount = visibleContacts().filter((contact) =>
+      contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
+    ).length;
     els.leadStageFilter.innerHTML = [
       `<option value="">All open leads (${openLeadCount})</option>`,
       ...statuses.map((pipelineStage) => {
-        const count = state.contacts.filter((contact) =>
+        const count = visibleContacts().filter((contact) =>
           contactJobs(contact).some((job) => job.status === pipelineStage),
         ).length;
         return `<option value="${escapeHtml(pipelineStage)}">${escapeHtml(pipelineStage)} (${count})</option>`;
@@ -4892,7 +4989,9 @@ function renderLeadsView() {
     els.leadStageFilter.value = stage;
   }
   const leads = sortLeadIntakeChronologically(filteredContacts().filter((contact) =>
-    stage ? contactJobs(contact).some((job) => job.status === stage) : contact.type === "Lead",
+    stage
+      ? contactJobs(contact).some((job) => job.status === stage)
+      : contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
   ));
   const filterSummary = stage
     ? `
@@ -5864,6 +5963,25 @@ async function saveLeadJob(event) {
     contact,
   );
 
+  if (!existing && job.status !== "New") {
+    setSaveState(els.jobSaveStatus, "A new job must begin in the New stage.", "error");
+    showToast("Create the job in New, then complete each stage checklist in order.");
+    return;
+  }
+  if (existing && existing.status !== job.status) {
+    const transition = window.RooflineWorkflowChecklist?.transitionCheck?.(contact, existing, job.status);
+    if (transition && !transition.allowed) {
+      setSaveState(els.jobSaveStatus, transition.reason, "error");
+      showToast(transition.reason);
+      return;
+    }
+  }
+  if (job.status === "Paid" && !jobHasFullPayment(job)) {
+    setSaveState(els.jobSaveStatus, "Paid requires confirmed payments covering the contract total.", "error");
+    showToast("Record the full payment before moving this job to Paid.");
+    return;
+  }
+
   const jobUpdate = {
     id: uid("update"),
     author: job.salesRep || "Local user",
@@ -5874,17 +5992,11 @@ async function saveLeadJob(event) {
   };
   updateContact(contact.id, (current) => {
     const jobs = contactJobs(current);
-    const nextJobs = existing ? jobs.map((item) => (item.id === jobId ? job : item)) : [job, ...jobs];
-    const primary = nextJobs[0];
+    const nextJobs = existing ? jobs.map((item) => (item.id === jobId ? job : item)) : [...jobs, job];
+    const summary = summarizeContactJobs(current, nextJobs);
     return {
       ...current,
-      jobs: nextJobs,
-      status: primary.status,
-      type: soldJobStatuses.includes(primary.status) ? "Customer" : current.type,
-      value: primary.value,
-      salesRep: primary.salesRep,
-      address: primary.address,
-      closedDate: primary.closedDate,
+      ...summary,
       updates: [jobUpdate, ...(current.updates || [])],
     };
   });
@@ -5954,14 +6066,10 @@ function deleteLeadJob(jobId) {
   updateContact(contact.id, (current) => {
     const nextJobs = contactJobs(current).filter((item) => item.id !== jobId);
     const primary = nextJobs[0];
+    const summary = summarizeContactJobs(current, nextJobs);
     return {
       ...current,
-      jobs: nextJobs,
-      status: primary.status,
-      value: primary.value,
-      salesRep: primary.salesRep,
-      address: primary.address,
-      closedDate: primary.closedDate,
+      ...summary,
       updates: [
         {
           id: uid("update"),
@@ -8322,7 +8430,7 @@ function renderCalendar() {
   if (!els.calendarTasksList) return;
   renderCalendarFormOptions();
   renderCalendarMonth();
-  const tasks = [...state.calendarTasks].sort((a, b) => taskDueTime(a) - taskDueTime(b));
+  const tasks = [...visibleCalendarTasks()].sort((a, b) => taskDueTime(a) - taskDueTime(b));
   els.calendarTasksList.innerHTML = tasks.length
     ? tasks.map((task) => renderTaskCard(task)).join("")
     : '<div class="empty-state">No tasks yet. Create a rep reminder to send it to Google Calendar.</div>';
@@ -8333,10 +8441,15 @@ function renderCalendarFormOptions() {
   if (!els.salesRepOptions || !els.calendarTaskContact) return;
   els.calendarTaskContact.innerHTML = [
     '<option value="">No related lead</option>',
-    ...state.contacts.map(
+    ...visibleContacts().map(
       (contact) => `<option value="${contact.id}">${escapeHtml(contact.name)} (${escapeHtml(contact.status)})</option>`,
     ),
   ].join("");
+  const repField = els.calendarTaskForm?.elements?.rep;
+  const taskIdField = els.calendarTaskForm?.elements?.taskId;
+  if (repField && !taskIdField?.value && !repField.value.trim()) {
+    repField.value = canonicalRepresentativeName(currentOwner().name, currentOwner());
+  }
 }
 
 function renderTaskCard(task, options = {}) {
@@ -8419,10 +8532,22 @@ async function saveCalendarTask(event) {
   } else {
     state.calendarTasks.unshift(task);
   }
-  saveState();
+  saveState({ localOnly: true });
   els.calendarTaskForm.reset();
   render();
   showToast(existingTask ? "Task updated. Syncing Google Calendar…" : "Task saved. Syncing Google Calendar…");
+  let saved = !canUseCloudSync();
+  try {
+    if (canUseCloudSync()) saved = await persistDurableRecordNow("task", task.id, (data) => data.id === task.id);
+  } catch {
+    saved = false;
+  }
+  if (!saved) {
+    queueDurableRecordsSave();
+    showToast("Task is saved on this screen while shared CRM sync retries.");
+  } else {
+    queueCloudSave();
+  }
   const synced = await syncCalendarTaskToGoogle(task);
   if (synced) showToast(existingTask ? "Task and Google Calendar event updated" : "Task added to the CRM and Google Calendar");
   else if (state.calendarTasks.find((item) => item.id === task.id)?.googleSyncStatus === "not_connected") {
@@ -8931,7 +9056,7 @@ function renderInvoicesView() {
   if (!els.invoicesList) return;
   startSquarePoll();
 
-  const estimates = [...state.estimates].sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
+  const estimates = [...visibleEstimates()].sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
   const financialInvoices = [...new Map([...estimates]
     .filter((estimate) => estimate.squareInvoiceId)
     .sort((a, b) => String(a.paymentUpdatedAt || "").localeCompare(String(b.paymentUpdatedAt || "")))
@@ -9054,7 +9179,7 @@ function reviewRequestEmail(contact) {
 
 function renderReviewsView() {
   if (!els.reviewsList) return;
-  const customers = state.contacts.filter((c) => c.type === "Customer" || c.status === "Won");
+  const customers = visibleContacts().filter((c) => c.type === "Customer" || soldJobStatuses.includes(c.status));
   const hasReviewUrl = !!state.company.googleReviewUrl;
 
   const warningBanner = !hasReviewUrl ? `
@@ -9108,7 +9233,11 @@ function renderReviewsView() {
 function renderReportsView() {
   if (!els.reportsContent) return;
   const metrics = dashboardMetrics();
-  const repRows = aggregateCounts(allJobs(), (job) => job.salesRep || "Unassigned", (job) => job.value);
+  const repRows = aggregateCounts(
+    allJobs().filter(jobHasFullPayment),
+    (job) => canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned",
+    (job) => job.paidAmount,
+  );
   els.reportsContent.innerHTML = `
     <article class="report-card">
       <span class="eyebrow">Pipeline</span>
@@ -9118,12 +9247,12 @@ function renderReportsView() {
     <article class="report-card">
       <span class="eyebrow">Closed Revenue</span>
       <strong>${money.format(metrics.closedValue)}</strong>
-      <span>${metrics.closedJobs} won jobs</span>
+      <span>${metrics.closedJobs} fully paid jobs</span>
     </article>
     <article class="report-card">
       <span class="eyebrow">Estimates Sent</span>
       <strong>${metrics.estimatesSent}</strong>
-      <span>${state.estimates.length} total estimates</span>
+      <span>${visibleEstimates().length} total estimates</span>
     </article>
     <article class="report-card wide">
       <span class="eyebrow">Rep production</span>
@@ -9168,7 +9297,7 @@ function renderNewEstimatePickers() {
 
   els.newEstimateContact.innerHTML = [
     '<option value="">Choose lead</option>',
-    ...state.contacts.map(
+    ...visibleContacts().map(
       (contact) => `
         <option value="${contact.id}" ${contact.id === contactId ? "selected" : ""}>
           ${escapeHtml(contact.name)} (${escapeHtml(contact.type)})
@@ -9225,7 +9354,7 @@ function estimateHistoryMarkup(estimate, estimates) {
 }
 
 function renderEstimateHistory(estimate = getSelectedEstimate(), estimates = filteredEstimates()) {
-  if (els.estimateHistoryCount) els.estimateHistoryCount.textContent = state.estimates.length;
+  if (els.estimateHistoryCount) els.estimateHistoryCount.textContent = visibleEstimates().length;
   if (els.estimateList) els.estimateList.innerHTML = estimateHistoryMarkup(estimate, estimates);
 }
 
@@ -9315,7 +9444,7 @@ function renderEstimateForm(estimate) {
   }
   renderEstimateSaveState(estimate.id);
 
-  els.estimateContact.innerHTML = state.contacts
+  els.estimateContact.innerHTML = visibleContacts()
     .map(
       (contact) => `
       <option value="${contact.id}" ${contact.id === estimate.contactId ? "selected" : ""}>
@@ -11236,10 +11365,27 @@ function bindEvents() {
       render();
     }
     if (action === "advance-contact") {
-      if (getContact(contactId)) {
-        applyStatusUpdate(contactId, nextStatus);
-        saveState();
-        render();
+      const before = getContact(contactId);
+      const beforeJob = before ? primaryJob(before) : null;
+      if (beforeJob) {
+        const updated = applyStatusUpdate(contactId, nextStatus);
+        const updatedJob = updated ? contactJobs(updated).find((job) => job.id === beforeJob.id) : null;
+        if (updatedJob?.status !== beforeJob.status) {
+          saveState({ localOnly: true });
+          render();
+          const updateId = updated?.updates?.[0]?.id || "";
+          if (canUseCloudSync()) {
+            try {
+              const saved = await persistLeadJobRecord(updatedJob.id, updateId);
+              if (saved) queueCloudSave();
+              else queueDurableRecordsSave();
+            } catch {
+              queueDurableRecordsSave();
+            }
+          }
+        } else {
+          render();
+        }
       }
     }
     if (action === "remove-line") {

@@ -222,7 +222,10 @@ test('bound targets and invoice content cannot be deleted, moved or changed thro
 });
 
 test('normal notes, checklists and costs remain editable for sales after invoice intent begins', async () => {
-  const f = await fixture(); await as('service'); await begin(f); await as('sales');
+  const f = await fixture(); await as('service'); await begin(f);
+  await as('owner');
+  await db.query('update public.crm_records set owner_id=$1 where id in ($2,$3)', [users.sales, f.estimate, f.job]);
+  await as('sales');
   const estimate = await getRecord('estimate', f.estimate); const result = await edit(estimate, { ...estimate.data, notes: 'Sales note' });
   assert.equal(result.rows[0].data.notes, 'Sales note');
   const job = await getRecord('job', f.job);

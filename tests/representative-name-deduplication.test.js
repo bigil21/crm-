@@ -9,8 +9,11 @@ const page = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const start = app.indexOf('function normalizePersonName');
 const end = app.indexOf('\nfunction nl2br', start);
 const source = app.slice(start, end);
-const context = {};
-vm.runInNewContext(`${source}\nthis.normalizePersonName = normalizePersonName;`, context);
+const context = {
+  cloudKnownOwners: new Map([['gil-id', { userId: 'gil-id', email: 'gil@coastalcrestroofing.com', name: 'Gilberto Arellano' }]]),
+  currentOwner: () => ({ userId: 'gil-id', email: 'gil@coastalcrestroofing.com', name: 'Gilberto Arellano' }),
+};
+vm.runInNewContext(`${source}\nthis.normalizePersonName = normalizePersonName; this.canonicalRepresentativeName = canonicalRepresentativeName;`, context);
 
 test('repeated full representative names collapse to one display name', () => {
   assert.equal(context.normalizePersonName('Gilberto Arellano Gilberto Arellano'), 'Gilberto Arellano');
@@ -25,6 +28,12 @@ test('valid names are preserved and representative sources share normalization',
   assert.match(app, /salesRep: normalizePersonName/);
   assert.match(app, /projectManager: normalizePersonName/);
   assert.match(app, /function uniqueSalesReps\(\)[\s\S]*?const unique = new Map\(\)/);
+});
+
+test('owner identity merges shortened representative labels into one person', () => {
+  assert.equal(context.canonicalRepresentativeName('Gilberto', {}), 'Gilberto Arellano');
+  assert.equal(context.canonicalRepresentativeName('Gil Arellano', {}), 'Gilberto Arellano');
+  assert.equal(context.canonicalRepresentativeName('Anything', { ownerUserId: 'gil-id' }), 'Gilberto Arellano');
 });
 
 test('sales representative inputs share one app-controlled suggestion list', () => {

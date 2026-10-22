@@ -42,6 +42,7 @@ before(async () => {
   await db.exec('grant all on all tables in schema public to authenticated,service_role;');
   await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations/20260914_conflict_safe_record_writes.sql'), 'utf8'));
   await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations/20261014052721_audit_authorization_storage_retention.sql'), 'utf8'));
+  await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations/20261022145711_critical_integrity_and_rep_scope.sql'), 'utf8'));
 });
 
 after(async () => db.close());
@@ -80,7 +81,7 @@ test('sales can edit only owned records and managers can assign ownership', asyn
   await as('sales');
   await commit('sales-create', [change('owned-job')]);
   await as('otherSales');
-  assert.equal((await db.query("select id from public.crm_records where id='owned-job'")).rows.length, 1);
+  assert.equal((await db.query("select id from public.crm_records where id='owned-job'")).rows.length, 0);
   await denied(() => commit('other-edit', [change('owned-job', 1)]));
   await as('manager');
   assert.equal((await db.query("select id from public.crm_records where id='owned-job'")).rows.length, 1);
@@ -105,8 +106,41 @@ test('database rejects skipped stages and allows the next stage only after its g
   await commit('gate-next', [{ ...job, expected_version: 1, data: { ...job.data, status: 'Contacted' } }]);
 });
 
+test('database refuses Paid until server-confirmed payments cover the contract', async () => {
+  const checklist = { 'paid-job': { Completed: {
+    'completion-photos': true, 'final-invoice': true, 'warranty-docs': true, walkthrough: true,
+  } } };
+  await db.exec('reset role');
+  await db.query(`insert into public.crm_records
+    (company_state_id,record_type,id,lead_id,job_id,owner_id,data,version,updated_by)
+    values
+    ('coastal-crest','contact','paid-lead','paid-lead',null,$1,$2::jsonb,1,$1),
+    ('coastal-crest','job','paid-job','paid-lead','paid-job',$1,$3::jsonb,1,$1)`, [
+    ids.sales,
+    JSON.stringify({ name: 'Payment Gate', workflowChecklists: checklist }),
+    JSON.stringify({ status: 'Completed', contractValue: 100, value: 100, paidAmount: 0 }),
+  ]);
+  await as('sales');
+  const paidChange = {
+    company_state_id: 'coastal-crest', record_type: 'job', id: 'paid-job', lead_id: 'paid-lead', job_id: 'paid-job',
+    expected_version: 1, data: { status: 'Paid', contractValue: 100, value: 100, paidAmount: 100 },
+  };
+  await assert.rejects(() => commit('paid-spoof', [paidChange]),
+    error => error.code === '23514' && error.message.includes('full_payment_required'));
+  await db.exec('reset role');
+  await db.exec(`update public.crm_records set data=jsonb_set(data,'{paidAmount}','100'::jsonb)
+    where record_type='job' and id='paid-job'`);
+  await as('sales');
+  const result = await commit('paid-confirmed', [paidChange]);
+  assert.equal(result.rows[0].result.rows[0].data.status, 'Paid');
+});
+
 test('storage objects are append-only and company-prefixed', async () => {
   await as('sales');
+  await commit('storage-owner', [{
+    company_state_id: 'coastal-crest', record_type: 'contact', id: 'lead', lead_id: 'lead', expected_version: 0,
+    data: { name: 'Storage Owner' },
+  }]);
   await db.exec(`insert into storage.objects(id,bucket_id,name,owner_id) values
     ('20000000-0000-4000-8000-000000000001','crm-documents','coastal-crest/lead/file.pdf','${ids.sales}')`);
   assert.equal((await db.query(`update storage.objects set name='coastal-crest/lead/changed.pdf' returning id`)).rows.length, 0);

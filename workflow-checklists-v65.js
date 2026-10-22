@@ -98,7 +98,7 @@
       manualItem("final-invoice", "Final invoice sent"),
       manualItem("warranty-docs", "Warranty and closeout documents delivered"),
       manualItem("walkthrough", "Final walkthrough accepted"),
-      manualItem("final-payment", "Final payment received"),
+      autoItem("final-payment", "Confirmed payments cover the full contract", (_contact, job) => jobHasFullPayment(job)),
     ],
     Paid: [
       manualItem("warranty-registered", "Warranty registered"),
@@ -194,15 +194,15 @@
 
   function itemComplete(contact, job, stage, item) {
     const stageData = workflowData(contact, job)?.[stage] || {};
-    if (Object.prototype.hasOwnProperty.call(stageData, item.id)) {
-      return Boolean(stageData[item.id]);
-    }
     if (item.mode === "auto") {
       try {
         return Boolean(item.test(contact, job));
       } catch {
         return false;
       }
+    }
+    if (Object.prototype.hasOwnProperty.call(stageData, item.id)) {
+      return Boolean(stageData[item.id]);
     }
     return Boolean(workflowData(contact, job)?.[stage]?.[item.id]);
   }
@@ -246,6 +246,13 @@
       return {
         allowed: false,
         reason: `Move this job one stage at a time. The next stage is ${nextStage(currentStatus) || currentStatus}.`,
+      };
+    }
+
+    if (targetStatus === "Paid" && !jobHasFullPayment(job)) {
+      return {
+        allowed: false,
+        reason: "Record confirmed payments covering the full contract before moving this job to Paid.",
       };
     }
 

@@ -108,6 +108,8 @@ test('admin payments persist and sales reps cannot add or remove them', async ()
   await as('admin');
   const data = { paidAmount: 100.25, manualPayments: [{ id: 'check-1', amount: 100.25, date: '2026-09-14' }] };
   await commit([row('payment', 0, data)]);
+  await db.exec('reset role');
+  await db.query("update public.crm_records set owner_id=$1 where id='payment'", [ids.sales]);
   await as();
   await rejectsCode(() => commit([row('payment', 1, {})]), '42501');
   await rejectsCode(() => commit([row('sales-payment', 0, data)]), '42501');
@@ -131,6 +133,8 @@ test('legacy manual and paid-date records remain editable by sales without backf
   await as('admin');
   await commit([row('legacy-manual', 0, { manualPayments: [{ id: 'legacy-check', amount: 50, date: '2026-09-14' }], contractValue: 100 })]);
   await commit([row('legacy-paid-date', 0, { paidAt: '2026-09-14', contractValue: 100 }, { record_type: 'estimate' })]);
+  await db.exec('reset role');
+  await db.query("update public.crm_records set owner_id=$1 where id in ('legacy-manual','legacy-paid-date')", [ids.sales]);
   await as();
   const manual = await get('legacy-manual');
   await commit([row('legacy-manual', 1, { ...manual.data, paymentPercent: 50, status: 'Scheduled' })]);
@@ -198,7 +202,11 @@ test('migration reapplication preserves existing business rows', async () => {
 test('browser writer against PostgreSQL: rapid saves, stale second client, and payment protection', async () => {
   await as('admin');
   await commit([row('browser-integration')]);
-  const baseline = await get('browser-integration');
+  let baseline = await get('browser-integration');
+  await db.exec('reset role');
+  await db.query("update public.crm_records set owner_id=$1 where id='browser-integration'", [ids.sales]);
+  await as('admin');
+  baseline = await get('browser-integration');
   const rpc = async (_name, p) => {
     try { return { data: await commit(p.p_changes, p.p_events, p.p_request_id), error: null }; }
     catch (error) { return { error }; }

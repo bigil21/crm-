@@ -393,6 +393,17 @@ to authenticated
 using (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
+  and (
+    public.can_manage_team_crm()
+    or exists (
+      select 1 from public.crm_records r
+      where r.company_state_id = crm_conversation_messages.company_state_id
+        and r.record_type = 'contact'
+        and r.id = crm_conversation_messages.lead_id
+        and r.owner_id = auth.uid()
+        and r.deleted_at is null
+    )
+  )
 );
 
 create policy "Company users create conversation messages"
@@ -403,8 +414,18 @@ with check (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
   and (
-    author_user_id = auth.uid()::text
-    or public.can_manage_team_crm()
+    public.can_manage_team_crm()
+    or (
+      author_user_id = auth.uid()::text
+      and exists (
+        select 1 from public.crm_records r
+        where r.company_state_id = crm_conversation_messages.company_state_id
+          and r.record_type = 'contact'
+          and r.id = crm_conversation_messages.lead_id
+          and r.owner_id = auth.uid()
+          and r.deleted_at is null
+      )
+    )
   )
 );
 
@@ -416,8 +437,18 @@ using (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
   and (
-    author_user_id = auth.uid()::text
-    or public.can_manage_team_crm()
+    public.can_manage_team_crm()
+    or (
+      author_user_id = auth.uid()::text
+      and exists (
+        select 1 from public.crm_records r
+        where r.company_state_id = crm_conversation_messages.company_state_id
+          and r.record_type = 'contact'
+          and r.id = crm_conversation_messages.lead_id
+          and r.owner_id = auth.uid()
+          and r.deleted_at is null
+      )
+    )
   )
 )
 with check (
@@ -439,6 +470,11 @@ on public.crm_records for select to authenticated
 using (
   public.is_coastal_crest_user()
   and company_state_id = public.crm_base_state_id()
+  and (
+    public.can_manage_team_crm()
+    or owner_id = auth.uid()
+    or (record_type = 'document' and lead_id = 'company')
+  )
 );
 
 create policy "Company users create durable CRM records"
@@ -468,12 +504,31 @@ using (
   and company_state_id = public.crm_base_state_id()
 );
 
+-- Business writes go through crm_commit_records, which performs role, owner,
+-- transition, and payment checks atomically. Browser roles do not write these
+-- tables directly.
+revoke insert, update, delete on public.crm_records from public, anon, authenticated;
+
 drop policy if exists "Company users read CRM audit events" on public.crm_audit_events;
 drop policy if exists "Company users create CRM audit events" on public.crm_audit_events;
 
 create policy "Company users read CRM audit events"
 on public.crm_audit_events for select to authenticated
-using (public.is_coastal_crest_user() and company_state_id = public.crm_base_state_id());
+using (
+  public.is_coastal_crest_user()
+  and company_state_id = public.crm_base_state_id()
+  and (
+    public.can_manage_team_crm()
+    or exists (
+      select 1 from public.crm_records r
+      where r.company_state_id = crm_audit_events.company_state_id
+        and r.record_type = 'contact'
+        and r.id = crm_audit_events.lead_id
+        and r.owner_id = auth.uid()
+        and r.deleted_at is null
+    )
+  )
+);
 
 revoke insert, update, delete on public.crm_audit_events from public, anon, authenticated;
 
@@ -503,6 +558,25 @@ using (
   bucket_id = 'crm-documents'
   and public.is_coastal_crest_user()
   and (storage.foldername(name))[1] = public.crm_base_state_id()
+  and (
+    public.can_manage_team_crm()
+    or (storage.foldername(name))[2] = 'company'
+    or exists (
+      select 1 from public.crm_records r
+      where r.company_state_id = public.crm_base_state_id()
+        and r.record_type = 'document'
+        and r.owner_id = auth.uid()
+        and r.deleted_at is null
+        and (
+          r.data->>'storagePath' = storage.objects.name
+          or exists (
+            select 1
+            from jsonb_array_elements(coalesce(r.data->'previousVersions', '[]'::jsonb)) as version_item(value)
+            where version_item.value->>'storagePath' = storage.objects.name
+          )
+        )
+    )
+  )
 );
 
 create policy "Approved CRM users append company document objects"
@@ -512,6 +586,18 @@ with check (
   and public.is_coastal_crest_user()
   and (storage.foldername(name))[1] = public.crm_base_state_id()
   and owner_id = (select auth.uid())::text
+  and (
+    public.can_manage_team_crm()
+    or (storage.foldername(name))[2] = 'company'
+    or exists (
+      select 1 from public.crm_records r
+      where r.company_state_id = public.crm_base_state_id()
+        and r.record_type = 'contact'
+        and r.id = (storage.foldername(name))[2]
+        and r.owner_id = auth.uid()
+        and r.deleted_at is null
+    )
+  )
 );
 
 create index if not exists crm_audit_record_commit_retention_idx
