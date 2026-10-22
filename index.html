@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=70" />
+    <link rel="stylesheet" href="styles.css?v=71" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1118,6 +1118,10 @@
                   <h2>Create rep task</h2>
                 </div>
               </div>
+              <div class="calendar-google-connect hidden" id="calendarGoogleConnect" role="status">
+                <p>Connect your Google account to send these tasks to your Google Calendar.</p>
+                <button class="secondary-button" type="button" id="calendarGoogleConnectButton">Connect Google Calendar</button>
+              </div>
               <form id="calendarTaskForm" class="estimate-form">
                 <input type="hidden" name="taskId" />
                 <div class="form-grid two">
@@ -1624,10 +1628,10 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=154" defer></script>
+    <script src="app.js?v=155" defer></script>
     <script src="team-onboarding.js?v=2" defer></script>
-    <script src="production-flow-v64.js?v=69" defer></script>
-    <script src="workflow-checklists-v65.js?v=90" defer></script>
+    <script src="production-flow-v64.js?v=70" defer></script>
+    <script src="workflow-checklists-v65.js?v=91" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>
   </body>
 </html>

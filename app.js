@@ -543,6 +543,7 @@ let deferredInstallPrompt = null;
 let toastTimer = null;
 let authSession = null;
 let cloudClient = null;
+let assignableTeam = [];
 let cloudReady = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
@@ -790,6 +791,8 @@ const els = {
   googleDriveIntegrationStatus: document.querySelector("#googleDriveIntegrationStatus"),
   connectGoogleWorkspaceButton: document.querySelector("#connectGoogleWorkspaceButton"),
   disconnectGoogleWorkspaceButton: document.querySelector("#disconnectGoogleWorkspaceButton"),
+  calendarGoogleConnect: document.querySelector("#calendarGoogleConnect"),
+  calendarGoogleConnectButton: document.querySelector("#calendarGoogleConnectButton"),
   zohoIntegrationStatus: document.querySelector("#zohoIntegrationStatus"),
   zohoIntegrationPill: document.querySelector("#zohoIntegrationPill"),
   connectZohoSignButton: document.querySelector("#connectZohoSignButton"),
@@ -1957,6 +1960,7 @@ async function initializeCloudSync() {
   cloudReady = true;
   queueCloudSave();
   subscribeToCloudState();
+  loadAssignableTeam();
 }
 
 function subscribeToCloudState() {
@@ -2183,6 +2187,27 @@ function getDurableCommitWriter() {
   return durableCommitWriter;
 }
 
+// Rule violations raised by crm_commit_records. The database rolled the whole
+// request back, so the message says what to change instead of blaming the
+// connection.
+const durableRejectionReasons = {
+  record_access_denied: "This record belongs to another rep, so your role cannot change it. Ask a manager to reassign the lead or make the change.",
+  record_owner_spoofed: "New records you create must stay assigned to you. Ask a manager to assign the lead to someone else.",
+  invalid_stage_transition: "A job can only move forward one stage at a time. Ask a manager to move a job back a stage or reopen a lost job.",
+  new_job_must_start_new: "A new job must start in the New stage.",
+  workflow_checklist_incomplete: "A job was moved forward before its stage checklist was complete.",
+  stage_contact_required: "A job was saved without its lead.",
+  full_payment_required: "A job can only be marked Paid after confirmed payments cover the full contract.",
+  commit_too_large: "Too many records were saved at once. Import or edit fewer records at a time.",
+  authentication_required: "Your sign-in has expired or is not approved for the CRM. Sign in again.",
+};
+
+function durableRejectionReason(error) {
+  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
+  const code = Object.keys(durableRejectionReasons).find((name) => text.includes(name));
+  return code ? durableRejectionReasons[code] : "";
+}
+
 function preserveBlockedDurableWrite({ error, payload }) {
   durableWriteBlocked = true;
   window.clearTimeout(durableSaveTimer);
@@ -2196,9 +2221,12 @@ function preserveBlockedDurableWrite({ error, payload }) {
   panel.setAttribute("role", "alert");
   panel.style.cssText = "position:fixed;bottom:16px;left:16px;right:16px;z-index:100000;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px;box-shadow:0 5px 25px #0003";
   const message = document.createElement("p");
+  const rejection = durableRejectionReason(error);
   message.textContent = error?.code === "40001"
     ? "Someone else saved a newer version. Your changes have not overwritten theirs. Shared saving is paused; download your unsaved work, then reload and review it."
-    : "Shared saving could not be confirmed and is paused. Keep this page open. Download your unsaved work before reloading; an administrator may need to check the connection or database update.";
+    : rejection
+      ? `Your last change was not saved: ${rejection} Shared saving is paused; download your unsaved work, then reload and reapply what is still needed.`
+      : "Shared saving could not be confirmed and is paused. Keep this page open. Download your unsaved work before reloading; an administrator may need to check the connection or database update.";
   const download = document.createElement("button");
   download.type = "button";
   download.textContent = "Download unsaved work";
@@ -2455,10 +2483,17 @@ async function flushDurableRecordsSave() {
 
   durableSaveInFlight = true;
   try {
+    // crm_commit_records refuses more than 1000 rows or 2000 audit events per
+    // request (commit_too_large), so large imports save in batches. Rows not
+    // sent yet still differ from their fingerprints and go in the next save.
+    const maxRows = 400;
     const removals = [...removedByType].flatMap(([record_type, ids]) => ids.map(id => ({ company_state_id: supabaseStateId(), record_type, id })));
-    changedRows.forEach(markRecentLocalDurableWrite);
-    const { error } = await commitDurableChanges(changedRows, newAuditRows, removals);
-    if (error) { changedRows.forEach(clearRecentLocalDurableWrite); throw error; }
+    const batchRows = changedRows.slice(0, maxRows);
+    const batchRemovals = removals.slice(0, maxRows - batchRows.length);
+    const batchAuditRows = newAuditRows.slice(0, maxRows * 2);
+    batchRows.forEach(markRecentLocalDurableWrite);
+    const { error } = await commitDurableChanges(batchRows, batchAuditRows, batchRemovals);
+    if (error) { batchRows.forEach(clearRecentLocalDurableWrite); throw error; }
     return true;
   } catch (error) {
     console.warn("Durable CRM record sync failed", error);
@@ -3514,9 +3549,63 @@ function formatBytes(size) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function canAssignLeadOwners() {
+  // Operations managers may not write estimate rows, so they cannot move a
+  // whole lead (with its estimates) to another rep.
+  return ["admin", "office_manager", "sales_manager"].includes(currentRole());
+}
+
+async function loadAssignableTeam() {
+  if (!canAssignLeadOwners() || !cloudClient?.rpc) return;
+  const { data, error } = await cloudClient.rpc("crm_assignable_users");
+  if (error) {
+    console.warn("Team list for Sales Rep assignment is unavailable", error);
+    return;
+  }
+  assignableTeam = (data || []).filter((row) => row.user_id).map((row) => ({
+    userId: row.user_id,
+    email: String(row.email || "").trim().toLowerCase(),
+    name: normalizePersonName(row.name || String(row.email || "").split("@")[0]),
+    role: row.role || "sales",
+  }));
+  assignableTeam.forEach((member) => cloudKnownOwners.set(member.userId, member));
+  renderSalesRepOptions();
+}
+
+function assignableTeamMember(value) {
+  const key = normalizePersonName(value).toLocaleLowerCase();
+  if (!key) return null;
+  return assignableTeam.find((member) => member.name.toLocaleLowerCase() === key || member.email === key) || null;
+}
+
+// The database shows a rep only the rows they own, so the Sales Rep chosen on
+// a lead must also own the lead, its jobs, its estimates and the tasks that
+// followed the previous owner. Documents always follow the lead's owner.
+function applySalesRepAssignment(contact) {
+  if (!contact || !canAssignLeadOwners()) return contact;
+  const member = assignableTeamMember(contact.salesRep);
+  if (!member) return contact;
+  const owner = { ownerUserId: member.userId, ownerEmail: member.email, ownerName: member.name };
+  const previousOwnerId = contact.ownerUserId || "";
+  const jobs = (contact.jobs || []).map((job) => ({ ...job, ...owner, salesRep: member.name }));
+  if (member.userId === previousOwnerId && (contact.jobs || []).every((job) => !job.ownerUserId || job.ownerUserId === member.userId)) {
+    return { ...contact, salesRep: member.name, jobs };
+  }
+  state.estimates = state.estimates.map((estimate) =>
+    estimate.contactId === contact.id ? { ...estimate, ...owner, projectManager: member.name, salesRepEmail: member.email } : estimate,
+  );
+  state.calendarTasks = state.calendarTasks.map((task) =>
+    task.contactId === contact.id && (!task.ownerUserId || task.ownerUserId === previousOwnerId)
+      ? normalizeCalendarTask({ ...task, ...owner, rep: member.name })
+      : task,
+  );
+  return { ...contact, ...owner, salesRep: member.name, jobs };
+}
+
 function uniqueSalesReps() {
   const unique = new Map();
   [
+    ...assignableTeam.map((member) => member.name),
     ...visibleContacts().map((contact) => contact.salesRep),
     ...allJobs().map((job) => job.salesRep),
     ...visibleCalendarTasks().map((task) => task.rep),
@@ -3974,6 +4063,31 @@ function cleanImportedContact(imported) {
   return normalizeContact(clean);
 }
 
+// The database requires every new job to start at New, so imported leads begin
+// there and keep their Zoho stage (and owner, for reps' own imports) in the
+// notes for the rep to work forward through the stage checklists.
+function newImportedLead(imported) {
+  const lead = cleanImportedContact(imported);
+  const notes = [];
+  if (lead.status && lead.status !== "New") notes.push(`Zoho status: ${lead.status}`);
+  if (!canAssignLeadOwners() && lead.salesRep && lead.salesRep !== "Unassigned" &&
+      normalizePersonName(lead.salesRep).toLocaleLowerCase() !== normalizePersonName(state.currentUser.name).toLocaleLowerCase()) {
+    notes.push(`Zoho lead owner: ${lead.salesRep}`);
+  }
+  const salesRep = canAssignLeadOwners() ? lead.salesRep : state.currentUser.name || lead.salesRep;
+  const started = normalizeContact({
+    ...lead,
+    type: "Lead",
+    status: "New",
+    closedDate: "",
+    salesRep,
+    notes: [lead.notes, ...notes].filter(Boolean).join("\n"),
+    jobs: [],
+  });
+  started.jobs = [normalizeJob({ ...contactJobs(started)[0], status: "New", salesRep, closedDate: "" }, started)];
+  return applySalesRepAssignment(started);
+}
+
 function zohoDuplicateKey(contact = {}) {
   if (contact.externalId) return `external:${String(contact.externalId).trim().toLowerCase()}`;
   if (contact.email) return `email:${String(contact.email).trim().toLowerCase()}`;
@@ -4013,7 +4127,7 @@ async function importZohoCsv(file) {
     else summary.added += 1;
     return summary;
   }, { added: 0, updated: 0 });
-  if (!window.confirm(`Import ${preview.added} new lead${preview.added === 1 ? "" : "s"} and update ${preview.updated} matched lead${preview.updated === 1 ? "" : "s"}? Existing jobs, documents, stages, ownership, and financial history will be preserved.`)) return;
+  if (!window.confirm(`Import ${preview.added} new lead${preview.added === 1 ? "" : "s"} and update ${preview.updated} matched lead${preview.updated === 1 ? "" : "s"}? Existing jobs, documents, stages, ownership, and financial history will be preserved; new leads start in the New stage with their Zoho status noted.`)) return;
   let added = 0;
   let updated = 0;
 
@@ -4024,7 +4138,7 @@ async function importZohoCsv(file) {
       state.contacts = state.contacts.map((item) => (item.id === existing.id ? merged : item));
       updated += 1;
     } else {
-      state.contacts.unshift(cleanImportedContact(contact));
+      state.contacts.unshift(newImportedLead(contact));
       added += 1;
     }
   });
@@ -4211,6 +4325,11 @@ function renderTopbarProfile() {
 }
 
 function applyPermissionsToDom() {
+  // Don't offer sections (such as Settings) that the role would bounce from.
+  document.querySelectorAll(".nav-item[data-view]").forEach((item) => {
+    item.classList.toggle("hidden", !canView(item.dataset.view));
+  });
+
   document.querySelectorAll("[data-action]").forEach((button) => {
     const permission = actionPermissions[button.dataset.action];
     if (permission) {
@@ -7294,22 +7413,30 @@ function companyDocumentStatus(document) {
   return `Version ${document.versionNumber || 1}`;
 }
 
+// Mirrors crm_commit_records and the server's canAccessTrustedRecord: reps can
+// open every company file but may only change the ones they uploaded.
+function canChangeCompanyDocument(document = {}) {
+  if (!authSession?.user?.id || canManageTeamData()) return true;
+  return Boolean(document.ownerUserId) && document.ownerUserId === authSession.user.id;
+}
+
 function renderCompanyDocumentRow(document, folders = companyDocumentFolders()) {
   const extension = String(document.name || "").split(".").pop()?.toUpperCase().slice(0, 5) || "FILE";
   const currentFolder = companyDocumentFolderFor(document, folders);
+  const changeable = canChangeCompanyDocument(document);
   return `<article class="company-document-row">
     <div class="company-document-file-mark ${extension === "PDF" ? "pdf" : ""}" aria-hidden="true"><span data-icon="file"></span><small>${escapeHtml(extension)}</small></div>
     <div class="company-document-file-info"><strong>${escapeHtml(document.name)}</strong><span>${escapeHtml(companyDocumentStatus(document))}</span></div>
     <span class="company-document-date">${escapeHtml(formatDateTime(document.uploadedAt))}</span>
     <span class="company-document-size">${escapeHtml(formatBytes(document.size))}</span>
     <div class="row-actions company-document-row-actions">
-      <select class="company-document-move-select" data-company-document-folder="${escapeHtml(document.id)}" aria-label="Move ${escapeHtml(document.name)} to folder" title="Move to another folder">${folders.map((folder) => `<option value="${escapeHtml(folder.id)}" ${folder.id === currentFolder?.id ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}</select>
+      ${changeable ? `<select class="company-document-move-select" data-company-document-folder="${escapeHtml(document.id)}" aria-label="Move ${escapeHtml(document.name)} to folder" title="Move to another folder">${folders.map((folder) => `<option value="${escapeHtml(folder.id)}" ${folder.id === currentFolder?.id ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}</select>` : ""}
       <button class="mini-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}" title="Open ${escapeHtml(document.name)}" aria-label="Open ${escapeHtml(document.name)}"><span aria-hidden="true" data-icon="open"></span></button>
-      ${nativeSmartDocumentButton(document)}
+      ${changeable ? `${nativeSmartDocumentButton(document)}
       ${zohoSmartDocumentButton(document)}
       ${googleDriveDocumentButton(document)}
       <button class="mini-button" type="button" title="Rename document" aria-label="Rename ${escapeHtml(document.name)}" data-action="rename-company-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="edit"></span></button>
-      <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(document.name)}" data-action="remove-company-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="trash"></span></button>
+      <button class="mini-button" type="button" title="Remove document" aria-label="Remove ${escapeHtml(document.name)}" data-action="remove-company-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="trash"></span></button>` : ""}
     </div>
   </article>`;
 }
@@ -7365,6 +7492,10 @@ async function moveCompanyDocumentToFolder(documentId, folderId) {
   const folders = companyDocumentFolders();
   const folder = folders.find((item) => item.id === folderId);
   const document = state.companyDocuments.find((item) => item.id === documentId);
+  if (document && !canChangeCompanyDocument(document)) {
+    showToast("Only the person who uploaded this company file, or a manager, can change it.");
+    return false;
+  }
   if (!folder || !document) return false;
   if (companyDocumentFolderFor(document, folders)?.id === folder.id) return true;
   state.companyDocuments = state.companyDocuments.map((item) => item.id === documentId ? { ...item, folderId: folder.id, category: folder.name } : item);
@@ -7469,6 +7600,10 @@ async function uploadCompanyDocuments(files) {
 async function removeCompanyDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const document = state.companyDocuments.find((item) => item.id === documentId);
+  if (document && !canChangeCompanyDocument(document)) {
+    showToast("Only the person who uploaded this company file, or a manager, can change it.");
+    return;
+  }
   if (!(await archiveDocumentRecord(document))) {
     showToast("Document was not removed. Check the shared-saving status and try again.");
     return;
@@ -7482,6 +7617,10 @@ async function removeCompanyDocument(documentId) {
 function renameCompanyDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const document = state.companyDocuments.find((item) => item.id === documentId);
+  if (document && !canChangeCompanyDocument(document)) {
+    showToast("Only the person who uploaded this company file, or a manager, can change it.");
+    return;
+  }
   if (!document) return;
   const nextName = normalizeDocumentRename(window.prompt("Rename company document", document.name), document.name);
   if (!nextName || nextName === document.name) return;
@@ -8454,6 +8593,7 @@ function renderCalendarMonth() {
 }
 
 function renderCalendar() {
+  if (canUseCloudSync() && typeof refreshGoogleIntegrationStatus === "function") void refreshGoogleIntegrationStatus();
   if (!els.calendarTasksList) return;
   renderCalendarFormOptions();
   renderCalendarMonth();
@@ -8578,7 +8718,11 @@ async function saveCalendarTask(event) {
   const synced = await syncCalendarTaskToGoogle(task);
   if (synced) showToast(existingTask ? "Task and Google Calendar event updated" : "Task added to the CRM and Google Calendar");
   else if (state.calendarTasks.find((item) => item.id === task.id)?.googleSyncStatus === "not_connected") {
-    showToast("Task saved in the CRM. The assigned rep must connect Google Calendar.");
+    showToast(task.ownerUserId && task.ownerUserId === currentOwner().userId
+      ? "Task saved in the CRM. Use Connect Google Calendar on this page to sync your tasks."
+      : "Task saved in the CRM. The assigned rep must connect Google Calendar.");
+  } else if (googleIntegrationState.loaded && !googleIntegrationState.configured) {
+    showToast(existingTask ? "Task updated in the CRM" : "Task saved in the CRM");
   } else showToast("Task saved in the CRM. Google Calendar sync needs attention.");
 }
 
@@ -9212,7 +9356,9 @@ function renderReviewsView() {
   const warningBanner = !hasReviewUrl ? `
     <div class="review-warning">
       <span data-icon="alert-triangle" aria-hidden="true"></span>
-      No Google Review link saved yet — <button class="link-button" type="button" data-action="go-to-settings">add it in Settings</button> so it's included in every request.
+      ${canView("company")
+        ? `No Google Review link saved yet — <button class="link-button" type="button" data-action="go-to-settings">add it in Settings</button> so it's included in every request.`
+        : "No Google Review link saved yet. Ask an administrator to add it in Settings so it's included in every request."}
     </div>
   ` : "";
 
@@ -9260,10 +9406,11 @@ function renderReviewsView() {
 function renderReportsView() {
   if (!els.reportsContent) return;
   const metrics = dashboardMetrics();
+  // Credit reps when a job is sold, not only once it is fully paid.
   const repRows = aggregateCounts(
-    allJobs().filter(jobHasFullPayment),
+    allJobs().filter((job) => soldJobStatuses.includes(job.status)),
     (job) => canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned",
-    (job) => job.paidAmount,
+    (job) => number(job.contractValue) || number(job.value),
   );
   els.reportsContent.innerHTML = `
     <article class="report-card">
@@ -9282,14 +9429,14 @@ function renderReportsView() {
       <span>${visibleEstimates().length} total estimates</span>
     </article>
     <article class="report-card wide">
-      <span class="eyebrow">Rep production</span>
+      <span class="eyebrow">Rep production · sold jobs</span>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
               <th>Sales Representative</th>
-              <th>Jobs</th>
-              <th>Total Job Value</th>
+              <th>Sold Jobs</th>
+              <th>Sold Contract Value</th>
             </tr>
           </thead>
           <tbody>
@@ -9306,7 +9453,7 @@ function renderReportsView() {
                       `,
                     )
                     .join("")
-                : '<tr><td colspan="3"><div class="empty-state">No jobs to report yet</div></td></tr>'
+                : '<tr><td colspan="3"><div class="empty-state">No sold jobs yet</div></td></tr>'
             }
           </tbody>
         </table>
@@ -9728,6 +9875,9 @@ function renderGoogleIntegrationCard() {
     els.disconnectGoogleWorkspaceButton.classList.toggle("hidden", !status.connected);
     els.disconnectGoogleWorkspaceButton.disabled = status.loading;
   }
+  // Each employee connects their own account, and reps cannot open Settings,
+  // so the Calendar page offers the connection too.
+  els.calendarGoogleConnect?.classList.toggle("hidden", !(status.loaded && status.configured && !status.connected));
 }
 
 async function refreshGoogleIntegrationStatus(force = false) {
@@ -10091,6 +10241,16 @@ function openContactDialog(contactId, defaults = {}) {
     ...contact,
   };
 
+  // Reps always own the leads they create (the database refuses anything
+  // else), so their name is filled in and only managers can reassign.
+  const repField = els.contactForm.elements.salesRep;
+  const unassigned = !data.salesRep || data.salesRep === "Unassigned";
+  if (unassigned && (!contact || !canAssignLeadOwners())) data.salesRep = state.currentUser.name || "";
+  if (repField) {
+    repField.readOnly = !canAssignLeadOwners();
+    repField.title = repField.readOnly ? "Ask a manager to reassign this lead" : "Choose a team member to give them this lead";
+  }
+
   Object.entries(data).forEach(([key, value]) => {
     const field = els.contactForm.elements[key];
     if (field) {
@@ -10148,6 +10308,7 @@ function saveContactFromForm(event) {
     contact,
   );
   contact.jobs = [primary, ...currentJobs.slice(1)];
+  Object.assign(contact, applySalesRepAssignment(contact));
 
   if (existing && existing.status !== contact.status) {
     contact.updates = [
@@ -11228,6 +11389,18 @@ function hydrateIcons(root = document) {
 }
 
 const icons = {
+  "chevron-left":
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
+  "chevron-right":
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+  phone:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>',
+  message:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  template:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>',
+  "alert-triangle":
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
   home:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>',
   "arrow-left":
@@ -11730,6 +11903,7 @@ function bindEvents() {
   els.removeCompanyLogoButton.addEventListener("click", removeCompanyLogo);
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
   els.connectGoogleWorkspaceButton?.addEventListener("click", connectGoogleWorkspace);
+  els.calendarGoogleConnectButton?.addEventListener("click", connectGoogleWorkspace);
   els.disconnectGoogleWorkspaceButton?.addEventListener("click", disconnectGoogleWorkspace);
   els.connectZohoSignButton?.addEventListener("click", connectZohoSign);
   els.disconnectZohoSignButton?.addEventListener("click", disconnectZohoSign);

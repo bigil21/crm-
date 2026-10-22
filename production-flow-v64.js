@@ -544,6 +544,7 @@
       contact,
     );
     contact.jobs = [primary, ...currentJobs.slice(1)];
+    if (typeof applySalesRepAssignment === "function") Object.assign(contact, applySalesRepAssignment(contact));
 
     if (existing && existing.status !== contact.status) {
       contact.updates = [

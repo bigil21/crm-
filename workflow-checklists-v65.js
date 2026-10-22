@@ -56,9 +56,9 @@
     "Estimate Sent": [
       autoItem(
         "estimate-sent",
-        "Estimate marked Sent or Approved",
+        "Estimate marked Sent or Won",
         (contact, job) =>
-          estimatesForJob(contact, job).some((estimate) => ["Sent", "Approved"].includes(estimate.status)),
+          estimatesForJob(contact, job).some((estimate) => ["Sent", "Won", "Approved"].includes(estimate.status)),
       ),
       manualItem("estimate-reviewed", "Estimate reviewed with customer"),
       manualItem("follow-up-scheduled", "Follow-up date scheduled"),
@@ -240,8 +240,24 @@
 
     const currentIndex = stageIndex(currentStatus);
     const targetIndex = stageIndex(targetStatus);
-    if (targetIndex < 0) return { allowed: true };
-    if (currentIndex < 0 || targetIndex < currentIndex) return { allowed: true };
+    // Mirrors crm_assert_job_stage_transition: only managers may correct a
+    // stage backward or reopen a Lost job, and a reopened job restarts at New.
+    if (targetIndex < 0) return { allowed: false, reason: `${targetStatus} is not a job stage.` };
+    if (currentIndex < 0 || targetIndex < currentIndex) {
+      const manager = typeof canManageTeamData === "function" && canManageTeamData();
+      if (!manager) {
+        return {
+          allowed: false,
+          reason: currentIndex < 0
+            ? "Ask a manager to reopen this job."
+            : "Ask a manager to move this job back to an earlier stage.",
+        };
+      }
+      if (currentIndex < 0 && targetStatus !== "New") {
+        return { allowed: false, reason: "Reopen this job at New, then move it forward one stage at a time." };
+      }
+      return { allowed: true };
+    }
     if (targetIndex !== currentIndex + 1) {
       return {
         allowed: false,
@@ -813,11 +829,18 @@
     checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
   }
 
+  // The contact form has an input named "id", which shadows form.id, so the
+  // form's own id attribute must be read explicitly.
+  function formIdOf(form) {
+    return form?.getAttribute?.("id") || "";
+  }
+
   function formTransitionContext(form) {
     const targetStatus = String(new FormData(form).get("status") || "");
     if (!targetStatus) return null;
+    const formId = formIdOf(form);
 
-    if (form.id === "contactForm") {
+    if (formId === "contactForm") {
       const id = String(form.elements.id?.value || "");
       const contact = id ? getContact(id) : null;
       if (!contact) {
@@ -830,7 +853,7 @@
 
     const contact = getSelectedContact();
     if (!contact) return null;
-    if (form.id === "leadJobForm") {
+    if (formId === "leadJobForm") {
       const jobId = String(form.elements.jobId?.value || "");
       const job = contactJobs(contact).find((item) => item.id === jobId);
       if (!job) {
@@ -840,7 +863,7 @@
       }
       return { contact, job, targetStatus };
     }
-    if (form.id === "leadConversationForm") {
+    if (formId === "leadConversationForm") {
       return { contact, job: primaryJob(contact), targetStatus };
     }
     return null;
@@ -848,7 +871,7 @@
 
   function guardStatusSubmit(event) {
     const form = event.target;
-    if (!["contactForm", "leadJobForm", "leadConversationForm"].includes(form?.id)) return;
+    if (!["contactForm", "leadJobForm", "leadConversationForm"].includes(formIdOf(form))) return;
     const context = formTransitionContext(form);
     if (!context) return;
 
