@@ -5,7 +5,7 @@
   const key = (row) => `${row.record_type}:${row.id}`;
   const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
-  function create({ rpc, requestId, onAcknowledged = () => {}, onBlocked = () => {}, timeoutMs = 15000 }) {
+  function create({ rpc, requestId, onAcknowledged = () => {}, onBlocked = () => {}, timeoutMs = 15000, transientRetries = 0 }) {
     const versions = new Map();
     const ownCommits = new Map();
     let tail = Promise.resolve();
@@ -32,11 +32,31 @@
           for (const row of changes) row.expected_version += (ownCommits.get(key(row)) || 0) - queuedAt.get(key(row));
           let timeout;
           try {
-            const response = await Promise.race([
-              rpc('crm_commit_records', payload),
-              new Promise((_resolve, reject) => { timeout = setTimeout(() => reject(new Error('Save confirmation timed out.')), timeoutMs); }),
-            ]);
-            if (response.error) throw response.error;
+            const requestOnce = async () => {
+              try {
+                return await Promise.race([
+                  rpc('crm_commit_records', payload),
+                  new Promise((_resolve, reject) => { timeout = setTimeout(() => reject(new Error('Save confirmation timed out.')), timeoutMs); }),
+                ]);
+              } finally {
+                clearTimeout(timeout);
+                timeout = undefined;
+              }
+            };
+            let response;
+            for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
+              try {
+                response = await requestOnce();
+                if (response.error) throw response.error;
+                break;
+              } catch (error) {
+                const status = Number(error?.status || error?.statusCode || error?.code);
+                const message = String(error?.message || error || '').toLowerCase();
+                const retryable = status === 408 || status === 429 || (status >= 500 && status <= 599) ||
+                  /timed out|timeout|network|fetch|gateway/.test(message);
+                if (attempt >= transientRetries || !retryable) throw error;
+              }
+            }
             const returned = response.data?.rows;
             if (!Array.isArray(returned) || returned.length !== changes.length || changes.some(change =>
               !returned.some(row => key(row) === key(change) && row.company_state_id === change.company_state_id &&

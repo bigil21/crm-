@@ -25,6 +25,19 @@ test('Paid requires a positive contract and confirmed full payment in UI and dat
   assert.match(workflow, /targetStatus === "Paid" && !jobHasFullPayment\(job\)/);
   assert.match(migration, /old_row\.data->>'paidAmount'/);
   assert.match(migration, /raise exception 'full_payment_required'/);
+  assert.match(app, /status === "Paid" && !\(contractValue > 0 && paidAmount \+ 0\.005 >= contractValue\)[^]*?\? "Completed"/);
+  assert.match(app, /repairsInvalidPaidStatus[^]*?durableFingerprint\(row\)/);
+  assert.match(app, /durableRecordsReady = true;[^]*?hasPendingDurableChanges\(\)[^]*?queueDurableRecordsSave\(\)/);
+  assert.match(workflow, /\$\{automatic \|\| !editable \? "disabled" : ""\}/);
+  assert.doesNotMatch(workflow, /Can confirm manually/);
+});
+
+test('dashboard total is every visible lead while open opportunities remain a separate caption', () => {
+  assert.match(app, /const leads = contacts\.length/);
+  assert.match(app, /const openLeads = contacts\.filter/);
+  assert.match(app, /\["Total Leads", metrics\.leads, `\$\{metrics\.openLeads\} open sales opportunities`/);
+  assert.match(productionFlow, /const leads = contacts\.length/);
+  assert.match(productionFlow, /`\$\{metrics\.openLeads\} open sales opportunities`/);
 });
 
 test('adding another job preserves primary lead fields and totals every project', () => {

@@ -133,7 +133,9 @@
   }
 
   function patchedDashboardMetrics() {
-    const leads = visibleContacts().filter((contact) => contact.type === "Lead" && preSaleStatuses.includes(contact.status)).length;
+    const contacts = visibleContacts();
+    const leads = contacts.length;
+    const openLeads = contacts.filter((contact) => contactJobs(contact).some((job) => job.status !== "Paid" && job.status !== "Lost")).length;
     const jobs = allJobs();
     const openContracts = jobs.filter((job) => activeContractStatuses.includes(job.status));
     const closedJobs = jobs.filter(jobHasFullPayment);
@@ -143,6 +145,7 @@
       .reduce((sum, job) => sum + safeNumber(job.value), 0);
     return {
       leads,
+      openLeads,
       totalJobs: jobs.length,
       estimatesSent,
       openContracts: openContracts.length,
@@ -157,7 +160,7 @@
     if (!els.summaryStrip) return;
     const metrics = patchedDashboardMetrics();
     const cards = [
-      ["Total Leads", metrics.leads, "Open sales opportunities", "user", "blue"],
+      ["Total Leads", metrics.leads, `${metrics.openLeads} open sales opportunities`, "user", "blue"],
       ["Estimates Sent", metrics.estimatesSent, "Sent or won", "file", "green"],
       ["Open Contracts", metrics.openContracts, money.format(metrics.openValue), "briefcase", "purple"],
       ["Jobs Paid", metrics.closedJobs, money.format(metrics.closedValue), "check", "orange"],

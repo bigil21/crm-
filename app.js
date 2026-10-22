@@ -1084,6 +1084,9 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
   const primaryJobId = jobs[0]?.id || "";
   return {
     ...baseContact,
+    // Keep the lead summary aligned with the primary job after repairing a
+    // legacy Paid-without-payment status in normalizeJob.
+    status: jobs[0]?.status || baseContact.status,
     jobs,
     documents: baseContact.documents.map((document) => ({
       ...document,
@@ -1094,8 +1097,6 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
 
 function normalizeJob(job, contact = {}) {
   const status = job.status || contact.status || "New";
-  const closedDate =
-    job.closedDate || (soldJobStatuses.includes(status) ? contact.closedDate || contact.lastContact || todayISO() : "");
   const manualPayments = (job.manualPayments || []).map(normalizeManualPayment);
   const manualPaidAmount = manualPayments.reduce((sum, payment) => sum + number(payment.amount), 0);
   const legacyPaidAmount = number(job.paidAmount);
@@ -1109,6 +1110,14 @@ function normalizeJob(job, contact = {}) {
   );
   const paidAmount = Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
   const contractValue = number(job.contractValue ?? job.value ?? contact.value);
+  // Old records created before the payment gate can claim to be Paid without
+  // any confirmed money. Display and persist those at Completed until the
+  // ledger actually covers the contract so reports never overstate revenue.
+  const normalizedStatus = status === "Paid" && !(contractValue > 0 && paidAmount + 0.005 >= contractValue)
+    ? "Completed"
+    : status;
+  const closedDate =
+    job.closedDate || (soldJobStatuses.includes(normalizedStatus) ? contact.closedDate || contact.lastContact || todayISO() : "");
   const squareLastPaymentAt = job.squareLastPaymentAt || job.square_last_payment_at || (!manualPayments.length ? job.lastPaymentAt || "" : "");
   const lastPaymentAt = [
     squareLastPaymentAt,
@@ -1123,7 +1132,7 @@ function normalizeJob(job, contact = {}) {
     projectNumber: job.projectNumber || "",
     name: job.name || job.title || `${contact.name || "Client"} Job`,
     address: job.address || contact.address || "",
-    status,
+    status: normalizedStatus,
     value: number(job.value ?? contact.value),
     contractValue,
     squarePaidAmount,
@@ -2145,6 +2154,11 @@ function rememberDurableRows(rows = [], auditRows = []) {
   const normalizedRows = new Map(durableRowsFromState().map((row) => [durableRecordKey(row), row]));
   durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => {
     const normalized = normalizedRows.get(durableRecordKey(row));
+    const repairsInvalidPaidStatus = row.data?.status === "Paid" && normalized?.data?.status === "Completed";
+    // Keep only this invalid legacy state dirty so the ordinary conflict-safe
+    // writer repairs it durably after startup. Other display defaults retain
+    // their normalized fingerprint and never cause bulk background rewrites.
+    if (repairsInvalidPaidStatus) return [durableRecordKey(row), durableFingerprint(row)];
     return [durableRecordKey(row), durableFingerprint(normalized || row)];
   }));
   durableAuditIds = new Set(auditRows.map((row) => row.id));
@@ -2155,6 +2169,7 @@ function getDurableCommitWriter() {
   if (!durableCommitWriter) durableCommitWriter = window.CrmRecordWrites.create({
     rpc: (name, payload) => cloudClient.rpc(name, payload),
     requestId: () => crypto.randomUUID(),
+    transientRetries: 1,
     onAcknowledged: (changes, auditIds) => {
       changes.forEach(row => {
         if (row.data) durableFinancialBaseline.set(durableRecordKey(row), row.data);
@@ -2734,6 +2749,7 @@ async function initializeDurableRecords() {
   // Legacy import must be an explicit, separately reviewed maintenance operation.
   durableRecordsReady = true;
   durableBusinessStateAuthoritative = true;
+  if (hasPendingDurableChanges()) queueDurableRecordsSave();
   void createDailyRecoveryBackup();
   if (!cloudClient.channel || durableRecordsSubscription) return;
   durableRecordsSubscription = cloudClient
@@ -3683,7 +3699,8 @@ function estimateTotal(estimate) {
 function dashboardMetrics() {
   const contacts = visibleContacts();
   const estimates = visibleEstimates();
-  const leads = contacts.filter((contact) => contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status))).length;
+  const leads = contacts.length;
+  const openLeads = contacts.filter((contact) => contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status))).length;
   const jobs = allJobs();
   const openContracts = jobs.filter((job) => !["Paid", "Lost"].includes(job.status));
   const closedJobs = jobs.filter(jobHasFullPayment);
@@ -3695,6 +3712,7 @@ function dashboardMetrics() {
     .reduce((sum, job) => sum + number(job.value), 0);
   return {
     leads,
+    openLeads,
     totalJobs: jobs.length,
     estimatesSent,
     openContracts: openContracts.length,
@@ -4264,7 +4282,7 @@ function renderSummary() {
   const metrics = dashboardMetrics();
 
   const cards = [
-    ["New Leads", metrics.leads, "Open sales opportunities", "user", "blue"],
+    ["Total Leads", metrics.leads, `${metrics.openLeads} open sales opportunities`, "user", "blue"],
     ["Estimates Sent", metrics.estimatesSent, "Sent or won estimates", "file", "green"],
     ["Jobs Paid", metrics.closedJobs, "Contracts paid in full", "check", "purple"],
     ["Revenue Collected", money.format(metrics.closedValue), "Confirmed payments received", "dollar", "orange"],
@@ -6783,12 +6801,21 @@ async function storeDocumentFile(file, { documentId, leadId = "company", jobId =
   const versionSegment = safeStoragePathSegment(uid("version"), "version");
   const recordScope = jobId ? `${leadSegment}/jobs/${jobSegment}` : leadSegment;
   const storagePath = `${companySegment}/${recordScope}/${categorySegment}/${documentSegment}/${versionSegment}/${safeStorageFileName(file.name)}`;
-  const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
+  const uploadFileSize = Number.isFinite(Number(file.size)) ? Number(file.size) : 0;
+  const uploadTimeoutMs = Math.max(45000, Math.min(180000, 45000 + Math.ceil(uploadFileSize / (5 * 1024 * 1024)) * 5000));
+  let uploadTimeout;
+  const upload = cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
     cacheControl: "3600",
     contentType: file.type || "application/octet-stream",
     // Immutable revisions preserve prior bytes until new metadata is confirmed.
     upsert: false,
   });
+  const { error } = await Promise.race([
+    upload,
+    new Promise((_resolve, reject) => {
+      uploadTimeout = setTimeout(() => reject(new Error("File upload timed out. Check the connection and retry.")), uploadTimeoutMs);
+    }),
+  ]).finally(() => clearTimeout(uploadTimeout));
   if (error) throw error;
   return { dataUrl: "", storagePath };
 }

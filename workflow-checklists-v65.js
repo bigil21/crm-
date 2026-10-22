@@ -314,7 +314,8 @@
       row?.classList.toggle("complete", item.complete);
       row?.classList.toggle("missing", !item.complete);
       const mode = row?.querySelector(".workflow-check-mode");
-      if (mode) mode.textContent = item.complete ? "Verified" : canAction("manageJobs") ? "Can confirm manually" : "Missing";
+      checkbox.disabled = item.mode === "auto" || !canAction("manageJobs");
+      if (mode) mode.textContent = item.complete ? "System verified" : "Waiting for recorded data";
     });
     const summary = panel.querySelector(".workflow-checklist-summary > div:first-child span");
     if (summary) summary.textContent = `${checklist.completed} of ${checklist.total} required items complete`;
@@ -546,11 +547,11 @@
               data-stage="${escapeHtml(checklist.stage)}"
               data-item-id="${item.id}"
               ${item.complete ? "checked" : ""}
-              ${!editable ? "disabled" : ""}
+              ${automatic || !editable ? "disabled" : ""}
             />
             <span class="workflow-check-box" aria-hidden="true"></span>
             <span class="workflow-check-label">${escapeHtml(item.label)}</span>
-            ${automatic ? `<span class="workflow-check-mode">${item.complete ? "Verified" : editable ? "Can confirm manually" : "Missing"}</span>` : ""}
+            ${automatic ? `<span class="workflow-check-mode">${item.complete ? "System verified" : "Waiting for recorded data"}</span>` : ""}
           </label>
         `;
       })

@@ -69,6 +69,18 @@ test('a stalled save releases the queue and preserves its uncertain request', as
   assert.equal(acknowledge, 0);
   assert.ok(w.blocked.payload.p_request_id);
 });
+test('a transient gateway failure retries the identical idempotent request once', async () => {
+  const payloads = [];
+  const w = writer({ transientRetries: 1, rpc: async (_name, payload) => {
+    payloads.push(structuredClone(payload));
+    if (payloads.length === 1) return { data: null, error: { status: 504, message: 'Gateway timeout' } };
+    return reply(payload);
+  } });
+  const result = await w.commit([row()]);
+  assert.ok(result.data);
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(payloads[1], payloads[0]);
+});
 test('incomplete or mismatched confirmations are never treated as saved', async () => {
   for (const corrupt of [
     r => { r.data.rows = []; },
