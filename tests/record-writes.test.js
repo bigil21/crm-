@@ -51,6 +51,23 @@ test('conflict preserves the exact request and pauses subsequent network writes'
   assert.equal(recovery.payload.p_changes[0].id, 'job-1');
   assert.ok(recovery.payload.p_request_id);
 });
+test('confirmed business-rule rejection does not block later valid saves', async () => {
+  let calls = 0; let rejected;
+  const validationError = { message: 'invalid_stage_transition' };
+  const w = writer({
+    rpc: async (_name, payload) => {
+      calls++;
+      return calls === 1 ? { data: null, error: validationError } : reply(payload);
+    },
+    isExpectedRejection: error => error === validationError,
+    onRejected: value => { rejected = value; },
+  });
+  assert.equal((await w.commit([row()])).error, validationError);
+  assert.equal(w.blocked, null);
+  assert.equal(rejected.error, validationError);
+  assert.ok((await w.commit([row('job-2')])).data);
+  assert.equal(calls, 2);
+});
 test('lost responses and missing migrations never fall back to unsafe upserts', async () => {
   for (const failure of [Error('Network response lost'), { code: 'PGRST202', message: 'Function not found' }]) {
     let ack = 0;

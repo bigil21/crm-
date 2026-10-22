@@ -566,6 +566,7 @@ let durableReloadQueued = false;
 let durableRecordFingerprints = new Map();
 let durableCommitWriter = null;
 let durableWriteBlocked = false;
+let durableRejectionReloadPending = false;
 const durableFinancialBaseline = new Map();
 const protectedPaymentFields = ["manualPayments", "paidAmount", "squarePaidAmount", "square_paid_amount", "squareInvoiceId", "squareOrderId", "paidAt", "lastPaymentAt", "squareLastPaymentAt", "square_last_payment_at", "squareStatus", "paymentRequests", "paymentUpdatedAt"];
 let durableAuditIds = new Set();
@@ -2182,6 +2183,8 @@ function getDurableCommitWriter() {
       });
       auditIds.forEach(id => durableAuditIds.add(id));
     },
+    isExpectedRejection: (error) => Boolean(durableBusinessRuleRejection(error)),
+    onRejected: (value) => handleRejectedDurableWrite(value),
     onBlocked: preserveBlockedDurableWrite,
   });
   return durableCommitWriter;
@@ -2208,6 +2211,29 @@ function durableRejectionReason(error) {
   return code ? durableRejectionReasons[code] : "";
 }
 
+function durableBusinessRuleRejection(error) {
+  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
+  return Object.keys(durableRejectionReasons).find((name) => name !== "authentication_required" && text.includes(name)) || "";
+}
+
+function handleRejectedDurableWrite({ error }) {
+  durableRejectionReloadPending = true;
+  window.clearTimeout(durableSaveTimer);
+  const reason = durableRejectionReason(error) || "That change is not allowed.";
+  showToast(`Change not saved. ${reason}`);
+  // The commit RPC confirmed that the whole request was rolled back. Restore
+  // authoritative rows after the current save finishes instead of pausing the
+  // entire CRM or repeatedly retrying the same rejected change.
+  window.setTimeout(async () => {
+    if (!durableRejectionReloadPending || durableSaveInFlight) return;
+    const restored = await reloadDurableRecords({ force: true });
+    if (restored !== null) {
+      durableRejectionReloadPending = false;
+      renderDurableUpdateWhenIdle();
+    }
+  }, 0);
+}
+
 function preserveBlockedDurableWrite({ error, payload }) {
   durableWriteBlocked = true;
   window.clearTimeout(durableSaveTimer);
@@ -2215,44 +2241,12 @@ function preserveBlockedDurableWrite({ error, payload }) {
   const recoveryKey = `jobcrest-unsaved-recovery:${authSession?.user?.id || "local"}:${payload.p_request_id}`;
   const recovery = { createdAt: new Date().toISOString(), request: payload, state: JSON.parse(JSON.stringify(state)) };
   try { localStorage.setItem(recoveryKey, JSON.stringify(recovery)); } catch { /* Keep the in-memory download available. */ }
-  if (document.getElementById("crmSaveRecovery")) return;
-  const panel = document.createElement("aside");
-  panel.id = "crmSaveRecovery";
-  panel.setAttribute("role", "alert");
-  panel.style.cssText = "position:fixed;bottom:16px;left:16px;right:16px;z-index:100000;background:#fff4de;color:#34250b;border:2px solid #b87912;border-radius:12px;padding:16px;box-shadow:0 5px 25px #0003";
-  const message = document.createElement("p");
   const rejection = durableRejectionReason(error);
-  message.textContent = error?.code === "40001"
-    ? "Someone else saved a newer version. Your changes have not overwritten theirs. Shared saving is paused; download your unsaved work, then reload and review it."
+  showToast(error?.code === "40001"
+    ? "A newer shared version exists. Reload the page before editing this record again."
     : rejection
-      ? `Your last change was not saved: ${rejection} Shared saving is paused; download your unsaved work, then reload and reapply what is still needed.`
-      : "Shared saving could not be confirmed and is paused. Keep this page open. Download your unsaved work before reloading; an administrator may need to check the connection or database update.";
-  const download = document.createElement("button");
-  download.type = "button";
-  download.textContent = "Download unsaved work";
-  let downloaded = false;
-  download.addEventListener("click", () => {
-    // Include edits made after the failed request as well as the original intent.
-    const contents = JSON.stringify({ ...recovery, currentState: state }, null, 2);
-    const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `jobcrest-unsaved-${payload.p_request_id}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-    downloaded = true;
-  });
-  const reload = document.createElement("button");
-  reload.type = "button";
-  reload.textContent = "Reload shared data";
-  reload.addEventListener("click", () => {
-    if (!downloaded) { message.textContent = "Download your unsaved work first. It contains customer data: keep it secure. Then reload shared data and review which edits need to be reapplied."; return; }
-    if (window.confirm("Confirm the recovery file finished downloading. Reload shared data now? Unsaved edits will need to be reviewed and reapplied from that file.")) location.reload();
-  });
-  panel.append(message, download, reload);
-  document.body.appendChild(panel);
+      ? `Change not saved. ${rejection}`
+      : "Shared saving needs attention. Your recovery copy was kept on this device; reload the page before continuing.");
 }
 
 async function commitDurableChanges(rows, auditRows = [], removals = []) {
@@ -2380,13 +2374,13 @@ async function fetchAllCompanyRows(table, orderColumns = ["id"], { configure = (
   return rows;
 }
 
-async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = false } = {}) {
+async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = false, force = false } = {}) {
   if (durableWriteBlocked) return null;
   try {
     const revision = localEditRevision;
-    if ((!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges()) return null;
+    if (!force && ((!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges())) return null;
     const { rows, auditRows } = await fetchDurableRows();
-    if (durableWriteBlocked || revision !== localEditRevision || (!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges()) {
+    if (durableWriteBlocked || (!force && (revision !== localEditRevision || (!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges()))) {
       // Do not advance fingerprints for a response we did not apply.
       queueDurableRecordsReload({ showUpdateToast: false });
       return null;
@@ -2405,7 +2399,7 @@ async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = f
 }
 
 function queueDurableRecordsSave() {
-  if (durableWriteBlocked) return;
+  if (durableWriteBlocked || durableRejectionReloadPending) return;
   if (!durableWritesEnabled || !durableRecordsReady || !cloudClient || !authSession?.user?.id) return;
   window.clearTimeout(durableSaveTimer);
   durableSaveTimer = window.setTimeout(flushDurableRecordsSave, CLOUD_SAVE_DELAY);
@@ -2501,7 +2495,7 @@ async function flushDurableRecordsSave() {
   } finally {
     durableSaveInFlight = false;
     // Includes removals made while this request was in flight, not only updates.
-    if (hasPendingDurableChanges()) queueDurableRecordsSave();
+    if (!durableRejectionReloadPending && hasPendingDurableChanges()) queueDurableRecordsSave();
   }
 }
 
@@ -12358,7 +12352,8 @@ async function startApp() {
     try { recoveryStorage = localStorage; } catch { /* Browser may deny storage. */ }
     draftRecoveryStore = window.CrmDraftRecovery.create({ storage: recoveryStorage, companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
     const earlier = draftRecoveryStore.list();
-    showPreviousDraftRecovery(earlier.entries);
+    // Recovery copies remain available on this device, but stale copies no
+    // longer cover the CRM with a recurring banner every time someone signs in.
     if (!earlier.available) showDraftStorageWarning();
   }
   state = loadState(activeStorageKey());

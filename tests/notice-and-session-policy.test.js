@@ -16,15 +16,11 @@ function memory() {
     getItem: key => data.get(key) || null, setItem: (key, value) => data.set(key, value), removeItem: key => data.delete(key) };
 }
 
-test('recovery notice dismissal is stable for the same draft and changes for new work', () => {
+test('earlier recovery copies are retained without reopening a login banner', () => {
   const source = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
-  const context = vm.createContext({ Math });
-  vm.runInContext(extract(source, 'recoveryNoticeKey'), context);
-  const first = [{ key: 'draft-a', raw: '{"updatedAt":"one"}' }];
-  assert.equal(context.recoveryNoticeKey(first), context.recoveryNoticeKey([...first]));
-  assert.notEqual(context.recoveryNoticeKey(first), context.recoveryNoticeKey([{ ...first[0], raw: '{"updatedAt":"two"}' }]));
-  assert.match(source, /addNoticeCloseButton\(panel, dismissalKey/);
-  assert.match(source, /aria-label/);
+  assert.match(source, /const earlier = draftRecoveryStore\.list\(\)/);
+  assert.doesNotMatch(source, /showPreviousDraftRecovery\(earlier\.entries\)/);
+  assert.doesNotMatch(source, /id = "crmSaveRecovery"/);
 });
 
 test('external links do not destroy a valid signed-in tab session', () => {

@@ -5,7 +5,16 @@
   const key = (row) => `${row.record_type}:${row.id}`;
   const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
-  function create({ rpc, requestId, onAcknowledged = () => {}, onBlocked = () => {}, timeoutMs = 15000, transientRetries = 0 }) {
+  function create({
+    rpc,
+    requestId,
+    onAcknowledged = () => {},
+    onBlocked = () => {},
+    onRejected = () => {},
+    isExpectedRejection = () => false,
+    timeoutMs = 15000,
+    transientRetries = 0,
+  }) {
     const versions = new Map();
     const ownCommits = new Map();
     let tail = Promise.resolve();
@@ -72,6 +81,13 @@
             onAcknowledged(clone(changes), response.data.audit_ids || []);
             return response;
           } catch (error) {
+            // Business-rule rejections are confirmed rollbacks, not uncertain
+            // transport failures. Let the caller restore server truth without
+            // permanently blocking every later save in this browser tab.
+            if (isExpectedRejection(error)) {
+              onRejected({ error, payload });
+              return { data: null, error };
+            }
             // Retain the immutable request, including its idempotency key. A
             // transport error may mean the server committed but the reply was lost.
             blocked = { error, payload };

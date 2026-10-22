@@ -12,7 +12,7 @@ function harness(rows, names) {
   const context = vm.createContext({
     console, crypto: require('node:crypto').webcrypto, setTimeout, clearTimeout,
     window: { CrmRecordWrites: { create }, setTimeout, clearTimeout },
-    durableRecordsReady: true, durableSaveInFlight: false, durableWriteBlocked: false,
+    durableRecordsReady: true, durableSaveInFlight: false, durableWriteBlocked: false, durableRejectionReloadPending: false,
     durableCommitWriter: null, durableSaveTimer: null,
     durableRecordFingerprints: new Map(), durableAuditIds: new Set(), durableFinancialBaseline: new Map(),
     durableRecordKey: row => `${row.record_type}:${row.id}`, authSession: { user: { id: 'tester' } },
