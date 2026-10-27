@@ -246,7 +246,7 @@ function googleWorkspaceConfig() {
   if (!clientId || !clientSecret || stateSecret.length < 32 || !/^[A-Za-z0-9+/]{43}=$/.test(encryptionKey)) return null;
   return {
     clientId, clientSecret, redirectUri: redirect.toString(), stateSecret, encryptionKey,
-    additionalScopes: [GOOGLE_TASKS_SCOPE, GOOGLE_CONTACTS_SCOPE],
+    additionalScopes: [GOOGLE_TASKS_SCOPE, GOOGLE_CONTACTS_SCOPE, GOOGLE_ADMIN_GROUP_SCOPE],
   };
 }
 
@@ -404,7 +404,7 @@ async function handleGoogleStatus(req, res, user) {
     drive: Boolean(googleDriveConfig()), docs: Boolean(products && Object.keys(products.templates).length),
     sheets: Boolean(googleDriveConfig()), chat: Boolean(products?.chatWebhook),
     gmailPush: Boolean(products?.gmailTopic && products?.gmailVerificationToken),
-    groups: Boolean(products?.delegatedAdmin && products?.groups.length),
+    groups: Boolean(products?.groups.length && scopes.has(GOOGLE_ADMIN_GROUP_SCOPE)),
     docTemplates: Object.keys(products?.templates || {}).map((key) => ({
       key, label: key.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
     })),
@@ -807,20 +807,28 @@ async function handleGoogleGmailPush(req, res, url) {
   } catch { sendJson(res, 400, { error: "invalid_push" }); }
 }
 
-async function handleGoogleGroupMember(req, res) {
+async function handleGoogleGroupMember(req, res, user) {
   const config = googleProductsConfig();
-  if (!config?.delegatedAdmin || !config.groups.length) { sendJson(res, 503, { error: "Google Groups onboarding is not configured." }); return; }
+  if (!config?.groups.length) { sendJson(res, 503, { error: "Google Groups onboarding is not configured." }); return; }
   let payload;
   try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Groups request." }); return; }
   const requested = [...new Set(Array.isArray(payload?.groups) ? payload.groups.map((value) => String(value).trim().toLowerCase()) : [])];
   const groups = requested.filter((value) => config.groups.includes(value));
   if (!groups.length || groups.length !== requested.length) { sendJson(res, 400, { error: "Choose only administrator-approved Google Groups." }); return; }
   try {
-    const accessToken = await exchangeServiceAccountToken(fetch, { ...config, subject: config.delegatedAdmin, scopes: [GOOGLE_ADMIN_GROUP_SCOPE] });
+    const { accessToken } = await googleAccessForUser(user, GOOGLE_ADMIN_GROUP_SCOPE);
     const memberships = [];
     for (const group of groups) memberships.push(await addGoogleGroupMember(fetch, accessToken, group, payload?.email));
     sendJson(res, 200, { synced: true, memberships });
-  } catch (error) { sendJson(res, 502, { error: "Google Groups membership could not be updated.", code: error.message }); }
+  } catch (error) {
+    const status = ["google_not_connected", "google_scope_missing"].includes(error.message) ? 409 : 502;
+    sendJson(res, status, {
+      error: error.message === "google_scope_missing"
+        ? "Reconnect Google Workspace as a Groups administrator before managing memberships."
+        : "Google Groups membership could not be updated.",
+      code: error.message,
+    });
+  }
 }
 
 const ZOHO_DATA_CENTERS = {
