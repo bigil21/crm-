@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=74" />
+    <link rel="stylesheet" href="styles.css?v=75" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1209,21 +1209,84 @@
         </section>
 
         <section class="view-panel hidden" id="calendarView">
-          <div class="calendar-layout">
-            <section class="surface calendar-form-panel">
-              <div class="view-toolbar">
-                <div>
-                  <p class="eyebrow">Calendar</p>
-                  <h2>Create rep task</h2>
+          <div class="calendar-command-center">
+            <section class="surface calendar-command-bar" aria-label="Calendar controls">
+              <div class="calendar-command-primary">
+                <button class="primary-button" type="button" id="calendarNewTaskButton">
+                  <span aria-hidden="true" data-icon="plus"></span>
+                  New task
+                </button>
+                <button class="secondary-button calendar-today-button" type="button" id="calendarTodayButton">Today</button>
+                <div class="calendar-period-navigation" aria-label="Change calendar period">
+                  <button class="mini-button" type="button" id="calPrevMonth" aria-label="Previous period">
+                    <span aria-hidden="true" data-icon="chevron-left"></span>
+                  </button>
+                  <button class="mini-button" type="button" id="calNextMonth" aria-label="Next period">
+                    <span aria-hidden="true" data-icon="chevron-right"></span>
+                  </button>
                 </div>
+                <h2 class="calendar-range-title" id="calMonthTitle"></h2>
               </div>
-              <div class="calendar-google-connect hidden" id="calendarGoogleConnect" role="status">
-                <p>Connect your Google account to send these tasks to your Google Calendar.</p>
-                <button class="secondary-button" type="button" id="calendarGoogleConnectButton">Connect Google Calendar</button>
+              <div class="calendar-view-switcher" id="calendarViewSwitcher" role="group" aria-label="Calendar view">
+                <button type="button" data-calendar-view="day">Day</button>
+                <button type="button" data-calendar-view="week">Week</button>
+                <button type="button" data-calendar-view="month">Month</button>
+                <button type="button" data-calendar-view="schedule">Schedule</button>
               </div>
-              <form id="calendarTaskForm" class="estimate-form">
+            </section>
+
+            <div class="calendar-google-connect hidden" id="calendarGoogleConnect" role="status">
+              <p>Connect your Google account to synchronize tasks, reminders, and Meet links.</p>
+              <button class="secondary-button" type="button" id="calendarGoogleConnectButton">Connect Google Calendar</button>
+            </div>
+
+            <div class="calendar-workspace-layout">
+              <aside class="surface calendar-filter-panel" aria-label="Calendar filters">
+                <label class="calendar-jump-date">
+                  <span>Jump to date</span>
+                  <input type="date" id="calendarDatePicker" />
+                </label>
+                <div class="calendar-filter-heading">
+                  <div>
+                    <p class="eyebrow">Calendars</p>
+                    <h3>Representatives</h3>
+                  </div>
+                  <button class="link-button" type="button" id="calendarSelectAllReps">Show all</button>
+                </div>
+                <div class="calendar-rep-filters" id="calendarRepFilters"></div>
+                <div class="calendar-type-legend" aria-label="Event color legend">
+                  <p class="eyebrow">Event types</p>
+                  <span><i class="calendar-legend-dot type-inspection"></i>Inspection</span>
+                  <span><i class="calendar-legend-dot type-estimate"></i>Estimate</span>
+                  <span><i class="calendar-legend-dot type-production"></i>Production</span>
+                  <span><i class="calendar-legend-dot type-payment"></i>Payment</span>
+                  <span><i class="calendar-legend-dot type-general"></i>General</span>
+                </div>
+              </aside>
+
+              <section class="surface calendar-canvas-panel" aria-label="CRM calendar">
+                <div id="calMonthGrid" class="calendar-canvas"></div>
+                <div class="cal-day-detail hidden" id="calDayDetail">
+                  <p class="cal-day-detail-title" id="calDayDetailTitle"></p>
+                  <div id="calDayDetailTasks"></div>
+                </div>
+                <div id="calendarTasksList" class="calendar-schedule-list task-list"></div>
+              </section>
+
+              <aside class="surface calendar-editor-panel hidden" id="calendarEditorPanel" aria-labelledby="calendarEditorTitle">
+                <div class="calendar-editor-header">
+                  <div>
+                    <p class="eyebrow">Event details</p>
+                    <h2 id="calendarEditorTitle">Create task</h2>
+                  </div>
+                  <button class="mini-button" type="button" id="calendarEditorClose" aria-label="Close event details">
+                    <span aria-hidden="true" data-icon="x"></span>
+                  </button>
+                </div>
+                <div class="calendar-event-context hidden" id="calendarEventContext"></div>
+                <form id="calendarTaskForm" class="estimate-form calendar-task-form">
                 <input type="hidden" name="taskId" />
-                <div class="form-grid two">
+                <div class="form-grid calendar-form-grid">
                   <label>
                     Sales Representative
                     <input name="rep" list="salesRepOptions" required autocomplete="off" />
@@ -1303,39 +1366,18 @@
                   <textarea name="checklistText" rows="4" placeholder="One checklist item per line"></textarea>
                 </label>
                 <div class="builder-actions end">
+                  <button class="secondary-button hidden" type="button" id="calendarDeleteTaskButton">
+                    <span aria-hidden="true" data-icon="trash"></span>
+                    Delete
+                  </button>
                   <button class="primary-button" type="submit">
                     <span aria-hidden="true" data-icon="check"></span>
                     Save Task
                   </button>
                 </div>
               </form>
-            </section>
-            <section class="surface calendar-list-panel">
-              <div class="view-toolbar">
-                <div>
-                  <p class="eyebrow">Tasks</p>
-                  <h2>Rep reminders</h2>
-                </div>
-              </div>
-              <div class="cal-month-nav" id="calMonthNav">
-                <button class="mini-button" type="button" id="calPrevMonth" aria-label="Previous month">
-                  <span aria-hidden="true" data-icon="chevron-left"></span>
-                </button>
-                <h3 class="cal-month-title" id="calMonthTitle"></h3>
-                <button class="mini-button" type="button" id="calNextMonth" aria-label="Next month">
-                  <span aria-hidden="true" data-icon="chevron-right"></span>
-                </button>
-              </div>
-              <div id="calMonthGrid" class="cal-month-grid"></div>
-              <div class="cal-day-detail hidden" id="calDayDetail">
-                <p class="cal-day-detail-title" id="calDayDetailTitle"></p>
-                <div id="calDayDetailTasks"></div>
-              </div>
-              <div class="view-toolbar" style="margin-top:16px">
-                <p class="eyebrow">All tasks</p>
-              </div>
-              <div id="calendarTasksList" class="task-list"></div>
-            </section>
+              </aside>
+            </div>
           </div>
         </section>
 
@@ -1890,7 +1932,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=158" defer></script>
+    <script src="app.js?v=159" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>

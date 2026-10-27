@@ -890,6 +890,17 @@ const els = {
   calDayDetail: document.querySelector("#calDayDetail"),
   calDayDetailTitle: document.querySelector("#calDayDetailTitle"),
   calDayDetailTasks: document.querySelector("#calDayDetailTasks"),
+  calendarViewSwitcher: document.querySelector("#calendarViewSwitcher"),
+  calendarTodayButton: document.querySelector("#calendarTodayButton"),
+  calendarNewTaskButton: document.querySelector("#calendarNewTaskButton"),
+  calendarDatePicker: document.querySelector("#calendarDatePicker"),
+  calendarRepFilters: document.querySelector("#calendarRepFilters"),
+  calendarSelectAllReps: document.querySelector("#calendarSelectAllReps"),
+  calendarEditorPanel: document.querySelector("#calendarEditorPanel"),
+  calendarEditorTitle: document.querySelector("#calendarEditorTitle"),
+  calendarEditorClose: document.querySelector("#calendarEditorClose"),
+  calendarEventContext: document.querySelector("#calendarEventContext"),
+  calendarDeleteTaskButton: document.querySelector("#calendarDeleteTaskButton"),
   companyForm: document.querySelector("#companyForm"),
   adminOperationsSettings: document.querySelector("#adminOperationsSettings"),
   adminTaxForm: document.querySelector("#adminTaxForm"),
@@ -9628,88 +9639,403 @@ function removeCompanyLogo() {
 }
 
 let calendarMonthOffset = 0;
+let calendarAnchorDate = new Date();
+let calendarViewMode = window.matchMedia?.("(max-width: 760px)").matches ? "schedule" : "week";
+let calendarVisibleReps = new Set();
+const CALENDAR_START_HOUR = 6;
+const CALENDAR_END_HOUR = 21;
+const CALENDAR_SLOT_HEIGHT = 56;
+
+function calendarStartOfDay(value) {
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function calendarStartOfWeek(value) {
+  const date = calendarStartOfDay(value);
+  date.setDate(date.getDate() - date.getDay());
+  return date;
+}
+
+function calendarAddDays(value, amount) {
+  const date = new Date(value);
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function calendarRepKey(task) {
+  return String(task.ownerEmail || task.rep || task.ownerName || "Unassigned").trim().toLowerCase() || "unassigned";
+}
+
+function calendarRepLabel(task) {
+  return canonicalRepresentativeName(task.ownerName || task.rep || task.ownerEmail || "Unassigned", task) || "Unassigned";
+}
+
+function calendarRepColor(key) {
+  const colors = ["#1a73e8", "#0f9d58", "#a142f4", "#f29900", "#d93025", "#00796b", "#c2185b", "#5f6368"];
+  let hash = 0;
+  for (const character of String(key)) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function calendarTaskType(task) {
+  const contact = getContact(task.contactId);
+  const job = contact ? contactJobs(contact).find((item) => item.id === task.jobId) : null;
+  const source = `${task.title || ""} ${task.notes || ""} ${job?.status || ""}`.toLowerCase();
+  if (/inspect|site visit|walk.?through|measure/.test(source)) return "inspection";
+  if (/estimate|proposal|quote|follow.?up/.test(source)) return "estimate";
+  if (/payment|deposit|invoice|collect|paid/.test(source)) return "payment";
+  if (/material|schedule|production|install|crew|progress|complete/.test(source)) return "production";
+  return "general";
+}
+
+function calendarFilteredTasks() {
+  const tasks = visibleCalendarTasks();
+  const repKeys = [...new Set(tasks.map(calendarRepKey))];
+  if (!calendarVisibleReps.size) repKeys.forEach((key) => calendarVisibleReps.add(key));
+  return tasks.filter((task) => calendarVisibleReps.has(calendarRepKey(task)));
+}
+
+function calendarEventMarkup(task, options = {}) {
+  const due = new Date(task.dueAt);
+  const type = calendarTaskType(task);
+  const color = calendarRepColor(calendarRepKey(task));
+  const time = due.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const sync = task.googleSyncStatus === "synced" ? "Google synced" : task.googleSyncStatus === "error" ? "Sync failed" : task.googleSyncStatus === "pending" ? "Syncing" : "CRM only";
+  return `<button class="calendar-event type-${type}${task.completed ? " is-complete" : ""}" type="button" draggable="${options.draggable === false ? "false" : "true"}" data-calendar-task-id="${escapeHtml(task.id)}" style="--rep-color:${color}" aria-label="${escapeHtml(`${time} ${task.title}, ${calendarRepLabel(task)}, ${sync}`)}">
+    <span class="calendar-event-time">${escapeHtml(time)}</span>
+    <strong>${escapeHtml(task.title)}</strong>
+    ${options.compact ? "" : `<span>${escapeHtml(calendarRepLabel(task))}</span><small>${escapeHtml(sync)}</small>`}
+    ${options.resizable === false ? "" : '<i class="calendar-resize-handle" data-calendar-resize aria-hidden="true"></i>'}
+  </button>`;
+}
+
+function renderCalendarRepFilters(tasks) {
+  if (!els.calendarRepFilters) return;
+  const reps = new Map();
+  tasks.forEach((task) => reps.set(calendarRepKey(task), calendarRepLabel(task)));
+  if (!reps.size) reps.set(calendarRepKey(currentOwner()), canonicalRepresentativeName(currentOwner().name, currentOwner()) || "My calendar");
+  reps.forEach((label, key) => {
+    if (!calendarVisibleReps.size) calendarVisibleReps.add(key);
+  });
+  els.calendarRepFilters.innerHTML = [...reps.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([key, label]) => `
+    <label class="calendar-rep-filter">
+      <input type="checkbox" data-calendar-rep="${escapeHtml(key)}" ${calendarVisibleReps.has(key) ? "checked" : ""} />
+      <i style="--rep-color:${calendarRepColor(key)}"></i>
+      <span>${escapeHtml(label)}</span>
+    </label>`).join("");
+}
+
+function calendarRangeLabel() {
+  if (calendarViewMode === "day") return calendarAnchorDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  if (calendarViewMode === "month") return calendarAnchorDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  if (calendarViewMode === "schedule") return "Upcoming schedule";
+  const start = calendarStartOfWeek(calendarAnchorDate);
+  const end = calendarAddDays(start, 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  return sameMonth
+    ? `${start.toLocaleDateString("en-US", { month: "long", day: "numeric" })} – ${end.getDate()}, ${end.getFullYear()}`
+    : `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+}
 
 function renderCalendarMonth() {
   if (!els.calMonthGrid) return;
-  const now = new Date();
-  const viewDate = new Date(now.getFullYear(), now.getMonth() + calendarMonthOffset, 1);
-  const year = viewDate.getFullYear();
-  const month = viewDate.getMonth();
-  const monthName = viewDate.toLocaleString("en-US", { month: "long", year: "numeric" });
-  els.calMonthTitle.textContent = monthName;
-
-  const firstDay = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const todayStr = localDateISO(now);
-
-  // Group tasks by date string YYYY-MM-DD
-  const tasksByDay = {};
-  state.calendarTasks.forEach((task) => {
-    const d = new Date(task.dueAt);
-    if (d.getFullYear() === year && d.getMonth() === month) {
-      const key = localDateISO(d);
-      if (!tasksByDay[key]) tasksByDay[key] = [];
-      tasksByDay[key].push(task);
-    }
+  const year = calendarAnchorDate.getFullYear();
+  const month = calendarAnchorDate.getMonth();
+  const first = new Date(year, month, 1);
+  const gridStart = calendarAddDays(first, -first.getDay());
+  const tasks = calendarFilteredTasks();
+  const tasksByDay = new Map();
+  tasks.forEach((task) => {
+    const key = localDateISO(new Date(task.dueAt));
+    tasksByDay.set(key, [...(tasksByDay.get(key) || []), task]);
   });
-
-  const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  let html = `<div class="cal-day-labels">${dayLabels.map((d) => `<div class="cal-day-label">${d}</div>`).join("")}</div><div class="cal-days">`;
-
-  // Empty cells before first day
-  for (let i = 0; i < firstDay; i++) {
-    html += `<div class="cal-day cal-day-empty"></div>`;
+  const labels = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  let html = `<div class="calendar-month-head">${labels.map((label) => `<span>${label}</span>`).join("")}</div><div class="calendar-month-grid">`;
+  for (let index = 0; index < 42; index++) {
+    const date = calendarAddDays(gridStart, index);
+    const key = localDateISO(date);
+    const dayTasks = (tasksByDay.get(key) || []).sort((a, b) => taskDueTime(a) - taskDueTime(b));
+    const outside = date.getMonth() !== month;
+    const today = key === localDateISO(new Date());
+    html += `<div class="calendar-month-day calendar-drop-target${outside ? " is-outside" : ""}${today ? " is-today" : ""}" data-date="${key}">
+      <button type="button" class="calendar-month-date" data-calendar-new-date="${key}">${date.getDate()}</button>
+      <div class="calendar-month-events">${dayTasks.slice(0, 3).map((task) => calendarEventMarkup(task, { compact: true, resizable: false })).join("")}</div>
+      ${dayTasks.length > 3 ? `<button class="calendar-more-events" type="button" data-calendar-day="${key}">+${dayTasks.length - 3} more</button>` : ""}
+    </div>`;
   }
+  els.calMonthGrid.innerHTML = `${html}</div>`;
+}
 
-  for (let day = 1; day <= daysInMonth; day++) {
-    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const tasks = tasksByDay[dateStr] || [];
-    const isToday = dateStr === todayStr;
-    const hasCompleted = tasks.some((t) => t.completed);
-    const hasPending = tasks.some((t) => !t.completed);
-
-    html += `
-      <div class="cal-day${isToday ? " cal-today" : ""}${tasks.length ? " cal-has-tasks" : ""}" data-date="${dateStr}">
-        <span class="cal-day-num">${day}</span>
-        ${tasks.length ? `
-          <div class="cal-task-dots">
-            ${hasPending ? `<span class="cal-dot cal-dot-pending"></span>` : ""}
-            ${hasCompleted ? `<span class="cal-dot cal-dot-done"></span>` : ""}
-          </div>
-          <div class="cal-task-count">${tasks.length} task${tasks.length > 1 ? "s" : ""}</div>
-        ` : ""}
-      </div>`;
+function renderCalendarTimeGrid(dayCount) {
+  const start = dayCount === 1 ? calendarStartOfDay(calendarAnchorDate) : calendarStartOfWeek(calendarAnchorDate);
+  const tasks = calendarFilteredTasks();
+  const hours = Array.from({ length: CALENDAR_END_HOUR - CALENDAR_START_HOUR }, (_, index) => CALENDAR_START_HOUR + index);
+  let html = `<div class="calendar-time-view" style="--calendar-days:${dayCount};--hour-height:${CALENDAR_SLOT_HEIGHT}px">
+    <div class="calendar-time-head-spacer"></div><div class="calendar-time-heads">`;
+  for (let dayIndex = 0; dayIndex < dayCount; dayIndex++) {
+    const date = calendarAddDays(start, dayIndex);
+    const today = localDateISO(date) === localDateISO(new Date());
+    html += `<button type="button" class="calendar-time-head${today ? " is-today" : ""}" data-calendar-new-date="${localDateISO(date)}"><span>${date.toLocaleDateString("en-US", { weekday: "short" })}</span><strong>${date.getDate()}</strong></button>`;
   }
+  html += `</div><div class="calendar-time-axis">${hours.map((hour) => `<span>${new Date(2000, 0, 1, hour).toLocaleTimeString("en-US", { hour: "numeric" })}</span>`).join("")}</div><div class="calendar-time-columns">`;
+  for (let dayIndex = 0; dayIndex < dayCount; dayIndex++) {
+    const date = calendarAddDays(start, dayIndex);
+    const dateKey = localDateISO(date);
+    const dayTasks = tasks.filter((task) => localDateISO(new Date(task.dueAt)) === dateKey);
+    html += `<div class="calendar-time-day calendar-drop-target" data-date="${dateKey}" data-calendar-start-hour="${CALENDAR_START_HOUR}">
+      <div class="calendar-hour-lines">${hours.map(() => "<i></i>").join("")}</div>
+      ${dayTasks.map((task) => {
+        const due = new Date(task.dueAt);
+        const minutes = due.getHours() * 60 + due.getMinutes();
+        const startMinutes = CALENDAR_START_HOUR * 60;
+        const totalMinutes = (CALENDAR_END_HOUR - CALENDAR_START_HOUR) * 60;
+        const top = Math.max(0, Math.min(totalMinutes - 15, minutes - startMinutes)) / 60 * CALENDAR_SLOT_HEIGHT;
+        const height = Math.max(26, Math.min(180, (number(task.duration) || 30) / 60 * CALENDAR_SLOT_HEIGHT));
+        return `<div class="calendar-positioned-event" style="top:${top}px;height:${height}px">${calendarEventMarkup(task)}</div>`;
+      }).join("")}
+    </div>`;
+  }
+  els.calMonthGrid.innerHTML = `${html}</div></div>`;
+}
 
-  html += `</div>`;
-  els.calMonthGrid.innerHTML = html;
-
-  // Click a day to see its tasks
-  els.calMonthGrid.querySelectorAll(".cal-day[data-date]").forEach((cell) => {
-    cell.addEventListener("click", () => {
-      const dateStr = cell.dataset.date;
-      const tasks = tasksByDay[dateStr] || [];
-      if (!tasks.length) { els.calDayDetail.classList.add("hidden"); return; }
-      const label = new Date(dateStr + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-      els.calDayDetailTitle.textContent = label;
-      els.calDayDetailTasks.innerHTML = tasks.map((t) => renderTaskCard(t, { compact: true })).join("");
-      hydrateIcons(els.calDayDetailTasks);
-      els.calDayDetail.classList.remove("hidden");
-      els.calDayDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
+function renderCalendarSchedule() {
+  const start = calendarStartOfDay(calendarAnchorDate);
+  const tasks = calendarFilteredTasks()
+    .filter((task) => !task.completed || new Date(task.dueAt) >= start)
+    .sort((a, b) => taskDueTime(a) - taskDueTime(b));
+  const groups = new Map();
+  tasks.forEach((task) => {
+    const key = localDateISO(new Date(task.dueAt));
+    groups.set(key, [...(groups.get(key) || []), task]);
   });
+  els.calMonthGrid.innerHTML = groups.size ? `<div class="calendar-agenda">${[...groups.entries()].map(([key, dayTasks]) => {
+    const date = new Date(`${key}T12:00:00`);
+    return `<section class="calendar-agenda-day"><header><strong>${date.toLocaleDateString("en-US", { weekday: "long" })}</strong><span>${date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span></header><div>${dayTasks.map((task) => calendarEventMarkup(task, { resizable: false })).join("")}</div></section>`;
+  }).join("")}</div>` : '<div class="empty-state calendar-empty-state">No upcoming tasks for the selected representatives.</div>';
+}
+
+function renderCalendarCanvas() {
+  if (!els.calMonthGrid) return;
+  els.calMonthTitle.textContent = calendarRangeLabel();
+  if (els.calendarDatePicker) els.calendarDatePicker.value = localDateISO(calendarAnchorDate);
+  els.calendarViewSwitcher?.querySelectorAll("[data-calendar-view]").forEach((button) => {
+    const active = button.dataset.calendarView === calendarViewMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  els.calendarTasksList?.classList.add("hidden");
+  els.calDayDetail?.classList.add("hidden");
+  if (calendarViewMode === "month") renderCalendarMonth();
+  else if (calendarViewMode === "schedule") renderCalendarSchedule();
+  else renderCalendarTimeGrid(calendarViewMode === "day" ? 1 : 7);
+  hydrateIcons(els.calMonthGrid);
 }
 
 function renderCalendar() {
   if (canUseCloudSync() && typeof refreshGoogleIntegrationStatus === "function") void refreshGoogleIntegrationStatus();
   if (!els.calendarTasksList) return;
   renderCalendarFormOptions();
-  renderCalendarMonth();
-  const tasks = [...visibleCalendarTasks()].sort((a, b) => taskDueTime(a) - taskDueTime(b));
-  els.calendarTasksList.innerHTML = tasks.length
-    ? tasks.map((task) => renderTaskCard(task)).join("")
-    : '<div class="empty-state">No tasks yet. Create a rep reminder to send it to Google Calendar.</div>';
-  hydrateIcons(els.calendarTasksList);
+  renderCalendarRepFilters(visibleCalendarTasks());
+  renderCalendarCanvas();
+}
+
+function openCalendarEditor(task = null, dateValue = null) {
+  if (!els.calendarEditorPanel || !els.calendarTaskForm) return;
+  els.calendarEditorPanel.classList.remove("hidden");
+  els.calendarEditorTitle.textContent = task ? "Edit task" : "Create task";
+  els.calendarDeleteTaskButton?.classList.toggle("hidden", !task);
+  if (task) {
+    fillCalendarTaskForm(task);
+    const contact = getContact(task.contactId);
+    const job = contact ? contactJobs(contact).find((item) => item.id === task.jobId) : null;
+    if (els.calendarEventContext) {
+      els.calendarEventContext.classList.toggle("hidden", !contact);
+      els.calendarEventContext.innerHTML = contact ? `
+        <button class="calendar-context-link" type="button" data-action="open-contact-tab" data-contact-id="${escapeHtml(contact.id)}" data-tab="overview" data-job-id="${escapeHtml(job?.id || "")}">
+          <span aria-hidden="true" data-icon="user"></span><span><small>Lead</small><strong>${escapeHtml(contact.name)}</strong></span>
+        </button>
+        ${job ? `<button class="calendar-context-link" type="button" data-action="open-job" data-contact-id="${escapeHtml(contact.id)}" data-job-id="${escapeHtml(job.id)}"><span aria-hidden="true" data-icon="briefcase"></span><span><small>Job</small><strong>${escapeHtml(job.name)}</strong></span></button>` : ""}` : "";
+      hydrateIcons(els.calendarEventContext);
+    }
+  } else {
+    els.calendarTaskForm.reset();
+    renderCalendarFormOptions();
+    const due = dateValue ? new Date(`${dateValue}T09:00:00`) : new Date();
+    if (!dateValue) {
+      due.setMinutes(due.getMinutes() < 30 ? 30 : 0, 0, 0);
+      if (due.getMinutes() === 0) due.setHours(due.getHours() + 1);
+    }
+    els.calendarTaskForm.elements.dueAt.value = dateTimeLocalValue(due.toISOString());
+    els.calendarTaskForm.elements.duration.value = 30;
+    els.calendarTaskForm.elements.priority.value = "normal";
+    els.calendarTaskForm.elements.workflowStatus.value = "not_started";
+    els.calendarTaskForm.elements.recurrence.value = "none";
+    if (els.calendarEventContext) {
+      els.calendarEventContext.classList.add("hidden");
+      els.calendarEventContext.innerHTML = "";
+    }
+  }
+  els.calendarEditorPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  window.setTimeout(() => els.calendarTaskForm?.elements?.title?.focus(), 80);
+}
+
+function closeCalendarEditor() {
+  els.calendarEditorPanel?.classList.add("hidden");
+  els.calendarTaskForm?.reset();
+  if (els.calendarTaskForm?.elements?.taskId) els.calendarTaskForm.elements.taskId.value = "";
+  els.calendarEventContext?.classList.add("hidden");
+}
+
+async function rescheduleCalendarTask(taskId, dueAt, duration = null) {
+  if (!requireAction("manageTasks")) return false;
+  const existing = state.calendarTasks.find((task) => task.id === taskId);
+  if (!existing) return false;
+  const next = normalizeCalendarTask({
+    ...existing,
+    dueAt: dueAt || existing.dueAt,
+    duration: duration == null ? existing.duration : Math.max(5, Math.round(duration / 5) * 5),
+    updatedAt: new Date().toISOString(),
+    googleSyncStatus: "pending",
+    googleSyncError: "",
+    googleTaskSyncStatus: "pending",
+    googleTaskSyncError: "",
+  });
+  state.calendarTasks = state.calendarTasks.map((task) => task.id === taskId ? next : task);
+  saveState({ localOnly: true });
+  renderCalendar();
+  let saved = !canUseCloudSync();
+  try {
+    if (canUseCloudSync()) saved = await persistDurableRecordNow("task", taskId, (data) => data.id === taskId && data.dueAt === next.dueAt);
+  } catch { saved = false; }
+  if (!saved) queueDurableRecordsSave();
+  else queueCloudSave();
+  const synced = await syncCalendarTaskToGoogle(next);
+  showToast(synced ? "Task rescheduled in JobCrest and Google Calendar" : "Task rescheduled in JobCrest; Google sync needs attention");
+  return synced;
+}
+
+function calendarNavigate(direction) {
+  if (calendarViewMode === "day") calendarAnchorDate = calendarAddDays(calendarAnchorDate, direction);
+  else if (calendarViewMode === "week") calendarAnchorDate = calendarAddDays(calendarAnchorDate, direction * 7);
+  else if (calendarViewMode === "month") calendarAnchorDate = new Date(calendarAnchorDate.getFullYear(), calendarAnchorDate.getMonth() + direction, 1);
+  else calendarAnchorDate = calendarAddDays(calendarAnchorDate, direction * 14);
+  calendarMonthOffset = 0;
+  renderCalendarCanvas();
+}
+
+function calendarDropDate(event, target) {
+  const date = target.dataset.date;
+  const current = new Date(event.dataTransfer.getData("application/x-jobcrest-calendar-due") || `${date}T09:00:00`);
+  if (!target.classList.contains("calendar-time-day")) {
+    return new Date(`${date}T${String(current.getHours()).padStart(2, "0")}:${String(current.getMinutes()).padStart(2, "0")}:00`);
+  }
+  const rect = target.getBoundingClientRect();
+  const minutes = Math.max(0, Math.min((CALENDAR_END_HOUR - CALENDAR_START_HOUR) * 60 - 15,
+    Math.round(((event.clientY - rect.top) / CALENDAR_SLOT_HEIGHT * 60) / 15) * 15));
+  const due = new Date(`${date}T00:00:00`);
+  due.setMinutes(CALENDAR_START_HOUR * 60 + minutes);
+  return due;
+}
+
+function bindCalendarCanvasEvents() {
+  els.calendarViewSwitcher?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-calendar-view]");
+    if (!button) return;
+    calendarViewMode = button.dataset.calendarView;
+    renderCalendarCanvas();
+  });
+  els.calendarTodayButton?.addEventListener("click", () => {
+    calendarAnchorDate = new Date();
+    renderCalendarCanvas();
+  });
+  els.calendarDatePicker?.addEventListener("change", (event) => {
+    if (!event.target.value) return;
+    calendarAnchorDate = new Date(`${event.target.value}T12:00:00`);
+    renderCalendarCanvas();
+  });
+  els.calendarNewTaskButton?.addEventListener("click", () => openCalendarEditor());
+  els.calendarEditorClose?.addEventListener("click", closeCalendarEditor);
+  els.calendarDeleteTaskButton?.addEventListener("click", async () => {
+    const taskId = els.calendarTaskForm?.elements?.taskId?.value;
+    if (taskId) await deleteCalendarTask(taskId);
+    closeCalendarEditor();
+  });
+  els.calendarSelectAllReps?.addEventListener("click", () => {
+    visibleCalendarTasks().forEach((task) => calendarVisibleReps.add(calendarRepKey(task)));
+    renderCalendar();
+  });
+  els.calendarRepFilters?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-calendar-rep]");
+    if (!checkbox) return;
+    if (checkbox.checked) calendarVisibleReps.add(checkbox.dataset.calendarRep);
+    else calendarVisibleReps.delete(checkbox.dataset.calendarRep);
+    renderCalendarCanvas();
+  });
+  els.calMonthGrid?.addEventListener("click", (event) => {
+    const taskButton = event.target.closest("[data-calendar-task-id]");
+    if (taskButton && !event.target.closest("[data-calendar-resize]")) {
+      const task = state.calendarTasks.find((item) => item.id === taskButton.dataset.calendarTaskId);
+      if (task) openCalendarEditor(task);
+      return;
+    }
+    const dateButton = event.target.closest("[data-calendar-new-date]");
+    if (dateButton) openCalendarEditor(null, dateButton.dataset.calendarNewDate);
+    const moreButton = event.target.closest("[data-calendar-day]");
+    if (moreButton) {
+      calendarAnchorDate = new Date(`${moreButton.dataset.calendarDay}T12:00:00`);
+      calendarViewMode = "day";
+      renderCalendarCanvas();
+    }
+  });
+  els.calMonthGrid?.addEventListener("dragstart", (event) => {
+    const taskButton = event.target.closest("[data-calendar-task-id]");
+    const task = taskButton && state.calendarTasks.find((item) => item.id === taskButton.dataset.calendarTaskId);
+    if (!task) return;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", task.id);
+    event.dataTransfer.setData("application/x-jobcrest-calendar-due", task.dueAt);
+    taskButton.classList.add("is-dragging");
+  });
+  els.calMonthGrid?.addEventListener("dragend", (event) => event.target.closest("[data-calendar-task-id]")?.classList.remove("is-dragging"));
+  els.calMonthGrid?.addEventListener("dragover", (event) => {
+    const target = event.target.closest(".calendar-drop-target");
+    if (!target) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  });
+  els.calMonthGrid?.addEventListener("drop", (event) => {
+    const target = event.target.closest(".calendar-drop-target");
+    const taskId = event.dataTransfer.getData("text/plain");
+    if (!target || !taskId) return;
+    event.preventDefault();
+    void rescheduleCalendarTask(taskId, calendarDropDate(event, target).toISOString());
+  });
+  els.calMonthGrid?.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest("[data-calendar-resize]");
+    const taskButton = handle?.closest("[data-calendar-task-id]");
+    const task = taskButton && state.calendarTasks.find((item) => item.id === taskButton.dataset.calendarTaskId);
+    if (!handle || !task) return;
+    event.preventDefault();
+    const startY = event.clientY;
+    const startDuration = number(task.duration) || 30;
+    const positioned = taskButton.closest(".calendar-positioned-event");
+    const move = (moveEvent) => {
+      const duration = Math.max(15, Math.round((startDuration + (moveEvent.clientY - startY) / CALENDAR_SLOT_HEIGHT * 60) / 15) * 15);
+      if (positioned) positioned.style.height = `${Math.max(26, duration / 60 * CALENDAR_SLOT_HEIGHT)}px`;
+      taskButton.dataset.pendingDuration = String(duration);
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      const duration = number(taskButton.dataset.pendingDuration) || startDuration;
+      delete taskButton.dataset.pendingDuration;
+      if (duration !== startDuration) void rescheduleCalendarTask(task.id, task.dueAt, duration);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish, { once: true });
+  });
 }
 
 function renderCalendarFormOptions() {
@@ -9896,7 +10222,7 @@ async function saveCalendarTask(event) {
     state.calendarTasks.unshift(task);
   }
   saveState({ localOnly: true });
-  els.calendarTaskForm.reset();
+  closeCalendarEditor();
   render();
   showToast(existingTask ? "Task updated. Syncing Google Calendar…" : "Task saved. Syncing Google Calendar…");
   let saved = !canUseCloudSync();
@@ -9932,8 +10258,7 @@ function editCalendarTask(taskId) {
   state.view = "calendar";
   saveUiState();
   render();
-  fillCalendarTaskForm(task);
-  els.calendarTaskForm?.scrollIntoView({ behavior: "smooth", block: "start" });
+  openCalendarEditor(task);
   showToast("Reminder loaded for editing");
 }
 
@@ -14088,6 +14413,7 @@ function bindEvents() {
   els.removeCompanyLogoButton.addEventListener("click", removeCompanyLogo);
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
   els.calendarTaskContact?.addEventListener("change", (event) => renderCalendarTaskJobOptions(event.target.value, ""));
+  bindCalendarCanvasEvents();
   els.connectGoogleWorkspaceButton?.addEventListener("click", connectGoogleWorkspace);
   els.verifyGoogleDriveButton?.addEventListener("click", verifyGoogleDriveConnection);
   els.calendarGoogleConnectButton?.addEventListener("click", connectGoogleWorkspace);
@@ -14167,14 +14493,8 @@ function bindEvents() {
   els.closeSmartDocumentDialog?.addEventListener("click", closeSmartDocumentDialog);
   els.smartDocumentDialog?.addEventListener("cancel", (event) => { event.preventDefault(); closeSmartDocumentDialog(); });
 
-  els.calPrevMonth?.addEventListener("click", () => {
-    calendarMonthOffset--;
-    renderCalendarMonth();
-  });
-  els.calNextMonth?.addEventListener("click", () => {
-    calendarMonthOffset++;
-    renderCalendarMonth();
-  });
+  els.calPrevMonth?.addEventListener("click", () => calendarNavigate(-1));
+  els.calNextMonth?.addEventListener("click", () => calendarNavigate(1));
   els.closeContactDialog.addEventListener("click", () => els.contactDialog.close());
   els.closeInvoicePaymentDialog?.addEventListener("click", () => els.invoicePaymentDialog.close());
   els.closeInvoiceCreditDialog?.addEventListener("click", () => els.invoiceCreditDialog.close());
