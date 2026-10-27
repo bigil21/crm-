@@ -633,7 +633,12 @@ const recentLocalDurableWrites = new Map();
 let estimateVisualRefreshTimer = null;
 let pendingDurableRender = false;
 const photoPreviewCache = new Map();
-let googleIntegrationState = { loaded: false, loading: false, configured: false, connected: false, email: "", providerEmail: "", gmailSend: false, gmailRead: false };
+let googleIntegrationState = {
+  loaded: false, loading: false, configured: false, connected: false, email: "", providerEmail: "",
+  calendar: false, gmailSend: false, gmailRead: false, tasks: false, contacts: false,
+  drive: false, docs: false, sheets: false, chat: false, gmailPush: false, groups: false,
+  docTemplates: [], groupOptions: [],
+};
 let googleDriveState = { loaded: false, loading: false, configured: false };
 let zohoIntegrationState = { loaded: false, loading: false, configured: false, connected: false, email: "", dataCenter: "" };
 let smartDocumentPreviewObjectUrl = "";
@@ -774,6 +779,9 @@ const els = {
   leadDocumentInput: document.querySelector("#leadDocumentInput"),
   leadDocumentUploadStatus: document.querySelector("#leadDocumentUploadStatus"),
   leadDocumentSmartAfterUpload: document.querySelector("#leadDocumentSmartAfterUpload"),
+  googleDocTemplateControl: document.querySelector("#googleDocTemplateControl"),
+  googleDocTemplateSelect: document.querySelector("#googleDocTemplateSelect"),
+  generateGoogleDocButton: document.querySelector("#generateGoogleDocButton"),
   leadPhotosPanel: document.querySelector("#leadPhotosPanel"),
   leadPhotoHeading: document.querySelector("#leadPhotoHeading"),
   leadPhotoJobSelect: document.querySelector("#leadPhotoJobSelect"),
@@ -855,6 +863,7 @@ const els = {
   reviewsList: document.querySelector("#reviewsList"),
   reportsContent: document.querySelector("#reportsContent"),
   reportExportButton: document.querySelector("#reportExportButton"),
+  googleSheetsExportButton: document.querySelector("#googleSheetsExportButton"),
   companyDocumentCategory: document.querySelector("#companyDocumentCategory"),
   createCompanyDocumentFolderButton: document.querySelector("#createCompanyDocumentFolderButton"),
   uploadCompanyDocumentButton: document.querySelector("#uploadCompanyDocumentButton"),
@@ -899,7 +908,9 @@ const els = {
   googleIntegrationStatus: document.querySelector("#googleIntegrationStatus"),
   googleIntegrationPill: document.querySelector("#googleIntegrationPill"),
   googleDriveIntegrationStatus: document.querySelector("#googleDriveIntegrationStatus"),
+  googleProductsIntegrationStatus: document.querySelector("#googleProductsIntegrationStatus"),
   connectGoogleWorkspaceButton: document.querySelector("#connectGoogleWorkspaceButton"),
+  verifyGoogleDriveButton: document.querySelector("#verifyGoogleDriveButton"),
   disconnectGoogleWorkspaceButton: document.querySelector("#disconnectGoogleWorkspaceButton"),
   calendarGoogleConnect: document.querySelector("#calendarGoogleConnect"),
   calendarGoogleConnectButton: document.querySelector("#calendarGoogleConnectButton"),
@@ -1563,6 +1574,8 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     size: number(document.size),
     dataUrl: document.dataUrl || "",
     storagePath: document.storagePath || document.storage_path || "",
+    externalUrl: /^https:\/\/(?:docs|drive)\.google\.com\//.test(String(document.externalUrl || "")) ? document.externalUrl : "",
+    googleDocumentId: document.googleDocumentId || "",
     previousVersions: Array.isArray(document.previousVersions) ? document.previousVersions : [],
     uploadedAt: document.uploadedAt || new Date().toISOString(),
     uploadedBy: document.uploadedBy || "Local user",
@@ -1724,6 +1737,13 @@ function normalizeCalendarTask(task) {
     googleSyncStatus: ["synced", "pending", "not_connected", "error"].includes(task.googleSyncStatus) ? task.googleSyncStatus : "",
     googleSyncedAt: task.googleSyncedAt || "",
     googleSyncError: task.googleSyncError || "",
+    addGoogleMeet: Boolean(task.addGoogleMeet),
+    googleMeetLink: /^https:\/\/meet\.google\.com\//.test(task.googleMeetLink || "") ? task.googleMeetLink : "",
+    googleTaskId: task.googleTaskId || "",
+    googleTaskListId: task.googleTaskListId || "",
+    googleTaskSyncStatus: ["synced", "pending", "not_connected", "error"].includes(task.googleTaskSyncStatus) ? task.googleTaskSyncStatus : "",
+    googleTaskSyncedAt: task.googleTaskSyncedAt || "",
+    googleTaskSyncError: task.googleTaskSyncError || "",
   };
 }
 
@@ -4162,6 +4182,14 @@ function taskGoogleSyncLabel(task) {
   return "";
 }
 
+function taskGoogleTasksSyncLabel(task) {
+  if (task.googleTaskSyncStatus === "synced") return '<span class="status-pill pill-won">Google Tasks synced</span>';
+  if (task.googleTaskSyncStatus === "pending") return '<span class="status-pill pill-inspection">Google Tasks pending</span>';
+  if (task.googleTaskSyncStatus === "not_connected") return '<span class="status-pill pill-default">Google Tasks not connected</span>';
+  if (task.googleTaskSyncStatus === "error") return '<span class="status-pill pill-rejected">Google Tasks sync failed</span>';
+  return "";
+}
+
 async function persistCalendarTaskUpdate(taskId) {
   saveState({ localOnly: true });
   if (!canUseCloudSync()) return true;
@@ -4205,11 +4233,13 @@ async function syncCalendarTaskToGoogle(task) {
     Object.assign(current, {
       googleEventId: result.eventId,
       googleEventUrl: result.htmlLink || "",
+      googleMeetLink: result.meetLink || "",
       googleSyncStatus: "synced",
       googleSyncedAt: result.updated || new Date().toISOString(),
       googleSyncError: "",
     });
     await persistCalendarTaskUpdate(current.id);
+    await syncCalendarTaskToGoogleTasks(current);
     if (state.view === "calendar" || state.view === "tasks") render();
     return true;
   } catch {
@@ -4219,6 +4249,45 @@ async function syncCalendarTaskToGoogle(task) {
       current.googleSyncError = "Google Calendar could not be reached.";
       await persistCalendarTaskUpdate(current.id);
       if (state.view === "calendar" || state.view === "tasks") render();
+    }
+    return false;
+  }
+}
+
+async function syncCalendarTaskToGoogleTasks(task) {
+  const snapshot = normalizeCalendarTask(JSON.parse(JSON.stringify(task)));
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/tasks/task", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ ownerEmail: snapshot.ownerEmail || currentOwner().email, task: snapshot }),
+    });
+    const result = await response.json().catch(() => ({}));
+    const current = state.calendarTasks.find((item) => item.id === snapshot.id);
+    if (!current || current.updatedAt !== snapshot.updatedAt) return false;
+    if (!response.ok || result?.synced !== true) {
+      Object.assign(current, {
+        googleTaskSyncStatus: response.status === 409 ? "not_connected" : "error",
+        googleTaskSyncError: String(result?.error || "Google Tasks could not be updated.").slice(0, 300),
+      });
+      await persistCalendarTaskUpdate(current.id);
+      return false;
+    }
+    Object.assign(current, {
+      googleTaskId: result.taskId,
+      googleTaskListId: result.taskListId,
+      googleTaskSyncStatus: "synced",
+      googleTaskSyncedAt: result.updated || new Date().toISOString(),
+      googleTaskSyncError: "",
+    });
+    await persistCalendarTaskUpdate(current.id);
+    return true;
+  } catch {
+    const current = state.calendarTasks.find((item) => item.id === snapshot.id);
+    if (current && current.updatedAt === snapshot.updatedAt) {
+      current.googleTaskSyncStatus = "error";
+      current.googleTaskSyncError = "Google Tasks could not be reached.";
+      await persistCalendarTaskUpdate(current.id);
     }
     return false;
   }
@@ -4240,6 +4309,26 @@ async function removeCalendarTaskFromGoogle(task) {
     return true;
   } catch {
     showToast("Google Calendar could not be reached. The CRM task was kept to prevent an orphaned event.");
+    return false;
+  }
+}
+
+async function removeTaskFromGoogleTasks(task) {
+  if (!task?.googleTaskId || !task?.googleTaskListId) return true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/tasks/task", {
+      method: "DELETE", headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ ownerEmail: task.ownerEmail || currentOwner().email, taskId: task.googleTaskId, taskListId: task.googleTaskListId }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result?.deleted !== true) {
+      showToast(result?.error || "Google Tasks could not remove the task.");
+      return false;
+    }
+    return true;
+  } catch {
+    showToast("Google Tasks could not be reached. The CRM task was kept to prevent an orphaned task.");
     return false;
   }
 }
@@ -4707,6 +4796,18 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
       ],
     };
   });
+}
+
+async function notifyGoogleChat(type, detail, url = "https://jobcrestcrm.com/") {
+  if (!googleIntegrationState.chat) return false;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/chat/notify", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(12000),
+      body: JSON.stringify({ type, detail: String(detail || "").slice(0, 2000), url }),
+    });
+    return response.ok;
+  } catch { return false; }
 }
 
 function render() {
@@ -5936,6 +6037,7 @@ function renderLeadDetail() {
     <div class="overview-quick-actions">
       ${contact.phone ? `<a class="secondary-button" href="tel:${contact.phone.replace(/\D/g, "")}"><span aria-hidden="true" data-icon="phone"></span> Call</a>` : ""}
       ${contact.email ? `<button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="email"><span aria-hidden="true" data-icon="mail"></span> Email</button>` : ""}
+      ${(contact.email || contact.phone) ? `<button class="secondary-button" type="button" data-action="sync-google-contact" data-contact-id="${contact.id}"><span aria-hidden="true" data-icon="user"></span>${contact.googleContactResourceName ? "Update Google Contact" : "Save to Google Contacts"}</button>` : ""}
       <button class="secondary-button" type="button" data-action="estimate-contact" data-contact-id="${contact.id}"><span aria-hidden="true" data-icon="file"></span> Estimate</button>
       <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="conversation"><span aria-hidden="true" data-icon="message"></span> Log Note</button>
     </div>
@@ -5983,6 +6085,30 @@ function renderLeadDetail() {
   renderLeadPhotos(contact);
   renderLeadConversation(contact);
   renderLeadActivity(contact);
+}
+
+async function syncLeadToGoogleContacts(contactId) {
+  const contact = getContact(contactId);
+  if (!contact) return;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/contacts/contact", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ contactId: contact.id, googleContactResourceName: contact.googleContactResourceName || "", etag: contact.googleContactEtag || "" }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result?.synced !== true) throw new Error(result.error || "Google Contacts could not be updated.");
+    updateContact(contact.id, (current) => ({ ...current, googleContactResourceName: result.resourceName, googleContactEtag: result.etag || current.googleContactEtag || "", googleContactSyncedAt: new Date().toISOString() }));
+    const saved = canUseCloudSync()
+      ? await persistDurableRecordNow("contact", contact.id, (confirmed) => confirmed.googleContactResourceName === result.resourceName)
+      : true;
+    if (!saved) queueDurableRecordsSave();
+    else queueCloudSave();
+    renderLeadDetail();
+    showToast(contact.googleContactResourceName ? "Google Contact updated" : "Lead saved to Google Contacts");
+  } catch (error) {
+    showToast(error.message || "Google Contacts could not be updated");
+  }
 }
 
 function renderLeadJobs(contact) {
@@ -7488,6 +7614,19 @@ function renderLeadDocuments(contact) {
   if (els.uploadLeadDocumentButton) {
     els.uploadLeadDocumentButton.disabled = !selectedJob || !activeCategories.length || !canAction("manageDocuments");
   }
+  const templates = Array.isArray(googleIntegrationState.docTemplates) ? googleIntegrationState.docTemplates : [];
+  els.googleDocTemplateControl?.classList.toggle("hidden", !selectedJob || !templates.length);
+  els.generateGoogleDocButton?.classList.toggle("hidden", !selectedJob || !templates.length);
+  if (els.googleDocTemplateSelect) {
+    const selectedTemplate = templates.some((item) => item.key === els.googleDocTemplateSelect.value)
+      ? els.googleDocTemplateSelect.value : templates[0]?.key || "";
+    els.googleDocTemplateSelect.innerHTML = templates
+      .map((item) => `<option value="${escapeHtml(item.key)}" ${item.key === selectedTemplate ? "selected" : ""}>${escapeHtml(item.label)}</option>`)
+      .join("");
+  }
+  if (els.generateGoogleDocButton) {
+    els.generateGoogleDocButton.disabled = !selectedJob || !templates.length || !canAction("manageDocuments");
+  }
 
   els.leadDocumentsList.innerHTML = visibleCategories.length
     ? visibleCategories
@@ -7893,6 +8032,11 @@ async function downloadManagedDocument(documentId) {
   const leadDocument = state.contacts.flatMap((contact) => contact.documents || []).find((item) => item.id === documentId);
   const record = leadDocument || state.companyDocuments.find((item) => item.id === documentId);
   if (!record) return showToast("Document not found");
+  if (record.externalUrl) {
+    const opened = window.open(record.externalUrl, "_blank", "noopener,noreferrer");
+    if (!opened) showToast("Allow pop-ups to open the Google document");
+    return Boolean(opened);
+  }
   const previewWindow = window.open("about:blank", "_blank");
   if (previewWindow) previewWindow.opener = null;
   let url = record.dataUrl || "";
@@ -7939,6 +8083,48 @@ async function downloadManagedDocument(documentId) {
   link.remove();
   if (objectUrl) window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
   return true;
+}
+
+async function generateLeadGoogleDocument() {
+  if (!requireAction("manageDocuments")) return;
+  const contact = getSelectedContact();
+  const job = contact && selectedLeadJob(contact);
+  const templateKey = els.googleDocTemplateSelect?.value || "";
+  if (!contact || !job || !templateKey) return showToast("Choose a job and Google Docs template");
+  const template = googleIntegrationState.docTemplates.find((item) => item.key === templateKey);
+  setSaveState(els.leadDocumentUploadStatus, "Creating and filling the Google document…", "saving");
+  if (els.generateGoogleDocButton) els.generateGoogleDocButton.disabled = true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/docs/generate", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({ leadId: contact.id, jobId: job.id, templateKey, name: `${job.name || contact.name} - ${template?.label || "Document"}` }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.generated || !result.document?.webViewLink) throw new Error(result.error || "Google document generation failed.");
+    const category = (state.company.documentCategories || []).find((item) => item.active && /contract|other|document/i.test(item.name))
+      || (state.company.documentCategories || []).find((item) => item.active);
+    const record = normalizeDocument({
+      id: uid("doc"), name: result.document.name || `${job.name} Google Document`, leadId: contact.id, jobId: job.id,
+      categoryId: category?.id || "", category: category?.name || "Other", type: "application/vnd.google-apps.document",
+      source: "google_docs", externalUrl: result.document.webViewLink, googleDocumentId: result.document.id,
+      uploadedAt: new Date().toISOString(), uploadedBy: state.currentUser.name || state.currentUser.email || "CRM user",
+    }, { leadId: contact.id, categoryId: category?.id || "", categories: state.company.documentCategories });
+    updateContact(contact.id, (current) => ({ ...current, documents: [record, ...(current.documents || [])] }));
+    const update = addContactUpdate(contact.id, {
+      author: state.currentUser.name || "CRM user", jobId: job.id, message: `Created Google Doc: ${record.name}.`,
+    });
+    saveState({ localOnly: true });
+    const saved = canUseCloudSync() ? await persistLeadJobRecord(job.id, update?.updates?.[0]?.id || "") : true;
+    if (!saved) queueDurableRecordsSave();
+    renderLeadDocuments(getSelectedContact());
+    setSaveState(els.leadDocumentUploadStatus, "Google document created, filled, and attached to this job.", "success");
+    window.open(record.externalUrl, "_blank", "noopener,noreferrer");
+  } catch (error) {
+    setSaveState(els.leadDocumentUploadStatus, error.message || "Google document generation failed.", "error");
+  } finally {
+    if (els.generateGoogleDocButton) els.generateGoogleDocButton.disabled = false;
+  }
 }
 
 async function migrateInlineDocumentsToStorage() {
@@ -9591,6 +9777,7 @@ function renderTaskCard(task, options = {}) {
         ${task.recurrence !== "none" ? `<span>Repeats ${escapeHtml(task.recurrence)}</span>` : ""}
         ${task.followers?.length ? `<span>Followers: ${escapeHtml(task.followers.join(", "))}</span>` : ""}
         ${taskGoogleSyncLabel(task)}
+        ${taskGoogleTasksSyncLabel(task)}
         ${task.notes && !options.compact ? `<p>${nl2br(task.notes)}</p>` : ""}
         ${!options.compact && progress.total ? `
           <div class="task-progress"><span style="width:${progress.percent}%"></span></div>
@@ -9617,12 +9804,14 @@ function renderTaskCard(task, options = {}) {
           <small>${taskTrackedMinutes(task)} minute${taskTrackedMinutes(task) === 1 ? "" : "s"} tracked</small>
         ` : ""}
         ${task.googleSyncError && !options.compact ? `<p class="field-error">${escapeHtml(task.googleSyncError)}</p>` : ""}
+        ${task.googleTaskSyncError && !options.compact ? `<p class="field-error">${escapeHtml(task.googleTaskSyncError)}</p>` : ""}
       </div>
       <div class="row-actions">
         <a class="secondary-button" href="${escapeHtml(calendarUrl)}" target="_blank" rel="noopener">
           <span aria-hidden="true" data-icon="calendar"></span>
           ${task.googleEventUrl ? "Open in Google Calendar" : "Google Calendar"}
         </a>
+        ${task.googleMeetLink ? `<a class="secondary-button" href="${escapeHtml(task.googleMeetLink)}" target="_blank" rel="noopener"><span aria-hidden="true" data-icon="calendar"></span>Join Google Meet</a>` : ""}
         ${
           options.compact
             ? ""
@@ -9675,6 +9864,7 @@ async function saveCalendarTask(event) {
     dueAt: formData.get("dueAt"),
     duration: number(formData.get("duration")),
     reminder: formData.get("reminder"),
+    addGoogleMeet: formData.get("addGoogleMeet") === "on",
     notes: formData.get("notes").trim(),
     priority: formData.get("priority"),
     workflowStatus: formData.get("workflowStatus"),
@@ -9693,7 +9883,12 @@ async function saveCalendarTask(event) {
     ownerName: owner.name || "",
     googleSyncStatus: "pending",
     googleSyncError: "",
-    ...(ownerChanged ? { googleEventId: "", googleEventUrl: "", googleSyncedAt: "" } : {}),
+    googleTaskSyncStatus: "pending",
+    googleTaskSyncError: "",
+    ...(ownerChanged ? {
+      googleEventId: "", googleEventUrl: "", googleMeetLink: "", googleSyncedAt: "",
+      googleTaskId: "", googleTaskListId: "", googleTaskSyncedAt: "",
+    } : {}),
   });
   if (existingTask) {
     state.calendarTasks = state.calendarTasks.map((item) => (item.id === task.id ? task : item));
@@ -9754,6 +9949,7 @@ function fillCalendarTaskForm(task) {
   form.elements.dueAt.value = dateTimeLocalValue(task.dueAt);
   form.elements.duration.value = task.duration || 30;
   form.elements.reminder.value = task.reminder || "popup";
+  if (form.elements.addGoogleMeet) form.elements.addGoogleMeet.checked = Boolean(task.addGoogleMeet);
   form.elements.notes.value = task.notes || "";
   form.elements.priority.value = task.priority || "normal";
   form.elements.workflowStatus.value = task.workflowStatus || "not_started";
@@ -9881,6 +10077,8 @@ async function completeCalendarTask(taskId) {
     state.calendarTasks.unshift(nextTask);
   }
   await persistTaskWorkflowUpdate(taskId);
+  const completedTask = state.calendarTasks.find((task) => task.id === taskId);
+  if (completedTask?.googleTaskId) await syncCalendarTaskToGoogleTasks(completedTask);
   if (nextTask) {
     if (canUseCloudSync()) await persistDurableRecordNow("task", nextTask.id, (data) => data.id === nextTask.id);
     await syncCalendarTaskToGoogle(nextTask);
@@ -9893,6 +10091,7 @@ async function deleteCalendarTask(taskId) {
   const task = state.calendarTasks.find((item) => item.id === taskId);
   if (!task) return;
   if (!(await removeCalendarTaskFromGoogle(task))) return;
+  if (!(await removeTaskFromGoogleTasks(task))) return;
   state.calendarTasks = state.calendarTasks.filter((task) => task.id !== taskId);
   saveState({ localOnly: true });
   queueDurableRecordsSave();
@@ -11266,6 +11465,36 @@ async function inviteCustomerPortal(event){event.preventDefault();if(!requireAct
 
 async function exportPerformanceReport(){const rows=[["Report","Value"],["Pipeline",dashboardMetrics().pipelineValue],["Collected",state.financialPayments.reduce((sum,item)=>sum+number(item.amount),0)],["Expenses",state.financialExpenses.reduce((sum,item)=>sum+number(item.amount),0)],["Billable hours",(state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60).toFixed(2)]];const csv=rows.map((row)=>row.map((value)=>`"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`jobcrest-performance-${todayISO()}.csv`;link.click();URL.revokeObjectURL(url);if(canUseCloudSync())await cloudClient.from("crm_report_exports").insert({company_state_id:supabaseStateId(),id:uid("reportexport"),report_type:"performance",filters:{},row_count:rows.length-1,requested_by:authSession.user.id});}
 
+async function exportPerformanceReportToGoogleSheets() {
+  if (!requireAction("manageCompany")) return;
+  const metrics = dashboardMetrics();
+  const headers = ["Report", "Value"];
+  const rows = [
+    ["Pipeline", metrics.pipelineValue],
+    ["Collected", state.financialPayments.reduce((sum, item) => sum + number(item.amount), 0)],
+    ["Expenses", state.financialExpenses.reduce((sum, item) => sum + number(item.amount), 0)],
+    ["Billable hours", Number((state.jobTimeEntries.filter((item) => item.billable).reduce((sum, item) => sum + number(item.minutes), 0) / 60).toFixed(2))],
+    ...aggregateCounts(allJobs().filter((job) => soldJobStatuses.includes(job.status)), (job) => canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned", (job) => number(job.contractValue) || number(job.value))
+      .map((rep) => [`Sold · ${rep.label} · ${rep.count} jobs`, rep.value]),
+  ];
+  try {
+    const headersAuth = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/sheets/export", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headersAuth }, signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({ title: `JobCrest Performance ${todayISO()}`, headers, rows }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result?.exported !== true || !/^https:\/\/docs\.google\.com\/spreadsheets\//.test(result.webViewLink || "")) throw new Error(result.error || "Google Sheets export failed.");
+    window.open(result.webViewLink, "_blank", "noopener,noreferrer");
+    if (canUseCloudSync()) await cloudClient.from("crm_report_exports").insert({
+      company_state_id: supabaseStateId(), id: uid("reportexport"), report_type: "google_sheets_performance",
+      filters: { spreadsheetId: result.spreadsheetId, webViewLink: result.webViewLink, exportedAt: new Date().toISOString() },
+      row_count: rows.length, requested_by: authSession.user.id,
+    });
+    showToast("Google Sheets report created");
+  } catch (error) { showToast(error.message || "Google Sheets report could not be created"); }
+}
+
 function renderNewEstimatePickers() {
   if (!els.newEstimateContact || !els.newEstimateJob) return;
   const selectedContact = getContact(state.newEstimateContactId);
@@ -11659,19 +11888,19 @@ function renderGoogleIntegrationCard() {
     els.googleIntegrationPill.textContent = "Setup needed";
     els.googleIntegrationPill.className = "status-pill pill-inspection";
   } else if (status.connected) {
-    const gmailReady = status.gmailSend && status.gmailRead;
-    els.googleIntegrationStatus.textContent = gmailReady
-      ? `Calendar and Gmail connected as ${status.providerEmail || status.email}`
-      : `Calendar connected as ${status.providerEmail || status.email}. Reconnect to enable Gmail.`;
-    els.googleIntegrationPill.textContent = gmailReady ? "Connected" : "Reconnect";
-    els.googleIntegrationPill.className = gmailReady ? "status-pill pill-won" : "status-pill pill-inspection";
+    const userProductsReady = status.gmailSend && status.gmailRead && status.tasks && status.contacts;
+    els.googleIntegrationStatus.textContent = userProductsReady
+      ? `Calendar, Gmail, Tasks, and Contacts connected as ${status.providerEmail || status.email}`
+      : `Google connected as ${status.providerEmail || status.email}. Reconnect to approve the newest products.`;
+    els.googleIntegrationPill.textContent = userProductsReady ? "Connected" : "Reconnect";
+    els.googleIntegrationPill.className = userProductsReady ? "status-pill pill-won" : "status-pill pill-inspection";
   } else {
     els.googleIntegrationStatus.textContent = `Connect the Google account matching ${status.email || currentOwner().email}`;
     els.googleIntegrationPill.textContent = "Not connected";
     els.googleIntegrationPill.className = "status-pill pill-default";
   }
   if (els.connectGoogleWorkspaceButton) {
-    els.connectGoogleWorkspaceButton.classList.toggle("hidden", status.connected && status.gmailSend && status.gmailRead);
+    els.connectGoogleWorkspaceButton.classList.toggle("hidden", status.connected && status.gmailSend && status.gmailRead && status.tasks && status.contacts);
     els.connectGoogleWorkspaceButton.textContent = status.connected ? "Reconnect Google Workspace" : "Connect Google Workspace";
     els.connectGoogleWorkspaceButton.disabled = status.loading || !status.configured;
   }
@@ -11679,9 +11908,22 @@ function renderGoogleIntegrationCard() {
     els.disconnectGoogleWorkspaceButton.classList.toggle("hidden", !status.connected);
     els.disconnectGoogleWorkspaceButton.disabled = status.loading;
   }
+  els.verifyGoogleDriveButton?.classList.toggle("hidden", !status.drive || !canManageTeamData());
   // Each employee connects their own account, and reps cannot open Settings,
   // so the Calendar page offers the connection too.
   els.calendarGoogleConnect?.classList.toggle("hidden", !(status.loaded && status.configured && !status.connected));
+  document.querySelectorAll("[data-google-product]").forEach((badge) => {
+    const key = badge.dataset.googleProduct;
+    const enabled = key === "gmail" ? status.gmailSend && status.gmailRead : Boolean(status[key]);
+    badge.classList.toggle("active", enabled);
+    badge.classList.toggle("planned", !enabled);
+  });
+  if (els.googleProductsIntegrationStatus) {
+    const ready = ["drive", "docs", "sheets", "chat", "gmailPush", "groups"].filter((key) => status[key]);
+    els.googleProductsIntegrationStatus.textContent = ready.length
+      ? `Company products ready: ${ready.map((key) => ({ gmailPush: "automatic Gmail", drive: "Drive", docs: "Docs", sheets: "Sheets", chat: "Chat", groups: "Groups" })[key]).join(", ")}.`
+      : "Company Drive, Docs, Sheets, Chat, automatic Gmail, and Groups still need administrator setup.";
+  }
 }
 
 async function refreshGoogleIntegrationStatus(force = false) {
@@ -11696,11 +11938,38 @@ async function refreshGoogleIntegrationStatus(force = false) {
       loaded: true, loading: false, configured: response.ok && result.configured === true,
       connected: response.ok && result.connected === true, email: result.email || currentOwner().email,
       providerEmail: result.providerEmail || "", gmailSend: result.gmailSend === true, gmailRead: result.gmailRead === true,
+      calendar: result.calendar === true, tasks: result.tasks === true, contacts: result.contacts === true,
+      drive: result.drive === true, docs: result.docs === true, sheets: result.sheets === true,
+      chat: result.chat === true, gmailPush: result.gmailPush === true, groups: result.groups === true,
+      docTemplates: Array.isArray(result.docTemplates) ? result.docTemplates : [],
+      groupOptions: Array.isArray(result.groupOptions) ? result.groupOptions : [],
     };
   } catch {
-    googleIntegrationState = { loaded: true, loading: false, configured: false, connected: false, email: currentOwner().email, providerEmail: "", gmailSend: false, gmailRead: false };
+    googleIntegrationState = {
+      loaded: true, loading: false, configured: false, connected: false, email: currentOwner().email, providerEmail: "",
+      calendar: false, gmailSend: false, gmailRead: false, tasks: false, contacts: false,
+      drive: false, docs: false, sheets: false, chat: false, gmailPush: false, groups: false,
+      docTemplates: [], groupOptions: [],
+    };
   }
   renderGoogleIntegrationCard();
+  if (googleIntegrationState.connected && googleIntegrationState.gmailRead && googleIntegrationState.gmailPush) void ensureGmailWatch();
+}
+
+async function ensureGmailWatch() {
+  const email = String(googleIntegrationState.providerEmail || googleIntegrationState.email || "").toLowerCase();
+  if (!email) return false;
+  const key = `jobcrest-gmail-watch:${email}`;
+  const last = Number(localStorage.getItem(key) || 0);
+  if (Number.isFinite(last) && Date.now() - last < 24 * 60 * 60 * 1000) return true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/gmail/watch", { method: "POST", headers, signal: AbortSignal.timeout(20000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.watching !== true) return false;
+    localStorage.setItem(key, String(Date.now()));
+    return true;
+  } catch { return false; }
 }
 
 async function connectGoogleWorkspace() {
@@ -11715,13 +11984,30 @@ async function connectGoogleWorkspace() {
   }
 }
 
+async function verifyGoogleDriveConnection() {
+  if (!requireAction("manageCompany")) return;
+  if (els.verifyGoogleDriveButton) els.verifyGoogleDriveButton.disabled = true;
+  try {
+    const headers = await squareApiHeaders();
+    const response = await fetch("/api/integrations/google/drive/verify", { headers, signal: AbortSignal.timeout(20000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.verified) throw new Error(result.error || "Company Drive verification failed.");
+    if (els.googleDriveIntegrationStatus) els.googleDriveIntegrationStatus.textContent = `Verified company Drive folder: ${result.root.name}.`;
+    showToast("Company Drive connection verified");
+  } catch (error) { showToast(error.message || "Company Drive verification failed"); }
+  finally { if (els.verifyGoogleDriveButton) els.verifyGoogleDriveButton.disabled = false; }
+}
+
 async function disconnectGoogleWorkspace() {
   if (!window.confirm("Disconnect Google Workspace from JobCrest? Existing Google events and sent Gmail messages will remain in Google.")) return;
   try {
     const headers = await squareApiHeaders();
     const response = await fetch("/api/integrations/google/disconnect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error("Google Workspace could not be disconnected.");
-    googleIntegrationState = { ...googleIntegrationState, loaded: true, loading: false, connected: false, providerEmail: "", gmailSend: false, gmailRead: false };
+    googleIntegrationState = {
+      ...googleIntegrationState, loaded: true, loading: false, connected: false, providerEmail: "",
+      calendar: false, gmailSend: false, gmailRead: false, tasks: false, contacts: false,
+    };
     renderGoogleIntegrationCard();
     showToast("Google Workspace disconnected");
   } catch (error) { showToast(error.message); }
@@ -13402,6 +13688,7 @@ function bindEvents() {
     if (action === "add-customer") openContactDialog(null, { type: "Customer" });
     if (action === "open-contact") openLeadDetail(contactId);
     if (action === "open-contact-tab") openLeadDetail(contactId, actionButton.dataset.tab || "overview", actionButton.dataset.jobId || "");
+    if (action === "sync-google-contact") await syncLeadToGoogleContacts(contactId);
     if (action === "open-job") openLeadJob(contactId, actionButton.dataset.jobId);
     if (action === "open-job-photos") openLeadJobPhotos(contactId, actionButton.dataset.jobId);
     if (action === "refresh-weather") loadWeather({ force: true });
@@ -13434,6 +13721,9 @@ function bindEvents() {
               const saved = await persistLeadJobRecord(updatedJob.id, updateId);
               if (saved) queueCloudSave();
               else queueDurableRecordsSave();
+              if (saved && ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"].includes(updatedJob.status)) {
+                void notifyGoogleChat(updatedJob.status === "Won" ? "estimate_won" : "production_stage", `${updated.name} — ${updatedJob.name}: ${updatedJob.status}`);
+              }
             } catch {
               queueDurableRecordsSave();
             }
@@ -13645,6 +13935,7 @@ function bindEvents() {
     els.leadDocumentInput.value = "";
     els.leadDocumentInput.click();
   });
+  els.generateGoogleDocButton?.addEventListener("click", generateLeadGoogleDocument);
   els.leadDocumentInput.addEventListener("change", async (event) => {
     const files = [...(event.target.files || [])];
     try {
@@ -13743,6 +14034,7 @@ function bindEvents() {
   els.copyLeadEmailButton.addEventListener("click", copyLeadEmail);
   els.refreshLeadEmailThreadsButton?.addEventListener("click", refreshLeadEmailThreads);
   els.reportExportButton?.addEventListener("click",()=>void exportPerformanceReport());
+  els.googleSheetsExportButton?.addEventListener("click",()=>void exportPerformanceReportToGoogleSheets());
   els.adminTaxForm?.addEventListener("submit",saveAdminTax);
   els.adminAnnouncementForm?.addEventListener("submit",saveAdminAnnouncement);
   els.customerPortalInviteForm?.addEventListener("submit",inviteCustomerPortal);
@@ -13795,6 +14087,7 @@ function bindEvents() {
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
   els.calendarTaskContact?.addEventListener("change", (event) => renderCalendarTaskJobOptions(event.target.value, ""));
   els.connectGoogleWorkspaceButton?.addEventListener("click", connectGoogleWorkspace);
+  els.verifyGoogleDriveButton?.addEventListener("click", verifyGoogleDriveConnection);
   els.calendarGoogleConnectButton?.addEventListener("click", connectGoogleWorkspace);
   els.disconnectGoogleWorkspaceButton?.addEventListener("click", disconnectGoogleWorkspace);
   els.connectZohoSignButton?.addEventListener("click", connectZohoSign);

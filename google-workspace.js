@@ -66,7 +66,13 @@ function createAuthorizationUrl(config, identity, state) {
     access_type: "offline",
     include_granted_scopes: "true",
     prompt: "consent select_account",
-    scope: [...IDENTITY_SCOPES, GOOGLE_CALENDAR_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE].join(" "),
+    scope: [...new Set([
+      ...IDENTITY_SCOPES,
+      GOOGLE_CALENDAR_SCOPE,
+      GOOGLE_GMAIL_SEND_SCOPE,
+      GOOGLE_GMAIL_READ_SCOPE,
+      ...(Array.isArray(config.additionalScopes) ? config.additionalScopes : []),
+    ])].join(" "),
     login_hint: safeEmail(identity.email),
     state,
   }).toString();
@@ -183,15 +189,29 @@ async function upsertCalendarEvent(fetchImpl, accessToken, task, contact, timeZo
   const path = eventId
     ? `/calendars/primary/events/${encodeURIComponent(eventId)}`
     : "/calendars/primary/events";
-  const response = await fetchImpl(`${GOOGLE_CALENDAR_API}${path}`, {
+  const url = new URL(`${GOOGLE_CALENDAR_API}${path}`);
+  if (task.addGoogleMeet === true) url.searchParams.set("conferenceDataVersion", "1");
+  const resource = calendarEventResource(task, contact, timeZone);
+  if (task.addGoogleMeet === true) {
+    resource.conferenceData = {
+      createRequest: {
+        requestId: `jobcrest-${safeIdentifier(task.id, "task")}-${crypto.randomBytes(6).toString("hex")}`,
+        conferenceSolutionKey: { type: "hangoutsMeet" },
+      },
+    };
+  }
+  const response = await fetchImpl(url.toString(), {
     method: eventId ? "PUT" : "POST",
     signal: AbortSignal.timeout(15000),
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify(calendarEventResource(task, contact, timeZone)),
+    body: JSON.stringify(resource),
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || typeof result.id !== "string" || !result.id) throw new Error(response.status === 401 ? "google_access_expired" : "google_calendar_write_failed");
-  return { eventId: safeIdentifier(result.id, "google_event"), htmlLink: /^https:\/\/calendar\.google\.com\//.test(result.htmlLink || "") ? result.htmlLink : "", updated: result.updated || new Date().toISOString() };
+  const meetLink = Array.isArray(result.conferenceData?.entryPoints)
+    ? result.conferenceData.entryPoints.find((item) => item.entryPointType === "video" && /^https:\/\/meet\.google\.com\//.test(item.uri || ""))?.uri || ""
+    : "";
+  return { eventId: safeIdentifier(result.id, "google_event"), htmlLink: /^https:\/\/calendar\.google\.com\//.test(result.htmlLink || "") ? result.htmlLink : "", meetLink, updated: result.updated || new Date().toISOString() };
 }
 
 async function deleteCalendarEvent(fetchImpl, accessToken, eventId) {

@@ -4,6 +4,9 @@ const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API = "https://www.googleapis.com/drive/v3";
 const GOOGLE_DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+const GOOGLE_DOCS_SCOPE = "https://www.googleapis.com/auth/documents";
+const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+const GOOGLE_ADMIN_GROUP_SCOPE = "https://www.googleapis.com/auth/admin.directory.group.member";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 function safeDriveId(value, field = "drive_id") {
@@ -32,7 +35,8 @@ function createServiceAccountAssertion(config, now = Date.now()) {
   const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const payload = base64url(JSON.stringify({
     iss: config.clientEmail,
-    scope: GOOGLE_DRIVE_SCOPE,
+    scope: [...new Set(Array.isArray(config.scopes) && config.scopes.length ? config.scopes : [GOOGLE_DRIVE_SCOPE])].join(" "),
+    ...(config.subject ? { sub: String(config.subject).trim().toLowerCase() } : {}),
     aud: GOOGLE_TOKEN_URL,
     iat: issued,
     exp: issued + 3600,
@@ -155,6 +159,7 @@ async function uploadDocument(fetchImpl, accessToken, folderId, document, metada
 }
 
 module.exports = {
-  GOOGLE_DRIVE_SCOPE, safeDriveId, safeFolderName, createServiceAccountAssertion, exchangeServiceAccountToken,
+  GOOGLE_DRIVE_SCOPE, GOOGLE_DOCS_SCOPE, GOOGLE_SHEETS_SCOPE, GOOGLE_ADMIN_GROUP_SCOPE,
+  safeDriveId, safeFolderName, createServiceAccountAssertion, exchangeServiceAccountToken,
   findOrCreateFolder, ensureDocumentFolder, findDocument, uploadDocument,
 };

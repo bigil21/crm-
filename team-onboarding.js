@@ -4,6 +4,8 @@
   const emailField = document.querySelector("#teamInviteEmail");
   const submitButton = document.querySelector("#teamInviteSubmit");
   const status = document.querySelector("#teamInviteStatus");
+  const groupsFieldset = document.querySelector("#teamGoogleGroupsFieldset");
+  const groupsOptions = document.querySelector("#teamGoogleGroupsOptions");
   if (!panel || !form || !emailField || !submitButton || !status || !window.RooflineAuth) return;
 
   function setStatus(message, tone = "") {
@@ -19,6 +21,17 @@
     const trusted = await window.RooflineAuth.getTrustedUser();
     if (trusted?.role !== "admin") return;
     panel.classList.remove("hidden");
+    const client = window.RooflineAuth.createClient();
+    const session = await client?.auth.getSession();
+    const token = session?.data?.session?.access_token;
+    if (!token || !groupsFieldset || !groupsOptions) return;
+    const response = await fetch("/api/integrations/google/status", { cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
+    const result = await response.json().catch(() => ({}));
+    const groups = Array.isArray(result.groupOptions) ? result.groupOptions : [];
+    if (response.ok && groups.length) {
+      groupsOptions.innerHTML = groups.map((group) => `<label><input type="checkbox" name="googleGroups" value="${group.replace(/[&<>\"']/g, "")}" checked /> ${group.replace(/[&<>\"']/g, "")}</label>`).join("");
+      groupsFieldset.classList.remove("hidden");
+    }
   }
 
   form.addEventListener("submit", async (event) => {
@@ -42,12 +55,13 @@
         method: "POST",
         cache: "no-store",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, groups: [...form.querySelectorAll('input[name="googleGroups"]:checked')].map((input) => input.value) }),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || "The invitation could not be sent.");
       emailField.value = "";
-      setStatus(`Invitation sent to ${result.email}. The link opens Create Password and activates Sales access.`, "success");
+      const groupNote = result.groupWarning ? ` ${result.groupWarning}` : result.groupsAdded?.length ? " Google Groups access was also added." : "";
+      setStatus(`Invitation sent to ${result.email}. The link opens Create Password and activates Sales access.${groupNote}`, result.groupWarning ? "warning" : "success");
     } catch (error) {
       setStatus(String(error?.message || "The invitation could not be sent."), "error");
     } finally {

@@ -794,6 +794,14 @@
                     <span aria-hidden="true" data-icon="upload"></span>
                     Upload Document
                   </button>
+                  <label class="compact-select hidden" id="googleDocTemplateControl">
+                    Google template
+                    <select id="googleDocTemplateSelect" aria-label="Google Docs template"></select>
+                  </label>
+                  <button class="secondary-button hidden" type="button" id="generateGoogleDocButton">
+                    <span aria-hidden="true" data-icon="file"></span>
+                    Create Google Doc
+                  </button>
                   <label class="smart-doc-upload-option hidden" title="After a single file is saved, open the Zoho Sign preparation form">
                     <input id="leadDocumentSmartAfterUpload" type="checkbox" />
                     Prepare in Zoho Sign
@@ -1158,7 +1166,10 @@
               <p class="eyebrow">Reports</p>
               <h2>Sales performance</h2>
             </div>
-            <button class="secondary-button" type="button" id="reportExportButton"><span aria-hidden="true" data-icon="download"></span>Export report</button>
+            <div class="detail-actions">
+              <button class="secondary-button" type="button" id="reportExportButton"><span aria-hidden="true" data-icon="download"></span>Export CSV</button>
+              <button class="primary-button" type="button" id="googleSheetsExportButton"><span aria-hidden="true" data-icon="upload"></span>Export to Google Sheets</button>
+            </div>
           </div>
           <section class="surface lead-detail-surface">
             <div id="reportsContent" class="reports-grid"></div>
@@ -1245,6 +1256,10 @@
                       <option value="popup">Default popup reminder</option>
                       <option value="none">No reminder</option>
                     </select>
+                  </label>
+                  <label class="smart-doc-upload-option" title="Add a Google Meet video link to the synchronized Calendar event">
+                    <input name="addGoogleMeet" type="checkbox" />
+                    Add Google Meet
                   </label>
                   <label>
                     Priority
@@ -1342,6 +1357,11 @@
                 Access Level
                 <input value="Sales Representative" disabled aria-label="Access level" />
               </label>
+              <fieldset class="hidden" id="teamGoogleGroupsFieldset">
+                <legend>Google Groups</legend>
+                <div id="teamGoogleGroupsOptions"></div>
+                <small>Add the representative to approved company mailing and collaboration groups.</small>
+              </fieldset>
               <button class="primary-button" type="submit" id="teamInviteSubmit">
                 <span aria-hidden="true" data-icon="send"></span>
                 Send Invitation
@@ -1368,17 +1388,22 @@
                   <span class="status-pill pill-default" id="googleIntegrationPill">Checking</span>
                 </div>
                 <div class="integration-products" aria-label="Google Workspace products">
-                  <span class="integration-product active">Calendar</span>
-                  <span class="integration-product active">Gmail</span>
-                  <span class="integration-product active">Drive</span>
-                  <span class="integration-product planned">Docs</span>
-                  <span class="integration-product planned">Sheets</span>
-                  <span class="integration-product planned">Groups</span>
+                  <span class="integration-product active" data-google-product="calendar">Calendar + Meet</span>
+                  <span class="integration-product active" data-google-product="gmail">Gmail</span>
+                  <span class="integration-product planned" data-google-product="tasks">Tasks</span>
+                  <span class="integration-product planned" data-google-product="contacts">Contacts</span>
+                  <span class="integration-product planned" data-google-product="drive">Drive</span>
+                  <span class="integration-product planned" data-google-product="docs">Docs</span>
+                  <span class="integration-product planned" data-google-product="sheets">Sheets</span>
+                  <span class="integration-product planned" data-google-product="chat">Chat</span>
+                  <span class="integration-product planned" data-google-product="groups">Groups</span>
                 </div>
-                <p class="integration-help">Calendar and job-specific Gmail are active. Each employee connects the Google account matching their CRM email.</p>
+                <p class="integration-help">Each employee connects the Google account matching their CRM email. Company products are enabled independently by administrators.</p>
                 <p class="integration-help" id="googleDriveIntegrationStatus">Company Drive storage is not configured.</p>
+                <p class="integration-help" id="googleProductsIntegrationStatus">Checking optional Google products…</p>
                 <div class="detail-actions">
                   <button class="primary-button" type="button" id="connectGoogleWorkspaceButton">Connect Google Workspace</button>
+                  <button class="secondary-button hidden" type="button" id="verifyGoogleDriveButton">Verify Company Drive</button>
                   <button class="ghost-button danger hidden" type="button" id="disconnectGoogleWorkspaceButton">Disconnect</button>
                 </div>
               </article>
@@ -1865,8 +1890,8 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=157" defer></script>
-    <script src="team-onboarding.js?v=2" defer></script>
+    <script src="app.js?v=158" defer></script>
+    <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>
     <script src="project-conversations-v67.js?v=80" defer></script>

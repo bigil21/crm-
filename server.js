@@ -8,8 +8,14 @@ const {
   GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE, sendGmailMessage, fetchGmailThread, gmailMessageResource,
 } = require(path.join(__dirname, "google-workspace"));
 const {
-  safeDriveId, exchangeServiceAccountToken, ensureDocumentFolder, uploadDocument: uploadGoogleDriveDocument,
+  GOOGLE_DRIVE_SCOPE, GOOGLE_DOCS_SCOPE, GOOGLE_SHEETS_SCOPE, GOOGLE_ADMIN_GROUP_SCOPE,
+  safeDriveId, exchangeServiceAccountToken, ensureDocumentFolder, findOrCreateFolder, uploadDocument: uploadGoogleDriveDocument,
 } = require(path.join(__dirname, "google-drive"));
+const {
+  GOOGLE_TASKS_SCOPE, GOOGLE_CONTACTS_SCOPE, verifyDriveRoot, copyGoogleDocTemplate, mergeGoogleDoc,
+  createGoogleSheet, ensureTaskList, upsertGoogleTask, deleteGoogleTask, upsertGoogleContact, sendGoogleChatWebhook,
+  watchGmail, decodeGmailPush, addGoogleGroupMember,
+} = require(path.join(__dirname, "google-products"));
 const {
   ZOHO_SIGN_SCOPES, createAuthorizationUrl: createZohoAuthorizationUrl,
   exchangeAuthorizationCode: exchangeZohoAuthorizationCode,
@@ -238,7 +244,10 @@ function googleWorkspaceConfig() {
     if ((!loopback && redirect.protocol !== "https:") || (loopback && !["http:", "https:"].includes(redirect.protocol)) || redirect.username || redirect.password || redirect.hash) return null;
   } catch { return null; }
   if (!clientId || !clientSecret || stateSecret.length < 32 || !/^[A-Za-z0-9+/]{43}=$/.test(encryptionKey)) return null;
-  return { clientId, clientSecret, redirectUri: redirect.toString(), stateSecret, encryptionKey };
+  return {
+    clientId, clientSecret, redirectUri: redirect.toString(), stateSecret, encryptionKey,
+    additionalScopes: [GOOGLE_TASKS_SCOPE, GOOGLE_CONTACTS_SCOPE],
+  };
 }
 
 function googleDriveConfig() {
@@ -248,6 +257,20 @@ function googleDriveConfig() {
   if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.iam\.gserviceaccount\.com$/.test(clientEmail) || !privateKey.includes("BEGIN PRIVATE KEY")) return null;
   try { safeDriveId(rootFolderId, "drive_root"); } catch { return null; }
   return { clientEmail, privateKey, rootFolderId };
+}
+
+function googleProductsConfig() {
+  const drive = googleDriveConfig();
+  if (!drive) return null;
+  let templates = {};
+  try { templates = JSON.parse(process.env.GOOGLE_DOCS_TEMPLATES_JSON || "{}"); } catch { templates = {}; }
+  templates = Object.fromEntries(Object.entries(templates).filter(([key, value]) => /^[a-z0-9][a-z0-9_-]{0,79}$/i.test(key) && /^[A-Za-z0-9_-]{3,200}$/.test(String(value))));
+  const groups = String(process.env.GOOGLE_GROUP_ALLOWLIST || "").split(",").map((value) => value.trim().toLowerCase()).filter((value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+  const delegatedAdmin = String(process.env.GOOGLE_ADMIN_DELEGATED_USER || "").trim().toLowerCase();
+  const gmailTopic = String(process.env.GOOGLE_GMAIL_PUBSUB_TOPIC || "").trim();
+  const gmailVerificationToken = String(process.env.GOOGLE_GMAIL_PUSH_VERIFICATION_TOKEN || "");
+  const chatWebhook = String(process.env.GOOGLE_CHAT_WEBHOOK_URL || "").trim();
+  return { ...drive, templates, groups, delegatedAdmin, gmailTopic, gmailVerificationToken, chatWebhook };
 }
 
 function integrationStoreConfig() {
@@ -370,10 +393,20 @@ async function handleGoogleStatus(req, res, user) {
   }
   const connection = await getGoogleConnection(store, user.email);
   const scopes = new Set(connection?.scopes || []);
+  const products = googleProductsConfig();
   sendJson(res, 200, {
     configured: true, connected: Boolean(connection), email: String(user.email || "").toLowerCase(),
     providerEmail: connection?.provider_email || "", calendar: Boolean(connection),
     gmailSend: scopes.has(GOOGLE_GMAIL_SEND_SCOPE), gmailRead: scopes.has(GOOGLE_GMAIL_READ_SCOPE),
+    tasks: scopes.has(GOOGLE_TASKS_SCOPE), contacts: scopes.has(GOOGLE_CONTACTS_SCOPE),
+    drive: Boolean(googleDriveConfig()), docs: Boolean(products && Object.keys(products.templates).length),
+    sheets: Boolean(googleDriveConfig()), chat: Boolean(products?.chatWebhook),
+    gmailPush: Boolean(products?.gmailTopic && products?.gmailVerificationToken),
+    groups: Boolean(products?.delegatedAdmin && products?.groups.length),
+    docTemplates: Object.keys(products?.templates || {}).map((key) => ({
+      key, label: key.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    })),
+    ...(isApiAdmin(user) ? { groupOptions: products?.groups || [] } : {}),
   });
 }
 
@@ -410,6 +443,11 @@ async function handleGoogleCallback(url, res) {
         ...String(tokens.scope || "").split(/\s+/).filter(Boolean),
       ])],
     });
+    const products = googleProductsConfig();
+    if (products?.gmailTopic && products?.gmailVerificationToken && String(tokens.scope || "").split(/\s+/).includes(GOOGLE_GMAIL_READ_SCOPE)) {
+      try { await watchGmail(fetch, tokens.access_token, products.gmailTopic); }
+      catch (watchError) { console.warn("Gmail push watch could not start after OAuth", { code: watchError?.message }); }
+    }
     sendRedirect(res, "/?google=connected");
   } catch (error) {
     const code = ["google_email_mismatch", "google_consent_denied"].includes(error.message) ? error.message : "connection_failed";
@@ -548,6 +586,239 @@ async function handleGoogleGmailThreads(req, res, user) {
       : "Gmail replies could not be refreshed.";
     sendJson(res, status, { error: message, code: error.message });
   }
+}
+
+async function handleGoogleTask(req, res, user) {
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Task request." }); return; }
+  const ownerEmail = String(payload?.ownerEmail || user.email || "").trim().toLowerCase();
+  if (ownerEmail !== String(user.email || "").toLowerCase() && !canManageAssignedCalendar(user)) {
+    sendJson(res, 403, { error: "You cannot write to this representative's Google Tasks." }); return;
+  }
+  try {
+    const { accessToken } = await googleAccessForUser({ ...user, email: ownerEmail }, GOOGLE_TASKS_SCOPE);
+    const list = await ensureTaskList(fetch, accessToken);
+    const result = await upsertGoogleTask(fetch, accessToken, list.id, payload?.task || {});
+    sendJson(res, 200, { synced: true, ownerEmail, taskListId: list.id, ...result });
+  } catch (error) {
+    const status = ["google_not_connected", "google_scope_missing"].includes(error.message) ? 409
+      : ["invalid_task_title", "invalid_task_notes", "invalid_google_task"].includes(error.message) ? 400 : 502;
+    sendJson(res, status, { error: error.message === "google_scope_missing" ? "Reconnect Google Workspace to approve Google Tasks." : "Google Tasks could not be updated.", code: error.message });
+  }
+}
+
+async function handleGoogleTaskDelete(req, res, user) {
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Task request." }); return; }
+  const ownerEmail = String(payload?.ownerEmail || user.email || "").trim().toLowerCase();
+  if (ownerEmail !== String(user.email || "").toLowerCase() && !canManageAssignedCalendar(user)) {
+    sendJson(res, 403, { error: "You cannot remove this representative's Google Task." }); return;
+  }
+  try {
+    const { accessToken } = await googleAccessForUser({ ...user, email: ownerEmail }, GOOGLE_TASKS_SCOPE);
+    await deleteGoogleTask(fetch, accessToken, payload?.taskListId, payload?.taskId);
+    sendJson(res, 200, { deleted: true });
+  } catch (error) {
+    const status = ["google_not_connected", "google_scope_missing"].includes(error.message) ? 409
+      : ["invalid_task_list", "invalid_google_task"].includes(error.message) ? 400 : 502;
+    sendJson(res, status, { error: "Google Tasks could not remove the task.", code: error.message });
+  }
+}
+
+async function handleGoogleContact(req, res, user) {
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Contact request." }); return; }
+  try {
+    const store = integrationStoreConfig();
+    if (!store || store.local) throw new Error("shared_storage_required");
+    const record = await getTrustedRecord(store, "contact", payload?.contactId);
+    if (!canAccessTrustedRecord(user, record)) throw new Error("contact_not_found");
+    const { accessToken } = await googleAccessForUser(user, GOOGLE_CONTACTS_SCOPE);
+    const result = await upsertGoogleContact(fetch, accessToken, {
+      name: record.data.name, email: record.data.email, phone: record.data.phone, address: record.data.address,
+      company: record.data.company || "", jobTitle: "JobCrest customer", notes: `JobCrest Lead ${record.data.leadNumber || record.id}`,
+      googleContactResourceName: payload?.googleContactResourceName || record.data.googleContactResourceName || "",
+      etag: payload?.etag || record.data.googleContactEtag || "",
+    });
+    sendJson(res, 200, { synced: true, ...result });
+  } catch (error) {
+    const status = error.message === "contact_not_found" ? 404 : ["google_not_connected", "google_scope_missing"].includes(error.message) ? 409
+      : ["google_contact_etag_missing", "invalid_google_contact"].includes(error.message) ? 400 : 502;
+    sendJson(res, status, { error: error.message === "google_scope_missing" ? "Reconnect Google Workspace to approve Google Contacts." : "The lead could not be copied to Google Contacts.", code: error.message });
+  }
+}
+
+async function handleGoogleDriveVerify(req, res) {
+  const config = googleProductsConfig();
+  if (!config) { sendJson(res, 503, { error: "Google Shared Drive is not configured.", code: "google_drive_not_configured" }); return; }
+  try {
+    const accessToken = await exchangeServiceAccountToken(fetch, { ...config, scopes: [GOOGLE_DRIVE_SCOPE] });
+    const root = await verifyDriveRoot(fetch, accessToken, config.rootFolderId);
+    sendJson(res, 200, { verified: true, root });
+  } catch (error) {
+    sendJson(res, 502, { error: "The configured JobCrest Shared Drive folder could not be verified.", code: error.message });
+  }
+}
+
+async function handleGoogleDocsGenerate(req, res, user) {
+  const config = googleProductsConfig();
+  const store = integrationStoreConfig();
+  if (!config || !store || store.local) { sendJson(res, 503, { error: "Google Docs generation is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Docs request." }); return; }
+  try {
+    const templateId = config.templates[String(payload?.templateKey || "")];
+    if (!templateId) throw new Error("google_docs_template_not_allowed");
+    const lead = await getTrustedRecord(store, "contact", payload?.leadId);
+    const job = await getTrustedRecord(store, "job", payload?.jobId);
+    if (job.lead_id !== lead.id || !canAccessTrustedRecord(user, lead) || !canAccessTrustedRecord(user, job)) throw new Error("document_context_not_found");
+    const accessToken = await exchangeServiceAccountToken(fetch, { ...config, scopes: [GOOGLE_DRIVE_SCOPE, GOOGLE_DOCS_SCOPE] });
+    const folders = await ensureDocumentFolder(fetch, accessToken, config.rootFolderId, {
+      leadId: lead.id, leadNumber: lead.data.leadNumber || "", leadName: lead.data.name || "Customer",
+      jobId: job.id, projectNumber: job.data.projectNumber || "", jobName: job.data.name || "Job",
+      categoryId: "generated-documents", categoryName: "Generated Documents",
+    });
+    const document = await copyGoogleDocTemplate(fetch, accessToken, templateId, folders.categoryFolderId, payload?.name || `${job.data.name || lead.data.name} Document`);
+    const merge = {
+      "{{customer_name}}": lead.data.name || "",
+      "{{lead_number}}": lead.data.leadNumber || "",
+      "{{project_name}}": job.data.name || "",
+      "{{project_number}}": job.data.projectNumber || "",
+      "{{address}}": job.data.address || lead.data.address || "",
+      "{{phone}}": lead.data.phone || "",
+      "{{email}}": lead.data.email || "",
+      "{{contract_value}}": Number(job.data.projectValue || job.data.contractValue || 0).toFixed(2),
+      "{{sales_rep}}": job.data.salesRep || lead.data.salesRep || "",
+      "{{today}}": new Intl.DateTimeFormat("en-US", { timeZone: process.env.CRM_TIME_ZONE || "America/New_York" }).format(new Date()),
+    };
+    const merged = await mergeGoogleDoc(fetch, accessToken, document.id, merge);
+    sendJson(res, 200, { generated: true, document, folders, replacements: merged.replacements });
+  } catch (error) {
+    const status = ["google_docs_template_not_allowed"].includes(error.message) ? 400 : error.message === "document_context_not_found" ? 404 : 502;
+    sendJson(res, status, { error: error.message === "google_docs_template_not_allowed" ? "Choose a configured Google Docs template." : "The Google document could not be generated.", code: error.message });
+  }
+}
+
+async function handleGoogleSheetsExport(req, res) {
+  const config = googleProductsConfig();
+  if (!config) { sendJson(res, 503, { error: "Google Sheets export is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Sheets export." }); return; }
+  try {
+    const accessToken = await exchangeServiceAccountToken(fetch, { ...config, scopes: [GOOGLE_DRIVE_SCOPE, GOOGLE_SHEETS_SCOPE] });
+    const reports = await findOrCreateFolder(fetch, accessToken, config.rootFolderId, "Reports", "jobcrestFolder", "reports");
+    const result = await createGoogleSheet(fetch, accessToken, reports.id, payload?.title || "JobCrest Report", payload?.headers, payload?.rows);
+    sendJson(res, 200, { exported: true, ...result });
+  } catch (error) {
+    sendJson(res, 502, { error: "The Google Sheets report could not be created.", code: error.message });
+  }
+}
+
+async function handleGoogleChatNotify(req, res) {
+  const config = googleProductsConfig();
+  if (!config?.chatWebhook) { sendJson(res, 503, { error: "Google Chat notifications are not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Chat notification." }); return; }
+  const titles = {
+    lead_assigned: "New lead assigned", estimate_won: "Estimate won", payment_received: "Payment received",
+    task_overdue: "Task overdue", production_stage: "Production stage updated", approval_required: "Approval required",
+  };
+  if (!titles[payload?.type]) { sendJson(res, 400, { error: "Unsupported Google Chat notification." }); return; }
+  try {
+    const result = await sendGoogleChatWebhook(fetch, config.chatWebhook, { title: titles[payload.type], detail: payload?.detail, url: payload?.url });
+    sendJson(res, 200, result);
+  } catch (error) { sendJson(res, 502, { error: "Google Chat could not receive the notification.", code: error.message }); }
+}
+
+async function handleGoogleGmailWatch(req, res, user) {
+  const config = googleProductsConfig();
+  if (!config?.gmailTopic || !config?.gmailVerificationToken) { sendJson(res, 503, { error: "Automatic Gmail synchronization is not configured." }); return; }
+  try {
+    const { accessToken } = await googleAccessForUser(user, GOOGLE_GMAIL_READ_SCOPE);
+    const result = await watchGmail(fetch, accessToken, config.gmailTopic);
+    sendJson(res, 200, { watching: true, ...result });
+  } catch (error) { sendJson(res, 502, { error: "Gmail automatic reply monitoring could not be started.", code: error.message }); }
+}
+
+async function reconcileGmailMailbox(emailAddress) {
+  const store = integrationStoreConfig();
+  const config = googleWorkspaceConfig();
+  if (!store || store.local || !config) throw new Error("google_not_configured");
+  const connection = await getGoogleConnection(store, emailAddress);
+  if (!connection || !(connection.scopes || []).includes(GOOGLE_GMAIL_READ_SCOPE)) throw new Error("google_not_connected");
+  const refreshToken = decryptSecret(connection.encrypted_refresh_token, config.encryptionKey);
+  const tokens = await refreshAccessToken(fetch, config, refreshToken);
+  const recordsUrl = new URL(`${store.origin}/rest/v1/crm_records`);
+  recordsUrl.searchParams.set("select", "id,lead_id,data");
+  recordsUrl.searchParams.set("company_state_id", `eq.${store.companyId}`);
+  recordsUrl.searchParams.set("record_type", "eq.job");
+  recordsUrl.searchParams.set("deleted_at", "is.null");
+  recordsUrl.searchParams.set("limit", "1000");
+  const recordsResponse = await fetch(recordsUrl, { signal: AbortSignal.timeout(20000), headers: integrationServiceHeaders(store) });
+  const jobs = await recordsResponse.json().catch(() => []);
+  if (!recordsResponse.ok || !Array.isArray(jobs)) throw new Error("gmail_job_lookup_failed");
+  let captured = 0;
+  for (const job of jobs) {
+    const knownEmails = Array.isArray(job.data?.emails) ? job.data.emails : [];
+    const threadIds = [...new Set(knownEmails
+      .filter((message) => message?.provider === "gmail" && String(message.fromEmail || "").toLowerCase() === emailAddress && message.providerThreadId)
+      .map((message) => message.providerThreadId))].slice(0, 50);
+    if (!threadIds.length) continue;
+    const knownIds = new Set(knownEmails.map((message) => message.providerMessageId).filter(Boolean));
+    const additions = [];
+    for (const threadId of threadIds) {
+      const messages = await fetchGmailThread(fetch, tokens.access_token, threadId, connection.provider_email);
+      for (const message of messages) {
+        if (knownIds.has(message.messageId)) continue;
+        additions.push({
+          id: `gmail_${crypto.createHash("sha256").update(message.messageId).digest("hex").slice(0, 24)}`,
+          fromEmail: message.fromEmail, toEmail: message.toEmail, subject: message.subject, message: message.message,
+          createdAt: message.createdAt, createdBy: message.direction === "inbound" ? "Customer reply" : connection.provider_email,
+          provider: "gmail", providerMessageId: message.messageId, providerThreadId: message.threadId,
+          direction: message.direction, deliveryStatus: message.direction === "inbound" ? "received" : "sent",
+        });
+      }
+    }
+    if (!additions.length) continue;
+    const rpcResponse = await fetch(`${store.origin}/rest/v1/rpc/crm_capture_gmail_messages`, {
+      method: "POST", signal: AbortSignal.timeout(20000),
+      headers: integrationServiceHeaders(store, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ p_job_id: job.id, p_messages: additions }),
+    });
+    if (!rpcResponse.ok) throw new Error("gmail_capture_store_failed");
+    captured += Number(await rpcResponse.json().catch(() => 0)) || 0;
+  }
+  return { captured };
+}
+
+async function handleGoogleGmailPush(req, res, url) {
+  const config = googleProductsConfig();
+  if (!config?.gmailVerificationToken || url.searchParams.get("token") !== config.gmailVerificationToken) { sendJson(res, 404, { error: "not_found" }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "invalid_push" }); return; }
+  try {
+    const event = decodeGmailPush(payload?.message?.data);
+    void reconcileGmailMailbox(event.emailAddress).then((result) => {
+      console.info("Gmail mailbox change reconciled", { email: event.emailAddress, historyId: event.historyId, captured: result.captured });
+    }).catch((error) => console.error("Gmail mailbox reconciliation failed", { email: event.emailAddress, code: error?.message }));
+    sendJson(res, 200, { received: true });
+  } catch { sendJson(res, 400, { error: "invalid_push" }); }
+}
+
+async function handleGoogleGroupMember(req, res) {
+  const config = googleProductsConfig();
+  if (!config?.delegatedAdmin || !config.groups.length) { sendJson(res, 503, { error: "Google Groups onboarding is not configured." }); return; }
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req)); } catch { sendJson(res, 400, { error: "Invalid Google Groups request." }); return; }
+  const requested = [...new Set(Array.isArray(payload?.groups) ? payload.groups.map((value) => String(value).trim().toLowerCase()) : [])];
+  const groups = requested.filter((value) => config.groups.includes(value));
+  if (!groups.length || groups.length !== requested.length) { sendJson(res, 400, { error: "Choose only administrator-approved Google Groups." }); return; }
+  try {
+    const accessToken = await exchangeServiceAccountToken(fetch, { ...config, subject: config.delegatedAdmin, scopes: [GOOGLE_ADMIN_GROUP_SCOPE] });
+    const memberships = [];
+    for (const group of groups) memberships.push(await addGoogleGroupMember(fetch, accessToken, group, payload?.email));
+    sendJson(res, 200, { synced: true, memberships });
+  } catch (error) { sendJson(res, 502, { error: "Google Groups membership could not be updated.", code: error.message }); }
 }
 
 const ZOHO_DATA_CENTERS = {
@@ -1083,7 +1354,8 @@ async function handleTeamInvitation(req, res) {
   try {
     payload = JSON.parse(await readRequestBody(req));
     if (!payload || Array.isArray(payload) || typeof payload.email !== "string" ||
-        Object.keys(payload).some((key) => key !== "email")) throw new Error("invalid_payload");
+        (payload.groups !== undefined && !Array.isArray(payload.groups)) ||
+        Object.keys(payload).some((key) => !["email", "groups"].includes(key))) throw new Error("invalid_payload");
   } catch {
     sendJson(res, 400, { error: "Enter one company email address to invite." });
     return;
@@ -1097,6 +1369,10 @@ async function handleTeamInvitation(req, res) {
   }
 
   try {
+    const products = googleProductsConfig();
+    const requestedGroups = [...new Set((payload.groups || []).map((value) => String(value).trim().toLowerCase()))];
+    const allowedGroups = requestedGroups.filter((group) => products?.groups.includes(group));
+    if (allowedGroups.length !== requestedGroups.length) { sendJson(res, 400, { error: "Choose only administrator-approved Google Groups." }); return; }
     const result = await createTeamInviteService({
       fetchImpl: fetch,
       origin: config.origin,
@@ -1105,6 +1381,16 @@ async function handleTeamInvitation(req, res) {
       allowedEmailDomain,
       appOrigin,
     }).invite(payload.email);
+    if (allowedGroups.length && products?.delegatedAdmin) {
+      try {
+        const accessToken = await exchangeServiceAccountToken(fetch, { ...products, subject: products.delegatedAdmin, scopes: [GOOGLE_ADMIN_GROUP_SCOPE] });
+        result.groupsAdded = [];
+        for (const group of allowedGroups) result.groupsAdded.push(await addGoogleGroupMember(fetch, accessToken, group, result.email));
+      } catch (groupError) {
+        console.error("Google Groups onboarding failed", { code: groupError?.message });
+        result.groupWarning = "The CRM invitation worked, but Google Groups access needs an administrator to retry it.";
+      }
+    }
     sendJson(res, 200, result);
   } catch (error) {
     const rateLimited = error?.status === 429 || /rate|too many|security purposes/i.test(String(error?.message || ""));
@@ -1651,12 +1937,52 @@ const handleRequest = (req, res) => {
     requireApiUser(req, res, handleGoogleGmailThreads);
     return;
   }
+  if (url.pathname === "/api/integrations/google/gmail/watch" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleGmailWatch);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/gmail/push" && req.method === "POST") {
+    handleGoogleGmailPush(req, res, url);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/tasks/task" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleTask);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/tasks/task" && req.method === "DELETE") {
+    requireApiUser(req, res, handleGoogleTaskDelete);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/contacts/contact" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleContact);
+    return;
+  }
   if (url.pathname === "/api/integrations/google/drive/status" && req.method === "GET") {
     requireApiUser(req, res, handleGoogleDriveStatus);
     return;
   }
+  if (url.pathname === "/api/integrations/google/drive/verify" && req.method === "GET") {
+    requireApiAdmin(req, res, handleGoogleDriveVerify);
+    return;
+  }
   if (url.pathname === "/api/integrations/google/drive/document" && req.method === "POST") {
     requireApiUser(req, res, handleGoogleDriveDocument);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/docs/generate" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleDocsGenerate);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/sheets/export" && req.method === "POST") {
+    requireApiAdmin(req, res, handleGoogleSheetsExport);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/chat/notify" && req.method === "POST") {
+    requireApiUser(req, res, handleGoogleChatNotify);
+    return;
+  }
+  if (url.pathname === "/api/integrations/google/groups/member" && req.method === "POST") {
+    requireApiAdmin(req, res, handleGoogleGroupMember);
     return;
   }
   if (url.pathname === "/api/smart-documents/save" && req.method === "POST") {
