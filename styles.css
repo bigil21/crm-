@@ -1497,6 +1497,86 @@ button:disabled {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+/* Job actions are extended by the checklist and conversation modules. Keep
+   the complete action group below the job details instead of squeezing both
+   into a single, unbreakable flex row. */
+.job-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.job-card > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.job-card .row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.job-card .row-actions > button {
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-height: 40px;
+  white-space: normal;
+}
+
+.job-card .job-select-button {
+  overflow-wrap: anywhere;
+}
+
+.lead-detail-surface {
+  min-width: 0;
+  container: lead-detail / inline-size;
+}
+
+.lead-detail-surface .detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+}
+
+.lead-detail-surface .detail-tabs > button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 12px;
+}
+
+@container lead-detail (max-width: 1050px) {
+  .lead-detail-surface .workflow-inline-form,
+  .lead-detail-surface .project-delivery-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lead-detail-surface .workflow-panel .row-actions,
+  .lead-detail-surface .job-time-panel {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  #leadJobsPanel .conversation-layout,
+  .job-email-layout,
+  .profit-cost-layout,
+  .payment-ledger-layout,
+  .lead-detail-surface #leadConversationPanel .conversation-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container lead-detail (max-width: 600px) {
+  .detail-grid,
+  .form-grid.two,
+  .form-grid.three,
+  .profit-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .job-select-button,
 .overview-job-link {
   width: 100%;
