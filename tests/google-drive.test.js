@@ -32,6 +32,25 @@ test('Drive uses short-lived application default credentials when no private key
   assert.deepEqual(requestedScopes, [GOOGLE_DRIVE_SCOPE]);
 });
 
+test('Drive explicitly impersonates the configured service account with product scopes', async () => {
+  const sourceClient = { async getAccessToken() { return { token: 'source-token' }; } };
+  let options;
+  const token = await exchangeServiceAccountToken(null, {
+    clientEmail: 'jobcrest@example.iam.gserviceaccount.com',
+    scopes: [GOOGLE_DRIVE_SCOPE, GOOGLE_DRIVE_SCOPE],
+    googleAuth: { async getClient() { return sourceClient; } },
+    impersonatedClientFactory(value) {
+      options = value;
+      return { async getAccessToken() { return { token: 'drive-token' }; } };
+    },
+  });
+  assert.equal(token, 'drive-token');
+  assert.equal(options.sourceClient, sourceClient);
+  assert.equal(options.targetPrincipal, 'jobcrest@example.iam.gserviceaccount.com');
+  assert.deepEqual(options.targetScopes, [GOOGLE_DRIVE_SCOPE]);
+  assert.equal(options.lifetime, 3600);
+});
+
 test('Drive rejects domain delegation when using keyless application credentials', async () => {
   await assert.rejects(
     exchangeServiceAccountToken(null, { subject: 'admin@example.com', googleAuth: {} }),

@@ -1,5 +1,5 @@
 const crypto = require("node:crypto");
-const { GoogleAuth } = require("google-auth-library");
+const { GoogleAuth, Impersonated } = require("google-auth-library");
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -8,6 +8,7 @@ const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const GOOGLE_DOCS_SCOPE = "https://www.googleapis.com/auth/documents";
 const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 const GOOGLE_ADMIN_GROUP_SCOPE = "https://www.googleapis.com/auth/admin.directory.group.member";
+const GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 function safeDriveId(value, field = "drive_id") {
@@ -52,7 +53,23 @@ async function exchangeServiceAccountToken(fetchImpl, config, now = Date.now()) 
     if (config.subject) throw new Error("google_domain_delegation_requires_private_key");
     const scopes = [...new Set(Array.isArray(config.scopes) && config.scopes.length ? config.scopes : [GOOGLE_DRIVE_SCOPE])];
     const auth = config.googleAuth || new GoogleAuth({ scopes });
-    const client = await auth.getClient();
+    let client = await auth.getClient();
+    const alreadyImpersonating = Boolean(client?.serviceAccountImpersonationUrl)
+      || client instanceof Impersonated;
+    if (alreadyImpersonating && "scopes" in client) client.scopes = scopes;
+    if (config.clientEmail && !alreadyImpersonating) {
+      const sourceAuth = config.googleAuth || new GoogleAuth({ scopes: [GOOGLE_CLOUD_PLATFORM_SCOPE] });
+      const sourceClient = config.googleAuth ? client : await sourceAuth.getClient();
+      const impersonationOptions = {
+        sourceClient,
+        targetPrincipal: config.clientEmail,
+        targetScopes: scopes,
+        lifetime: 3600,
+      };
+      client = typeof config.impersonatedClientFactory === "function"
+        ? config.impersonatedClientFactory(impersonationOptions)
+        : new Impersonated(impersonationOptions);
+    }
     const tokenResult = await client.getAccessToken();
     const accessToken = typeof tokenResult === "string" ? tokenResult : tokenResult?.token;
     if (typeof accessToken !== "string" || !accessToken) throw new Error("google_drive_token_failed");
