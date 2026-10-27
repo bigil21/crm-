@@ -258,7 +258,7 @@ function googleDriveConfig() {
   const hasPrivateKey = privateKey.includes("BEGIN PRIVATE KEY");
   if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.iam\.gserviceaccount\.com$/.test(clientEmail) || (!hasPrivateKey && !applicationCredentials)) return null;
   try { safeDriveId(rootFolderId, "drive_root"); } catch { return null; }
-  return { clientEmail, ...(hasPrivateKey ? { privateKey } : {}), rootFolderId, credentialMode: hasPrivateKey ? "private-key" : "application-default" };
+  return { clientEmail, ...(hasPrivateKey ? { privateKey } : { applicationCredentials }), rootFolderId, credentialMode: hasPrivateKey ? "private-key" : "application-default" };
 }
 
 function googleProductsConfig() {

@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
-const { GoogleAuth, Impersonated } = require("google-auth-library");
+const fs = require("node:fs");
+const { ExternalAccountClient, GoogleAuth, Impersonated } = require("google-auth-library");
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -48,20 +49,31 @@ function createServiceAccountAssertion(config, now = Date.now()) {
   return `${unsigned}.${signature}`;
 }
 
+function renderExternalAccountSource(config) {
+  let credentials = config.externalAccountCredentials;
+  if (!credentials) {
+    const credentialPath = String(config.applicationCredentials || process.env.GOOGLE_APPLICATION_CREDENTIALS || "").trim();
+    if (!credentialPath) return null;
+    try { credentials = JSON.parse(fs.readFileSync(credentialPath, "utf8")); } catch { return null; }
+  }
+  if (credentials?.type !== "external_account" || !credentials.service_account_impersonation_url) return null;
+  const sourceOptions = { ...credentials, scopes: [GOOGLE_CLOUD_PLATFORM_SCOPE] };
+  delete sourceOptions.service_account_impersonation_url;
+  delete sourceOptions.service_account_impersonation;
+  return typeof config.externalAccountClientFactory === "function"
+    ? config.externalAccountClientFactory(sourceOptions)
+    : ExternalAccountClient.fromJSON(sourceOptions);
+}
+
 async function exchangeServiceAccountToken(fetchImpl, config, now = Date.now()) {
   if (!config.privateKey) {
     if (config.subject) throw new Error("google_domain_delegation_requires_private_key");
     const scopes = [...new Set(Array.isArray(config.scopes) && config.scopes.length ? config.scopes : [GOOGLE_DRIVE_SCOPE])];
-    const auth = config.googleAuth || new GoogleAuth({ scopes });
-    let client = await auth.getClient();
-    const alreadyImpersonating = Boolean(client?.serviceAccountImpersonationUrl)
-      || client instanceof Impersonated;
-    if (alreadyImpersonating && "scopes" in client) client.scopes = scopes;
-    if (config.clientEmail && !alreadyImpersonating) {
-      const sourceAuth = config.googleAuth || new GoogleAuth({ scopes: [GOOGLE_CLOUD_PLATFORM_SCOPE] });
-      const sourceClient = config.googleAuth ? client : await sourceAuth.getClient();
+    const renderSourceClient = config.clientEmail ? renderExternalAccountSource(config) : null;
+    let client;
+    if (renderSourceClient) {
       const impersonationOptions = {
-        sourceClient,
+        sourceClient: renderSourceClient,
         targetPrincipal: config.clientEmail,
         targetScopes: scopes,
         lifetime: 3600,
@@ -69,6 +81,25 @@ async function exchangeServiceAccountToken(fetchImpl, config, now = Date.now()) 
       client = typeof config.impersonatedClientFactory === "function"
         ? config.impersonatedClientFactory(impersonationOptions)
         : new Impersonated(impersonationOptions);
+    } else {
+      const auth = config.googleAuth || new GoogleAuth({ scopes });
+      client = await auth.getClient();
+      const alreadyImpersonating = Boolean(client?.serviceAccountImpersonationUrl)
+        || client instanceof Impersonated;
+      if (alreadyImpersonating && "scopes" in client) client.scopes = scopes;
+      if (config.clientEmail && !alreadyImpersonating) {
+        const sourceAuth = config.googleAuth || new GoogleAuth({ scopes: [GOOGLE_CLOUD_PLATFORM_SCOPE] });
+        const sourceClient = config.googleAuth ? client : await sourceAuth.getClient();
+        const impersonationOptions = {
+          sourceClient,
+          targetPrincipal: config.clientEmail,
+          targetScopes: scopes,
+          lifetime: 3600,
+        };
+        client = typeof config.impersonatedClientFactory === "function"
+          ? config.impersonatedClientFactory(impersonationOptions)
+          : new Impersonated(impersonationOptions);
+      }
     }
     const tokenResult = await client.getAccessToken();
     const accessToken = typeof tokenResult === "string" ? tokenResult : tokenResult?.token;

@@ -51,6 +51,32 @@ test('Drive explicitly impersonates the configured service account with product 
   assert.equal(options.lifetime, 3600);
 });
 
+test('Drive removes Render embedded impersonation before requesting product scopes', async () => {
+  const sourceClient = { async getAccessToken() { return { token: 'source-token' }; } };
+  let sourceOptions;
+  let impersonationOptions;
+  const token = await exchangeServiceAccountToken(null, {
+    clientEmail: 'jobcrest@example.iam.gserviceaccount.com',
+    scopes: [GOOGLE_DRIVE_SCOPE],
+    externalAccountCredentials: {
+      type: 'external_account',
+      audience: '//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider',
+      service_account_impersonation_url: 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/jobcrest@example.iam.gserviceaccount.com:generateAccessToken',
+      credential_source: { file: '/var/run/secrets/render-oidc-token' },
+    },
+    externalAccountClientFactory(value) { sourceOptions = value; return sourceClient; },
+    impersonatedClientFactory(value) {
+      impersonationOptions = value;
+      return { async getAccessToken() { return { token: 'drive-token' }; } };
+    },
+  });
+  assert.equal(token, 'drive-token');
+  assert.equal(sourceOptions.service_account_impersonation_url, undefined);
+  assert.deepEqual(sourceOptions.scopes, ['https://www.googleapis.com/auth/cloud-platform']);
+  assert.equal(impersonationOptions.sourceClient, sourceClient);
+  assert.deepEqual(impersonationOptions.targetScopes, [GOOGLE_DRIVE_SCOPE]);
+});
+
 test('Drive rejects domain delegation when using keyless application credentials', async () => {
   await assert.rejects(
     exchangeServiceAccountToken(null, { subject: 'admin@example.com', googleAuth: {} }),
