@@ -498,7 +498,7 @@
             ${group.items
               .map(
                 (item) => `
-                  <button class="nav-item" type="button" data-view="${item.view}">
+                  <button class="nav-item" type="button" data-view="${item.view}" aria-label="${escapeHtml(item.label)}" title="${escapeHtml(item.label)}">
                     ${
                       item.step
                         ? `<span class="workflow-nav-step" aria-hidden="true">${item.step}</span>`

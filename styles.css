@@ -30,7 +30,7 @@
 }
 
 html {
-  min-width: 320px;
+  min-width: 0;
 }
 
 body {
@@ -72,6 +72,7 @@ button:disabled {
   top: 0;
   align-self: start;
   min-height: 100vh;
+  height: 100dvh;
   padding: 24px 18px;
   overflow-y: auto;
   background:
@@ -146,6 +147,7 @@ button:disabled {
   isolation: isolate;
   min-width: 0;
   padding: 28px;
+  container: workspace / inline-size;
 }
 
 .workspace.dashboard-watermark {
@@ -3653,7 +3655,7 @@ textarea:focus {
 
 .line-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px 72px 88px 36px;
+  grid-template-columns: minmax(62px, 1fr) minmax(72px, 1fr) minmax(88px, 1.4fr) 36px;
   gap: 8px;
   align-items: end;
   padding: 10px;
@@ -3706,6 +3708,7 @@ textarea:focus {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #e9edf5;
+  container: estimate-preview / inline-size;
 }
 
 .estimate-preview-heading {
@@ -4879,7 +4882,7 @@ textarea:focus {
   color: var(--danger);
 }
 
-@media (max-width: 1180px) {
+@media screen and (max-width: 1440px) {
   .app-shell {
     grid-template-columns: 88px minmax(0, 1fr);
   }
@@ -4905,6 +4908,13 @@ textarea:focus {
   .nav-item {
     justify-content: center;
   }
+
+  .side-nav .workflow-nav-heading {
+    display: none;
+  }
+}
+
+@media (max-width: 1180px) {
 
   .estimate-layout {
     grid-template-columns: 1fr;
@@ -4987,6 +4997,7 @@ textarea:focus {
     display: flex;
     align-items: center;
     min-height: 0;
+    height: auto;
     padding: 12px;
     overflow-x: auto;
     scrollbar-width: none;
@@ -5303,6 +5314,186 @@ textarea:focus {
   }
 }
 
+/* Reflow using the space left after navigation, rather than the monitor size.
+   Keep screen-only rules out of printed customer proposals. */
+@media screen {
+  .topbar,
+  .view-toolbar,
+  .line-items-head,
+  .line-item-actions,
+  .estimate-workspace-actions {
+    flex-wrap: wrap;
+  }
+
+  .form-grid > *,
+  .estimate-layout > *,
+  .calendar-layout > *,
+  .conversation-layout > *,
+  .profit-cost-layout > *,
+  .payment-ledger-layout > * {
+    min-width: 0;
+  }
+
+  .summary-strip {
+    grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+  }
+
+  @container workspace (max-width: 1360px) {
+    .estimate-layout,
+    .estimate-create-panel {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .estimate-stage {
+      position: static;
+    }
+
+    .pipeline-playbook-stage:nth-child(even) .pipeline-stage-card,
+    .pipeline-playbook-stage:nth-child(even) .pipeline-stage-card:hover {
+      transform: none;
+    }
+  }
+
+  @container workspace (max-width: 960px) {
+    .calendar-layout,
+    .conversation-layout,
+    #leadConversationPanel .conversation-layout,
+    .profit-cost-layout,
+    .payment-ledger-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .record-grid,
+    .reports-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @container workspace (max-width: 600px) {
+    .record-grid,
+    .reports-grid,
+    .form-grid.two,
+    .form-grid.three,
+    .estimate-create-controls,
+    .profit-summary {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .estimate-workspace-toolbar,
+    .estimate-active-summary,
+    .estimate-panel-heading,
+    .estimate-action-bar {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .estimate-active-meta {
+      justify-items: start;
+    }
+
+    .estimate-action-bar > div,
+    .estimate-workspace-actions {
+      justify-content: flex-start;
+    }
+  }
+
+  @container estimate-preview (max-width: 620px) {
+    .est-header,
+    .est-info-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .est-header-meta {
+      text-align: left;
+    }
+
+    .est-header-brand > div,
+    .est-info-box {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .est-table {
+      display: block;
+      max-width: 100%;
+      overflow-x: auto;
+    }
+
+    .est-table th:first-child {
+      min-width: 190px;
+    }
+
+    .est-investment-banner {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .est-payment-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .est-payment-row > :first-child {
+      grid-column: 1 / -1;
+    }
+
+    .est-totals-inner {
+      width: 100%;
+      min-width: 0;
+    }
+  }
+}
+
+@media screen and (max-width: 1440px) {
+  .workspace {
+    padding: 20px;
+  }
+}
+
+@media screen and (max-width: 820px) {
+  .top-actions {
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+  }
+
+  .top-actions > .date-chip,
+  .top-actions > .global-search,
+  .top-actions > .user-chip {
+    width: 100%;
+  }
+
+  .top-actions > .date-chip {
+    white-space: normal;
+  }
+
+  .top-actions > button:not(.icon-button) {
+    flex: 1 1 auto;
+  }
+}
+
+@media screen and (max-width: 520px) {
+  .workspace {
+    padding: 12px;
+  }
+
+  .estimate-paper {
+    padding: 8px;
+  }
+
+  .est-header,
+  .est-body {
+    padding: 16px 12px;
+  }
+
+  .line-item {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .line-item .remove-cell {
+    grid-column: auto;
+  }
+}
+
 @media print {
   body {
     background: #ffffff;
@@ -5486,7 +5677,7 @@ textarea:focus {
 #smartDocumentSaveStatus { margin: 0; min-height: 0; padding: 0 20px; background: #fff; }
 #smartDocumentSaveStatus:not(:empty) { padding-top: 10px; padding-bottom: 10px; border-top: 1px solid var(--line); }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .smart-document-layout { grid-template-columns: 1fr; overflow: auto; }
   .smart-document-page-rail { display: none; }
   .smart-document-preview { min-height: 42vh; }
