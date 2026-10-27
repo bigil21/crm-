@@ -11900,7 +11900,9 @@ function renderGoogleIntegrationCard() {
     els.googleIntegrationPill.className = "status-pill pill-default";
   }
   if (els.connectGoogleWorkspaceButton) {
-    els.connectGoogleWorkspaceButton.classList.toggle("hidden", status.connected && status.gmailSend && status.gmailRead && status.tasks && status.contacts);
+    const coreGoogleReady = status.connected && status.gmailSend && status.gmailRead && status.tasks && status.contacts;
+    const groupsNeedReconnect = canManageTeamData() && status.groupOptions.length > 0 && !status.groups;
+    els.connectGoogleWorkspaceButton.classList.toggle("hidden", coreGoogleReady && !groupsNeedReconnect);
     els.connectGoogleWorkspaceButton.textContent = status.connected ? "Reconnect Google Workspace" : "Connect Google Workspace";
     els.connectGoogleWorkspaceButton.disabled = status.loading || !status.configured;
   }
