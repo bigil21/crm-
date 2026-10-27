@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=73" />
+    <link rel="stylesheet" href="styles.css?v=74" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -308,6 +308,9 @@
                 <span>Pipeline Stage</span>
                 <select id="leadStageFilter" aria-label="Filter leads by pipeline stage"></select>
               </label>
+              <label class="stage-filter-control" for="leadTagFilter"><span>Tag</span><select id="leadTagFilter" aria-label="Filter leads by tag"><option value="">All tags</option></select></label>
+              <label class="stage-filter-control" for="savedLeadFilter"><span>Saved view</span><select id="savedLeadFilter" aria-label="Apply a saved lead filter"><option value="">Current view</option></select></label>
+              <button class="secondary-button" type="button" id="saveLeadFilterButton">Save view</button>
               <button class="primary-button" type="button" id="addLeadFromLeadsButton">
                 <span aria-hidden="true" data-icon="plus"></span>
                 Add Lead
@@ -439,6 +442,7 @@
               <button type="button" data-lead-tab="documents">Documents</button>
               <button type="button" data-lead-tab="photos">Photos</button>
               <button type="button" data-lead-tab="conversation">Conversation</button>
+              <button type="button" data-lead-tab="activity">Activity</button>
             </div>
 
             <div class="lead-tab-panel" id="leadOverviewPanel"></div>
@@ -505,7 +509,70 @@
                   </div>
                   <p class="save-state-message" id="jobSaveStatus" role="status" aria-live="polite"></p>
                 </form>
-                <div id="leadJobsList" class="job-list"></div>
+                <div>
+                  <div id="leadJobsList" class="job-list"></div>
+                  <section class="workflow-panel" id="jobMilestonesSection" aria-labelledby="jobMilestonesHeading">
+                    <div class="view-toolbar">
+                      <div>
+                        <p class="eyebrow">Selected job</p>
+                        <h3 id="jobMilestonesHeading">Milestones</h3>
+                      </div>
+                      <span id="jobMilestoneProgress" class="workflow-progress-label"></span>
+                    </div>
+                    <form id="jobMilestoneForm" class="workflow-inline-form">
+                      <input type="hidden" name="milestoneId" />
+                      <label>
+                        Milestone
+                        <input name="title" required maxlength="500" autocomplete="off" placeholder="Permit approved, materials delivered..." />
+                      </label>
+                      <label>
+                        Due date
+                        <input name="dueDate" type="date" />
+                      </label>
+                      <label>
+                        Status
+                        <select name="status">
+                          <option value="not_started">Not started</option>
+                          <option value="in_progress">In progress</option>
+                          <option value="blocked">Blocked</option>
+                          <option value="completed">Completed</option>
+                        </select>
+                      </label>
+                      <button class="primary-button" type="submit">Add milestone</button>
+                    </form>
+                    <div id="jobMilestonesList" class="workflow-list"></div>
+                  </section>
+                  <section class="workflow-panel" id="projectDeliverySection" aria-labelledby="projectDeliveryHeading">
+                    <div class="view-toolbar">
+                      <div><p class="eyebrow">Project delivery</p><h3 id="projectDeliveryHeading">Team, notes &amp; time</h3></div>
+                      <div class="row-actions"><select id="projectTemplateSelect" aria-label="Project template"><option value="">Choose template</option></select><button class="secondary-button" type="button" id="applyProjectTemplateButton">Apply template</button></div>
+                    </div>
+                    <div id="projectMembersList" class="project-member-chips"></div>
+                    <form id="projectMemberForm" class="workflow-inline-form project-member-form">
+                      <label>Name<input name="memberName" required maxlength="200" /></label>
+                      <label>Email<input name="memberEmail" type="email" maxlength="320" required /></label>
+                      <label>Role<input name="roleName" maxlength="120" value="Project member" /></label>
+                      <button class="secondary-button" type="submit">Add member</button>
+                    </form>
+                    <div class="project-delivery-grid">
+                      <div>
+                        <h4>Internal notes</h4>
+                        <form id="projectNoteForm" class="conversation-form"><textarea name="body" required maxlength="10000" rows="3" placeholder="Private note for the job team"></textarea><label class="checkbox-line"><input name="pinned" type="checkbox" /> Pin note</label><button class="secondary-button" type="submit">Add note</button></form>
+                        <div id="projectNotesList" class="workflow-list compact-workflow-list"></div>
+                      </div>
+                      <div>
+                        <h4>Discussion</h4>
+                        <form id="projectDiscussionForm" class="conversation-form"><textarea name="body" required maxlength="10000" rows="3" placeholder="Share a project update"></textarea><label>Visibility<select name="visibility"><option value="internal">Internal team</option><option value="customer">Customer visible</option></select></label><button class="secondary-button" type="submit">Post update</button></form>
+                        <div id="projectDiscussionsList" class="workflow-list compact-workflow-list"></div>
+                      </div>
+                    </div>
+                    <div class="job-time-panel">
+                      <div><h4>Job time</h4><p id="jobTimeSummary" class="muted-copy"></p></div>
+                      <div class="row-actions"><label class="checkbox-line"><input id="jobTimerBillable" type="checkbox" /> Billable</label><input id="jobTimerRate" class="compact-money-input" type="text" inputmode="decimal" placeholder="Hourly rate" /><button class="primary-button" type="button" id="toggleJobTimerButton">Start timer</button></div>
+                    </div>
+                    <div id="jobTimeEntriesList" class="workflow-list compact-workflow-list"></div>
+                  </section>
+                </div>
               </div>
             </div>
 
@@ -685,6 +752,7 @@
                   Message
                   <textarea name="message" rows="8"></textarea>
                 </label>
+                <label>Schedule for later<input name="scheduledFor" type="datetime-local" /><span class="field-hint">Leave blank to open the email now.</span></label>
                 <div class="builder-actions">
                   <button class="secondary-button" type="button" id="copyLeadEmailButton">
                     <span aria-hidden="true" data-icon="copy"></span>
@@ -698,6 +766,7 @@
                     <span aria-hidden="true" data-icon="refresh"></span>
                     Check Replies
                   </button>
+                  <button class="secondary-button" type="button" id="scheduleLeadEmailButton"><span aria-hidden="true" data-icon="clock"></span>Schedule Email</button>
                 </div>
                 <p class="save-state-message" id="leadEmailSaveStatus" role="status" aria-live="polite"></p>
               </form>
@@ -800,6 +869,17 @@
                 </form>
                 <div id="leadConversationList" class="conversation-list"></div>
               </div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadActivityPanel">
+              <div class="view-toolbar">
+                <div>
+                  <p class="eyebrow">Complete history</p>
+                  <h2>Lead activity timeline</h2>
+                  <p class="section-description">Notes, job changes, estimates, payments, files, email, and tasks in one chronological view.</p>
+                </div>
+              </div>
+              <div id="leadActivityTimeline" class="activity-timeline"></div>
             </div>
           </section>
         </section>
@@ -1051,7 +1131,8 @@
           <div class="view-toolbar">
             <div>
               <p class="eyebrow">Invoices</p>
-              <h2>Estimate billing queue</h2>
+              <h2>Invoices &amp; financial ledger</h2>
+              <p class="section-copy">Convert won estimates, track collections and expenses, and keep Square billing in one place.</p>
             </div>
           </div>
           <section class="surface lead-detail-surface">
@@ -1077,6 +1158,7 @@
               <p class="eyebrow">Reports</p>
               <h2>Sales performance</h2>
             </div>
+            <button class="secondary-button" type="button" id="reportExportButton"><span aria-hidden="true" data-icon="download"></span>Export report</button>
           </div>
           <section class="surface lead-detail-surface">
             <div id="reportsContent" class="reports-grid"></div>
@@ -1140,6 +1222,12 @@
                     <select name="contactId" id="calendarTaskContact"></select>
                   </label>
                   <label>
+                    Related Job
+                    <select name="jobId" id="calendarTaskJob">
+                      <option value="">No related job</option>
+                    </select>
+                  </label>
+                  <label>
                     Task Title
                     <input name="title" required autocomplete="off" />
                   </label>
@@ -1158,10 +1246,46 @@
                       <option value="none">No reminder</option>
                     </select>
                   </label>
+                  <label>
+                    Priority
+                    <select name="priority">
+                      <option value="low">Low</option>
+                      <option value="normal" selected>Normal</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent</option>
+                    </select>
+                  </label>
+                  <label>
+                    Status
+                    <select name="workflowStatus">
+                      <option value="not_started">Not started</option>
+                      <option value="in_progress">In progress</option>
+                      <option value="blocked">Blocked</option>
+                      <option value="completed">Completed</option>
+                    </select>
+                  </label>
+                  <label>
+                    Repeat
+                    <select name="recurrence">
+                      <option value="none">Does not repeat</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+                  </label>
+                  <label>
+                    Followers
+                    <input name="followers" autocomplete="off" placeholder="Emails separated by commas" />
+                  </label>
                 </div>
                 <label>
                   Notes
                   <textarea name="notes" rows="4"></textarea>
+                </label>
+                <label>
+                  Checklist
+                  <textarea name="checklistText" rows="4" placeholder="One checklist item per line"></textarea>
                 </label>
                 <div class="builder-actions end">
                   <button class="primary-button" type="submit">
@@ -1404,11 +1528,118 @@
             </form>
             <div id="documentCategoriesList" class="document-category-admin-list"></div>
           </section>
+          <section class="surface admin-operations-settings" id="adminOperationsSettings" aria-labelledby="adminOperationsTitle">
+            <div class="view-toolbar"><div><p class="eyebrow">Administration</p><h2 id="adminOperationsTitle">Operational controls</h2><p class="section-description">Manage taxes, payment methods, roles, announcements, and reusable templates from one place.</p></div></div>
+            <div class="admin-settings-grid"><form id="adminTaxForm"><h3>Tax rates</h3><div class="form-grid two"><label>Name<input name="name" required maxlength="80" /></label><label>Rate %<input name="rate" type="number" min="0" max="100" step="0.001" required /></label></div><button class="secondary-button" type="submit">Add tax rate</button><div id="adminTaxList" class="compact-record-list"></div></form><form id="adminAnnouncementForm"><h3>Team announcement</h3><label>Title<input name="title" required maxlength="160" /></label><label>Message<textarea name="body" rows="3" required maxlength="5000"></textarea></label><label>Audience<select name="audience"><option value="all">Everyone</option><option value="sales">Sales</option><option value="admin">Administrators</option></select></label><label class="checkbox-line"><input name="dismissible" type="checkbox" checked />Team members can dismiss it</label><button class="primary-button" type="submit">Publish announcement</button></form></div>
+            <div id="adminConfigurationSummary" class="record-grid"></div>
+            <form id="customerPortalInviteForm" class="team-invite-form"><h3>Invite customer to portal</h3><label>Lead<select name="leadId" id="customerPortalLead" required></select></label><label>Customer email<input name="email" type="email" required autocomplete="email" /></label><button class="primary-button" type="submit">Send portal invitation</button></form><p class="save-state-message" id="customerPortalInviteStatus" role="status"></p>
+          </section>
         </section>
       </main>
     </div>
 
+    <dialog class="contact-dialog" id="documentOperationsDialog">
+      <form method="dialog" id="documentOperationsForm">
+        <div class="dialog-header"><div><p class="eyebrow">Document operations</p><h2 id="documentOperationsTitle">Document details</h2></div><button class="icon-button" type="button" id="closeDocumentOperationsDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button></div>
+        <input type="hidden" name="documentId" />
+        <div class="form-grid two">
+          <label>Customer access<select name="customerVisible"><option value="false">Internal only</option><option value="true">Visible in customer portal</option></select></label>
+          <label>Customer downloads<select name="downloadAllowed"><option value="true">Allowed</option><option value="false">View only</option></select></label>
+        </div>
+        <div class="document-operations-columns"><section><h3>Version history</h3><div id="documentVersionHistory" class="compact-record-list"></div></section><section><h3>Comments</h3><div id="documentCommentList" class="compact-record-list"></div><label>Add comment<textarea name="comment" rows="3" maxlength="5000"></textarea></label><label class="checkbox-line"><input name="commentCustomerVisible" type="checkbox" />Customer can see this comment</label></section></div>
+        <div class="dialog-actions"><span class="save-state-message" id="documentOperationsStatus"></span><button class="primary-button" type="submit" value="save"><span aria-hidden="true" data-icon="check"></span>Save Access & Comment</button></div>
+      </form>
+    </dialog>
+
     <datalist id="salesRepOptions"></datalist>
+
+    <dialog class="contact-dialog finance-dialog" id="invoicePaymentDialog">
+      <form method="dialog" id="invoicePaymentForm">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Payment allocation</p><h2 id="invoicePaymentTitle">Record Payment</h2></div>
+          <button class="icon-button" type="button" id="closeInvoicePaymentDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button>
+        </div>
+        <input type="hidden" name="invoiceId" />
+        <div class="form-grid two">
+          <label>Amount<input name="amount" type="text" inputmode="decimal" data-currency-input required placeholder="0.00" /></label>
+          <label>Method<select name="method" required><option>Check</option><option>Cash</option><option>ACH</option><option>Card</option><option>Financing</option><option>Other</option></select></label>
+          <label>Received Date<input name="receivedAt" type="date" required /></label>
+          <label>Reference<input name="reference" maxlength="200" placeholder="Check number or transaction ID" /></label>
+        </div>
+        <label>Note<textarea name="note" rows="3" maxlength="1000"></textarea></label>
+        <div class="dialog-actions"><span></span><button class="primary-button" type="submit" value="save"><span aria-hidden="true" data-icon="check"></span>Record Payment</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="contact-dialog finance-dialog" id="invoiceCreditDialog">
+      <form method="dialog" id="invoiceCreditForm">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Invoice adjustment</p><h2 id="invoiceCreditTitle">Apply Credit</h2></div>
+          <button class="icon-button" type="button" id="closeInvoiceCreditDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button>
+        </div>
+        <input type="hidden" name="invoiceId" />
+        <div class="form-grid two">
+          <label>Credit Amount<input name="amount" type="text" inputmode="decimal" data-currency-input required placeholder="0.00" /></label>
+          <label>Issued Date<input name="issuedAt" type="date" required /></label>
+        </div>
+        <label>Reason<textarea name="reason" rows="3" maxlength="1000" required></textarea></label>
+        <div class="dialog-actions"><span></span><button class="primary-button" type="submit" value="save"><span aria-hidden="true" data-icon="check"></span>Apply Credit</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="contact-dialog finance-dialog" id="financeExpenseDialog">
+      <form method="dialog" id="financeExpenseForm">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Job cost ledger</p><h2>Record Expense</h2></div>
+          <button class="icon-button" type="button" id="closeFinanceExpenseDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button>
+        </div>
+        <div class="form-grid two">
+          <label>Lead / Customer<select name="leadId" required></select></label>
+          <label>Job<select name="jobId" required></select></label>
+          <label>Category<select name="category" required><option>Materials</option><option>Labor</option><option>Permit</option><option>Subcontractor</option><option>Equipment</option><option>Other</option></select></label>
+          <label>Amount<input name="amount" type="text" inputmode="decimal" data-currency-input required placeholder="0.00" /></label>
+          <label>Expense Date<input name="expenseDate" type="date" required /></label>
+          <label>Vendor<input name="vendor" maxlength="200" /></label>
+          <label>Reference<input name="reference" maxlength="200" /></label>
+        </div>
+        <label>Description<textarea name="description" rows="3" maxlength="1000"></textarea></label>
+        <div class="dialog-actions"><span></span><button class="primary-button" type="submit" value="save"><span aria-hidden="true" data-icon="check"></span>Record Expense</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="contact-dialog finance-dialog" id="invoiceRefundDialog">
+      <form method="dialog" id="invoiceRefundForm">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Append-only adjustment</p><h2 id="invoiceRefundTitle">Record Refund</h2></div>
+          <button class="icon-button" type="button" id="closeInvoiceRefundDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button>
+        </div>
+        <input type="hidden" name="paymentId" />
+        <div class="form-grid two">
+          <label>Refund Amount<input name="amount" type="text" inputmode="decimal" data-currency-input required placeholder="0.00" /></label>
+          <label>Refund Date<input name="refundedAt" type="date" required /></label>
+        </div>
+        <label>Reason<textarea name="reason" rows="3" maxlength="1000" required></textarea></label>
+        <div class="dialog-actions"><span></span><button class="primary-button" type="submit" value="save"><span aria-hidden="true" data-icon="check"></span>Record Refund</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="contact-dialog finance-dialog" id="invoiceScheduleDialog">
+      <form method="dialog" id="invoiceScheduleForm">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Recurring billing</p><h2 id="invoiceScheduleTitle">Schedule Invoice</h2></div>
+          <button class="icon-button" type="button" id="closeInvoiceScheduleDialog" aria-label="Close"><span aria-hidden="true" data-icon="x"></span></button>
+        </div>
+        <input type="hidden" name="invoiceId" />
+        <div class="form-grid two">
+          <label>Cadence<select name="cadence" required><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select></label>
+          <label>Next Invoice Date<input name="nextIssueDate" type="date" required /></label>
+          <label>Payment Due In<input name="dueDays" type="number" min="0" max="365" value="14" required /><span class="field-hint">Days after each invoice is created</span></label>
+          <label>Number of Invoices<input name="remainingCount" type="number" min="1" max="120" placeholder="Leave blank for ongoing" /></label>
+        </div>
+        <p class="dialog-note">Recurring invoices are created as drafts for review. They are never emailed automatically.</p>
+        <div class="dialog-actions"><span></span><button class="primary-button" type="submit" value="save"><span aria-hidden="true" data-icon="check"></span>Save Schedule</button></div>
+      </form>
+    </dialog>
 
     <dialog class="contact-dialog" id="contactDialog">
       <form method="dialog" id="contactForm">

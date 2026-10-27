@@ -513,8 +513,11 @@ const createInitialState = () => ({
   search: "",
   pipelineFilter: "Lead",
   leadStageFilter: "",
+  leadTagFilter: "",
+  savedLeadFilterId: "",
   leaderboardRange: "month",
   leadDetailTab: "overview",
+  financeTab: "invoices",
   selectedContactId: "contact_1002",
   selectedEstimateId: "estimate_2001",
   newEstimateContactId: "",
@@ -527,6 +530,41 @@ const createInitialState = () => ({
   calendarTasks: [],
   contacts: seedContacts,
   estimates: seedEstimates,
+  invoices: [],
+  financialPayments: [],
+  financialExpenses: [],
+  creditNotes: [],
+  paymentAllocations: [],
+  financialRefunds: [],
+  invoiceSchedules: [],
+  billingNotices: [],
+  projectMembers: [],
+  projectDiscussions: [],
+  projectNotes: [],
+  jobTimeEntries: [],
+  projectTemplates: [{ id: "roof-replacement-standard", name: "Standard Roof Replacement", description: "Reusable delivery checkpoints for a typical replacement job", active: true, milestones: ["Permit approved","Materials ordered","Materials delivered","Production scheduled","Installation complete","Final inspection","Final payment received"].map((title) => ({ title })) }],
+  leadSources: [],
+  leadTags: [],
+  recordTags: [],
+  customFields: [],
+  customFieldValues: [],
+  savedLeadFilters: [],
+  emailTemplates: [],
+  scheduledMessages: [],
+  crmReminders: [],
+  crmNotifications: [],
+  documentVersions: [],
+  documentComments: [],
+  documentAccess: [],
+  documentTemplates: [],
+  signatureRequests: [],
+  crmGoals: [],
+  reportExports: [],
+  taxRates: [],
+  paymentMethods: [],
+  roleCapabilities: [],
+  announcements: [],
+  operationalSettings: [],
 });
 
 const createEmptyState = () => ({
@@ -536,6 +574,11 @@ const createEmptyState = () => ({
   contacts: [],
   estimates: [],
   calendarTasks: [],
+  invoices: [],
+  financialPayments: [],
+  financialExpenses: [],
+  creditNotes: [],
+  paymentAllocations: [],
 });
 
 let state = normalizeState(createEmptyState());
@@ -558,6 +601,7 @@ let cloudSubscription = null;
 let applyingCloudState = false;
 let cloudKnownOwners = new Map();
 let durableRecordsReady = false;
+let financialLedgerReady = false;
 let durableSaveTimer = null;
 let durableSaveInFlight = false;
 let durableReloadTimer = null;
@@ -618,6 +662,9 @@ const els = {
   addContactButton: document.querySelector("#addContactButton"),
   addLeadFromLeadsButton: document.querySelector("#addLeadFromLeadsButton"),
   leadStageFilter: document.querySelector("#leadStageFilter"),
+  leadTagFilter: document.querySelector("#leadTagFilter"),
+  savedLeadFilter: document.querySelector("#savedLeadFilter"),
+  saveLeadFilterButton: document.querySelector("#saveLeadFilterButton"),
   dashboardDateRange: document.querySelector("#dashboardDateRange"),
   userChip: document.querySelector("#userChip"),
   navItems: [...document.querySelectorAll(".nav-item")],
@@ -668,6 +715,24 @@ const els = {
   jobSaveStatus: document.querySelector("#jobSaveStatus"),
   clearJobFormButton: document.querySelector("#clearJobFormButton"),
   leadJobsList: document.querySelector("#leadJobsList"),
+  jobMilestonesSection: document.querySelector("#jobMilestonesSection"),
+  jobMilestoneForm: document.querySelector("#jobMilestoneForm"),
+  jobMilestonesList: document.querySelector("#jobMilestonesList"),
+  jobMilestoneProgress: document.querySelector("#jobMilestoneProgress"),
+  projectDeliverySection: document.querySelector("#projectDeliverySection"),
+  projectTemplateSelect: document.querySelector("#projectTemplateSelect"),
+  applyProjectTemplateButton: document.querySelector("#applyProjectTemplateButton"),
+  projectMembersList: document.querySelector("#projectMembersList"),
+  projectMemberForm: document.querySelector("#projectMemberForm"),
+  projectNoteForm: document.querySelector("#projectNoteForm"),
+  projectNotesList: document.querySelector("#projectNotesList"),
+  projectDiscussionForm: document.querySelector("#projectDiscussionForm"),
+  projectDiscussionsList: document.querySelector("#projectDiscussionsList"),
+  jobTimeSummary: document.querySelector("#jobTimeSummary"),
+  jobTimerBillable: document.querySelector("#jobTimerBillable"),
+  jobTimerRate: document.querySelector("#jobTimerRate"),
+  toggleJobTimerButton: document.querySelector("#toggleJobTimerButton"),
+  jobTimeEntriesList: document.querySelector("#jobTimeEntriesList"),
   leadProfitPanel: document.querySelector("#leadProfitPanel"),
   profitJobSelect: document.querySelector("#profitJobSelect"),
   profitSummary: document.querySelector("#profitSummary"),
@@ -694,6 +759,7 @@ const els = {
   copyLeadEmailButton: document.querySelector("#copyLeadEmailButton"),
   leadEmailSubmitLabel: document.querySelector("#leadEmailSubmitLabel"),
   refreshLeadEmailThreadsButton: document.querySelector("#refreshLeadEmailThreadsButton"),
+  scheduleLeadEmailButton: document.querySelector("#scheduleLeadEmailButton"),
   leadDocumentsPanel: document.querySelector("#leadDocumentsPanel"),
   leadDocumentHeading: document.querySelector("#leadDocumentHeading"),
   leadDocumentJobSelect: document.querySelector("#leadDocumentJobSelect"),
@@ -715,6 +781,8 @@ const els = {
   conversationSaveButton: document.querySelector("#conversationSaveButton"),
   conversationSaveStatus: document.querySelector("#conversationSaveStatus"),
   leadConversationList: document.querySelector("#leadConversationList"),
+  leadActivityPanel: document.querySelector("#leadActivityPanel"),
+  leadActivityTimeline: document.querySelector("#leadActivityTimeline"),
   contactDialog: document.querySelector("#contactDialog"),
   contactForm: document.querySelector("#contactForm"),
   contactDialogTitle: document.querySelector("#contactDialogTitle"),
@@ -760,8 +828,28 @@ const els = {
   dashboardTasksList: document.querySelector("#dashboardTasksList"),
   tasksPageList: document.querySelector("#tasksPageList"),
   invoicesList: document.querySelector("#invoicesList"),
+  invoicePaymentDialog: document.querySelector("#invoicePaymentDialog"),
+  invoicePaymentForm: document.querySelector("#invoicePaymentForm"),
+  invoicePaymentTitle: document.querySelector("#invoicePaymentTitle"),
+  closeInvoicePaymentDialog: document.querySelector("#closeInvoicePaymentDialog"),
+  invoiceCreditDialog: document.querySelector("#invoiceCreditDialog"),
+  invoiceCreditForm: document.querySelector("#invoiceCreditForm"),
+  invoiceCreditTitle: document.querySelector("#invoiceCreditTitle"),
+  closeInvoiceCreditDialog: document.querySelector("#closeInvoiceCreditDialog"),
+  financeExpenseDialog: document.querySelector("#financeExpenseDialog"),
+  financeExpenseForm: document.querySelector("#financeExpenseForm"),
+  closeFinanceExpenseDialog: document.querySelector("#closeFinanceExpenseDialog"),
+  invoiceRefundDialog: document.querySelector("#invoiceRefundDialog"),
+  invoiceRefundForm: document.querySelector("#invoiceRefundForm"),
+  invoiceRefundTitle: document.querySelector("#invoiceRefundTitle"),
+  closeInvoiceRefundDialog: document.querySelector("#closeInvoiceRefundDialog"),
+  invoiceScheduleDialog: document.querySelector("#invoiceScheduleDialog"),
+  invoiceScheduleForm: document.querySelector("#invoiceScheduleForm"),
+  invoiceScheduleTitle: document.querySelector("#invoiceScheduleTitle"),
+  closeInvoiceScheduleDialog: document.querySelector("#closeInvoiceScheduleDialog"),
   reviewsList: document.querySelector("#reviewsList"),
   reportsContent: document.querySelector("#reportsContent"),
+  reportExportButton: document.querySelector("#reportExportButton"),
   companyDocumentCategory: document.querySelector("#companyDocumentCategory"),
   createCompanyDocumentFolderButton: document.querySelector("#createCompanyDocumentFolderButton"),
   uploadCompanyDocumentButton: document.querySelector("#uploadCompanyDocumentButton"),
@@ -769,9 +857,17 @@ const els = {
   companyDocumentUploadStatus: document.querySelector("#companyDocumentUploadStatus"),
   companyDocumentSmartAfterUpload: document.querySelector("#companyDocumentSmartAfterUpload"),
   companyDocumentsList: document.querySelector("#companyDocumentsList"),
+  documentOperationsDialog: document.querySelector("#documentOperationsDialog"),
+  documentOperationsForm: document.querySelector("#documentOperationsForm"),
+  documentOperationsTitle: document.querySelector("#documentOperationsTitle"),
+  documentVersionHistory: document.querySelector("#documentVersionHistory"),
+  documentCommentList: document.querySelector("#documentCommentList"),
+  documentOperationsStatus: document.querySelector("#documentOperationsStatus"),
+  closeDocumentOperationsDialog: document.querySelector("#closeDocumentOperationsDialog"),
   calendarTaskForm: document.querySelector("#calendarTaskForm"),
   salesRepOptions: document.querySelector("#salesRepOptions"),
   calendarTaskContact: document.querySelector("#calendarTaskContact"),
+  calendarTaskJob: document.querySelector("#calendarTaskJob"),
   calendarTasksList: document.querySelector("#calendarTasksList"),
   calMonthGrid: document.querySelector("#calMonthGrid"),
   calMonthTitle: document.querySelector("#calMonthTitle"),
@@ -781,6 +877,14 @@ const els = {
   calDayDetailTitle: document.querySelector("#calDayDetailTitle"),
   calDayDetailTasks: document.querySelector("#calDayDetailTasks"),
   companyForm: document.querySelector("#companyForm"),
+  adminOperationsSettings: document.querySelector("#adminOperationsSettings"),
+  adminTaxForm: document.querySelector("#adminTaxForm"),
+  adminTaxList: document.querySelector("#adminTaxList"),
+  adminAnnouncementForm: document.querySelector("#adminAnnouncementForm"),
+  adminConfigurationSummary: document.querySelector("#adminConfigurationSummary"),
+  customerPortalInviteForm: document.querySelector("#customerPortalInviteForm"),
+  customerPortalLead: document.querySelector("#customerPortalLead"),
+  customerPortalInviteStatus: document.querySelector("#customerPortalInviteStatus"),
   companyLogoInput: document.querySelector("#companyLogoInput"),
   uploadCompanyLogoButton: document.querySelector("#uploadCompanyLogoButton"),
   removeCompanyLogoButton: document.querySelector("#removeCompanyLogoButton"),
@@ -853,8 +957,11 @@ function uiStateSnapshot() {
     leadStageFilter: state.leadStageFilter,
     sidebarMode: state.sidebarMode || "auto",
     reminderFilter: state.reminderFilter || "all",
+    leadTagFilter: state.leadTagFilter,
+    savedLeadFilterId: state.savedLeadFilterId,
     leaderboardRange: state.leaderboardRange,
     leadDetailTab: state.leadDetailTab,
+    financeTab: state.financeTab,
     selectedContactId: state.selectedContactId,
     selectedEstimateId: state.selectedEstimateId,
     newEstimateContactId: state.newEstimateContactId,
@@ -931,7 +1038,10 @@ function normalizeState(nextState) {
     leadStageFilter: statuses.includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
     sidebarMode: ["expanded", "compact"].includes(nextState.sidebarMode) ? nextState.sidebarMode : "auto",
     reminderFilter: ["overdue", "today", "estimates", "upcoming", "completed"].includes(nextState.reminderFilter) ? nextState.reminderFilter : "all",
+    leadTagFilter: nextState.leadTagFilter || "",
+    savedLeadFilterId: nextState.savedLeadFilterId || "",
     leadDetailTab: nextState.leadDetailTab || "overview",
+    financeTab: ["invoices", "payments", "expenses", "credits"].includes(nextState.financeTab) ? nextState.financeTab : "invoices",
     newEstimateContactId: nextState.newEstimateContactId || "",
     newEstimateJobId: nextState.newEstimateJobId || "",
     selectedLeadJobId: nextState.selectedLeadJobId || "",
@@ -942,7 +1052,217 @@ function normalizeState(nextState) {
     companyDocuments: (nextState.companyDocuments || []).map((document) => normalizeDocument(document)).filter((document) => isSafeRecordId(document.id)),
     calendarTasks: (nextState.calendarTasks || []).map(normalizeCalendarTask).filter((task) => isSafeRecordId(task.id)),
     estimates: (nextState.estimates || []).map((estimate) => normalizeEstimate(estimate, contacts)).filter((estimate) => isSafeRecordId(estimate.id)),
+    invoices: (nextState.invoices || []).map(normalizeInvoice).filter((invoice) => isSafeRecordId(invoice.id)),
+    financialPayments: (nextState.financialPayments || []).map(normalizeFinancialPayment).filter((payment) => isSafeRecordId(payment.id)),
+    financialExpenses: (nextState.financialExpenses || []).map(normalizeFinancialExpense).filter((expense) => isSafeRecordId(expense.id)),
+    creditNotes: (nextState.creditNotes || []).map(normalizeCreditNote).filter((credit) => isSafeRecordId(credit.id)),
+    paymentAllocations: (nextState.paymentAllocations || []).map(normalizePaymentAllocation).filter((allocation) => isSafeRecordId(allocation.id)),
+    financialRefunds: (nextState.financialRefunds || []).map(normalizeFinancialRefund).filter((refund) => isSafeRecordId(refund.id)),
+    invoiceSchedules: (nextState.invoiceSchedules || []).map(normalizeInvoiceSchedule).filter((schedule) => isSafeRecordId(schedule.id)),
+    billingNotices: (nextState.billingNotices || []).map(normalizeBillingNotice).filter((notice) => isSafeRecordId(notice.id)),
+    projectMembers: (nextState.projectMembers || []).map(normalizeProjectMember).filter((item) => isSafeRecordId(item.id)),
+    projectDiscussions: (nextState.projectDiscussions || []).map(normalizeProjectDiscussion).filter((item) => isSafeRecordId(item.id)),
+    projectNotes: (nextState.projectNotes || []).map(normalizeProjectNote).filter((item) => isSafeRecordId(item.id)),
+    jobTimeEntries: (nextState.jobTimeEntries || []).map(normalizeJobTimeEntry).filter((item) => isSafeRecordId(item.id)),
+    projectTemplates: (nextState.projectTemplates || []).map(normalizeProjectTemplate).filter((item) => isSafeRecordId(item.id)),
+    leadSources: Array.isArray(nextState.leadSources) ? nextState.leadSources : [],
+    leadTags: Array.isArray(nextState.leadTags) ? nextState.leadTags : [],
+    recordTags: Array.isArray(nextState.recordTags) ? nextState.recordTags : [],
+    customFields: Array.isArray(nextState.customFields) ? nextState.customFields : [],
+    customFieldValues: Array.isArray(nextState.customFieldValues) ? nextState.customFieldValues : [],
+    savedLeadFilters: Array.isArray(nextState.savedLeadFilters) ? nextState.savedLeadFilters : [],
+    emailTemplates: Array.isArray(nextState.emailTemplates) ? nextState.emailTemplates : [],
+    scheduledMessages: Array.isArray(nextState.scheduledMessages) ? nextState.scheduledMessages : [],
+    crmReminders: Array.isArray(nextState.crmReminders) ? nextState.crmReminders : [],
+    crmNotifications: Array.isArray(nextState.crmNotifications) ? nextState.crmNotifications : [],
+    documentVersions: Array.isArray(nextState.documentVersions) ? nextState.documentVersions : [],
+    documentComments: Array.isArray(nextState.documentComments) ? nextState.documentComments : [],
+    documentAccess: Array.isArray(nextState.documentAccess) ? nextState.documentAccess : [],
+    documentTemplates: Array.isArray(nextState.documentTemplates) ? nextState.documentTemplates : [],
+    signatureRequests: Array.isArray(nextState.signatureRequests) ? nextState.signatureRequests : [],
+    crmGoals: Array.isArray(nextState.crmGoals) ? nextState.crmGoals : [],
+    reportExports: Array.isArray(nextState.reportExports) ? nextState.reportExports : [],
+    taxRates: Array.isArray(nextState.taxRates) ? nextState.taxRates : [],
+    paymentMethods: Array.isArray(nextState.paymentMethods) ? nextState.paymentMethods : [],
+    roleCapabilities: Array.isArray(nextState.roleCapabilities) ? nextState.roleCapabilities : [],
+    announcements: Array.isArray(nextState.announcements) ? nextState.announcements : [],
+    operationalSettings: Array.isArray(nextState.operationalSettings) ? nextState.operationalSettings : [],
   };
+}
+
+function normalizeInvoice(invoice = {}) {
+  return {
+    ...invoice,
+    id: String(invoice.id || uid("invoice")),
+    invoiceNumber: String(invoice.invoiceNumber || invoice.invoice_number || ""),
+    contactId: String(invoice.contactId || invoice.leadId || invoice.lead_id || ""),
+    leadId: String(invoice.leadId || invoice.contactId || invoice.lead_id || ""),
+    jobId: String(invoice.jobId || invoice.job_id || ""),
+    estimateId: String(invoice.estimateId || invoice.estimate_id || ""),
+    status: String(invoice.status || "draft").toLowerCase(),
+    currency: String(invoice.currency || "USD"),
+    subtotal: number(invoice.subtotal),
+    taxAmount: number(invoice.taxAmount ?? invoice.tax_amount),
+    taxRate: number(invoice.taxRate ?? invoice.tax_rate ?? (number(invoice.subtotal) ? number(invoice.taxAmount ?? invoice.tax_amount) / number(invoice.subtotal) * 100 : 0)),
+    totalAmount: number(invoice.totalAmount ?? invoice.total_amount),
+    amountPaid: number(invoice.amountPaid ?? invoice.amount_paid),
+    issueDate: invoice.issueDate || invoice.issue_date || todayISO(),
+    dueDate: invoice.dueDate || invoice.due_date || "",
+    terms: String(invoice.terms || ""),
+    notes: String(invoice.notes || ""),
+    provider: String(invoice.provider || "internal"),
+    providerInvoiceId: String(invoice.providerInvoiceId || invoice.provider_invoice_id || ""),
+    providerUrl: String(invoice.providerUrl || invoice.provider_url || ""),
+    ownerUserId: invoice.ownerUserId || invoice.owner_user_id || "",
+    ownerEmail: invoice.ownerEmail || invoice.owner_email || "",
+    ownerName: invoice.ownerName || invoice.owner_name || "",
+    createdAt: invoice.createdAt || invoice.created_at || new Date().toISOString(),
+    updatedAt: invoice.updatedAt || invoice.updated_at || invoice.createdAt || invoice.created_at || new Date().toISOString(),
+    items: (invoice.items || []).map((item, position) => ({
+      id: String(item.id || uid("invoiceitem")),
+      description: String(item.description || item.title || "Line item"),
+      quantity: number(item.quantity),
+      unitPrice: number(item.unitPrice ?? item.unit_price ?? item.rate),
+      amount: number(item.amount),
+      position: Number.isFinite(Number(item.position)) ? Number(item.position) : position,
+    })),
+  };
+}
+
+function normalizeFinancialPayment(payment = {}) {
+  return {
+    ...payment,
+    id: String(payment.id || uid("payment")),
+    contactId: String(payment.contactId || payment.leadId || payment.lead_id || ""),
+    leadId: String(payment.leadId || payment.contactId || payment.lead_id || ""),
+    jobId: String(payment.jobId || payment.job_id || ""),
+    amount: number(payment.amount),
+    method: String(payment.method || "Other"),
+    reference: String(payment.reference || ""),
+    note: String(payment.note || ""),
+    provider: String(payment.provider || "manual"),
+    providerPaymentId: String(payment.providerPaymentId || payment.provider_payment_id || ""),
+    receivedAt: payment.receivedAt || payment.received_at || payment.date || new Date().toISOString(),
+    createdAt: payment.createdAt || payment.created_at || new Date().toISOString(),
+  };
+}
+
+function normalizeFinancialExpense(expense = {}) {
+  return {
+    ...expense,
+    id: String(expense.id || uid("expense")),
+    contactId: String(expense.contactId || expense.leadId || expense.lead_id || ""),
+    leadId: String(expense.leadId || expense.contactId || expense.lead_id || ""),
+    jobId: String(expense.jobId || expense.job_id || ""),
+    category: String(expense.category || "Other"),
+    vendor: String(expense.vendor || ""),
+    description: String(expense.description || ""),
+    amount: number(expense.amount),
+    expenseDate: expense.expenseDate || expense.expense_date || todayISO(),
+    reference: String(expense.reference || ""),
+    status: String(expense.status || "recorded"),
+    createdAt: expense.createdAt || expense.created_at || new Date().toISOString(),
+  };
+}
+
+function normalizeCreditNote(credit = {}) {
+  return {
+    ...credit,
+    id: String(credit.id || uid("credit")),
+    creditNumber: String(credit.creditNumber || credit.credit_number || ""),
+    invoiceId: String(credit.invoiceId || credit.invoice_id || ""),
+    contactId: String(credit.contactId || credit.leadId || credit.lead_id || ""),
+    leadId: String(credit.leadId || credit.contactId || credit.lead_id || ""),
+    jobId: String(credit.jobId || credit.job_id || ""),
+    amount: number(credit.amount),
+    reason: String(credit.reason || ""),
+    status: String(credit.status || "draft"),
+    issuedAt: credit.issuedAt || credit.issued_at || todayISO(),
+    createdAt: credit.createdAt || credit.created_at || new Date().toISOString(),
+  };
+}
+
+function normalizePaymentAllocation(allocation = {}) {
+  return {
+    ...allocation,
+    id: String(allocation.id || uid("allocation")),
+    paymentId: String(allocation.paymentId || allocation.payment_id || ""),
+    invoiceId: String(allocation.invoiceId || allocation.invoice_id || ""),
+    contactId: String(allocation.contactId || allocation.leadId || allocation.lead_id || ""),
+    leadId: String(allocation.leadId || allocation.contactId || allocation.lead_id || ""),
+    jobId: String(allocation.jobId || allocation.job_id || ""),
+    amount: number(allocation.amount),
+    createdAt: allocation.createdAt || allocation.created_at || new Date().toISOString(),
+  };
+}
+
+function normalizeFinancialRefund(refund = {}) {
+  return {
+    ...refund,
+    id: String(refund.id || uid("refund")),
+    paymentId: String(refund.paymentId || refund.payment_id || ""),
+    invoiceId: String(refund.invoiceId || refund.invoice_id || ""),
+    contactId: String(refund.contactId || refund.leadId || refund.lead_id || ""),
+    leadId: String(refund.leadId || refund.contactId || refund.lead_id || ""),
+    jobId: String(refund.jobId || refund.job_id || ""),
+    amount: number(refund.amount),
+    reason: String(refund.reason || ""),
+    provider: String(refund.provider || "manual"),
+    refundedAt: refund.refundedAt || refund.refunded_at || new Date().toISOString(),
+    createdAt: refund.createdAt || refund.created_at || new Date().toISOString(),
+  };
+}
+
+function normalizeInvoiceSchedule(schedule = {}) {
+  return {
+    ...schedule,
+    id: String(schedule.id || uid("schedule")),
+    templateInvoiceId: String(schedule.templateInvoiceId || schedule.template_invoice_id || ""),
+    contactId: String(schedule.contactId || schedule.leadId || schedule.lead_id || ""),
+    leadId: String(schedule.leadId || schedule.contactId || schedule.lead_id || ""),
+    jobId: String(schedule.jobId || schedule.job_id || ""),
+    cadence: ["monthly", "quarterly", "yearly"].includes(schedule.cadence) ? schedule.cadence : "monthly",
+    nextIssueDate: schedule.nextIssueDate || schedule.next_issue_date || todayISO(),
+    dueDays: Math.max(0, Math.min(365, Math.round(number(schedule.dueDays ?? schedule.due_days) || 14))),
+    remainingCount: schedule.remainingCount ?? schedule.remaining_count ?? null,
+    active: schedule.active !== false,
+  };
+}
+
+function normalizeBillingNotice(notice = {}) {
+  return {
+    ...notice,
+    id: String(notice.id || uid("notice")),
+    invoiceId: String(notice.invoiceId || notice.invoice_id || ""),
+    contactId: String(notice.contactId || notice.leadId || notice.lead_id || ""),
+    leadId: String(notice.leadId || notice.contactId || notice.lead_id || ""),
+    jobId: String(notice.jobId || notice.job_id || ""),
+    noticeType: String(notice.noticeType || notice.notice_type || "due_soon"),
+    recipientEmail: String(notice.recipientEmail || notice.recipient_email || ""),
+    scheduledFor: notice.scheduledFor || notice.scheduled_for || new Date().toISOString(),
+    status: String(notice.status || "queued"),
+    attempts: Math.max(0, Math.round(number(notice.attempts))),
+  };
+}
+
+function normalizeProjectMember(item = {}) {
+  return { ...item, id: String(item.id || uid("member")), contactId: String(item.contactId || item.leadId || item.lead_id || ""), leadId: String(item.leadId || item.contactId || item.lead_id || ""), jobId: String(item.jobId || item.job_id || ""), memberEmail: String(item.memberEmail || item.member_email || ""), memberName: String(item.memberName || item.member_name || ""), roleName: String(item.roleName || item.role_name || "Project member"), active: item.active !== false };
+}
+
+function normalizeProjectDiscussion(item = {}) {
+  return { ...item, id: String(item.id || uid("discussion")), contactId: String(item.contactId || item.leadId || item.lead_id || ""), leadId: String(item.leadId || item.contactId || item.lead_id || ""), jobId: String(item.jobId || item.job_id || ""), body: String(item.body || ""), visibility: item.visibility === "customer" ? "customer" : "internal", createdAt: item.createdAt || item.created_at || new Date().toISOString() };
+}
+
+function normalizeProjectNote(item = {}) {
+  return { ...item, id: String(item.id || uid("projectnote")), contactId: String(item.contactId || item.leadId || item.lead_id || ""), leadId: String(item.leadId || item.contactId || item.lead_id || ""), jobId: String(item.jobId || item.job_id || ""), body: String(item.body || ""), pinned: Boolean(item.pinned), createdAt: item.createdAt || item.created_at || new Date().toISOString() };
+}
+
+function normalizeJobTimeEntry(item = {}) {
+  return { ...item, id: String(item.id || uid("time")), contactId: String(item.contactId || item.leadId || item.lead_id || ""), leadId: String(item.leadId || item.contactId || item.lead_id || ""), jobId: String(item.jobId || item.job_id || ""), taskId: String(item.taskId || item.task_id || ""), startedAt: item.startedAt || item.started_at || new Date().toISOString(), stoppedAt: item.stoppedAt || item.stopped_at || "", note: String(item.note || ""), billable: Boolean(item.billable), hourlyRate: number(item.hourlyRate ?? item.hourly_rate), userId: item.userId || item.user_id || "" };
+}
+
+function normalizeProjectTemplate(item = {}) {
+  return { ...item, id: String(item.id || uid("projecttemplate")), name: String(item.name || "Project template"), description: String(item.description || ""), milestones: Array.isArray(item.milestones) ? item.milestones : [], active: item.active !== false };
 }
 
 function normalizeCompany(company = {}) {
@@ -1158,9 +1478,49 @@ function normalizeJob(job, contact = {}) {
     notes: job.notes || "",
     costItems: (job.costItems || job.costs || []).map(normalizeCostItem),
     emails: (job.emails || []).map(normalizeJobEmail),
+    milestones: (job.milestones || []).map((milestone, index) => {
+      const milestoneStatus = ["not_started", "in_progress", "blocked", "completed"].includes(milestone.status)
+        ? milestone.status
+        : milestone.completed ? "completed" : "not_started";
+      return {
+        ...milestone,
+        id: milestone.id || `milestone-${index + 1}`,
+        title: String(milestone.title || "Milestone").trim().slice(0, 500),
+        description: String(milestone.description || "").trim(),
+        dueDate: milestone.dueDate || milestone.due_date || "",
+        status: milestoneStatus,
+        ownerUserId: milestone.ownerUserId || "",
+        ownerEmail: milestone.ownerEmail || "",
+        ownerName: milestone.ownerName || "",
+        position: Math.max(0, Math.round(number(milestone.position ?? index))),
+        completedAt: milestoneStatus === "completed" ? milestone.completedAt || "" : "",
+        createdAt: milestone.createdAt || job.createdAt || contact.createdAt || todayISO(),
+        updatedAt: milestone.updatedAt || milestone.createdAt || job.updatedAt || job.createdAt || contact.updatedAt || contact.createdAt || todayISO(),
+      };
+    }),
     profitNotes: job.profitNotes || "",
     createdAt: job.createdAt || contact.createdAt || todayISO(),
     updatedAt: job.updatedAt || job.modifiedAt || job.createdAt || contact.updatedAt || contact.createdAt || todayISO(),
+  };
+}
+
+function normalizeJobMilestone(milestone = {}, index = 0) {
+  const status = ["not_started", "in_progress", "blocked", "completed"].includes(milestone.status)
+    ? milestone.status
+    : milestone.completed ? "completed" : "not_started";
+  return {
+    id: milestone.id || uid("milestone"),
+    title: String(milestone.title || "Milestone").trim().slice(0, 500),
+    description: String(milestone.description || "").trim(),
+    dueDate: milestone.dueDate || milestone.due_date || "",
+    status,
+    ownerUserId: milestone.ownerUserId || "",
+    ownerEmail: milestone.ownerEmail || "",
+    ownerName: milestone.ownerName || "",
+    position: Math.max(0, Math.round(number(milestone.position ?? index))),
+    completedAt: status === "completed" ? milestone.completedAt || new Date().toISOString() : "",
+    createdAt: milestone.createdAt || new Date().toISOString(),
+    updatedAt: milestone.updatedAt || milestone.createdAt || new Date().toISOString(),
   };
 }
 
@@ -1309,6 +1669,16 @@ function normalizeJobEmail(email = {}) {
 }
 
 function normalizeCalendarTask(task) {
+  const workflowStatus = ["not_started", "in_progress", "blocked", "completed", "cancelled"].includes(task.workflowStatus)
+    ? task.workflowStatus
+    : task.completed ? "completed" : "not_started";
+  const checklist = (Array.isArray(task.checklist) ? task.checklist : []).map((item, index) => ({
+    id: item.id || uid("check"),
+    label: String(item.label || item.title || "Checklist item").trim().slice(0, 500),
+    completed: Boolean(item.completed),
+    position: Math.max(0, Math.round(number(item.position ?? index))),
+    completedAt: item.completed ? item.completedAt || "" : "",
+  }));
   return {
     id: task.id || uid("task"),
     title: task.title || "Calendar task",
@@ -1317,12 +1687,33 @@ function normalizeCalendarTask(task) {
     ownerEmail: task.ownerEmail || "",
     ownerName: task.ownerName || "",
     contactId: task.contactId || "",
+    jobId: task.jobId || "",
     dueAt: task.dueAt || new Date().toISOString(),
     duration: Math.max(number(task.duration) || 30, 5),
     reminder: task.reminder || "popup",
     notes: task.notes || "",
+    priority: ["low", "normal", "high", "urgent"].includes(task.priority) ? task.priority : "normal",
+    workflowStatus,
+    recurrence: ["none", "daily", "weekly", "monthly", "yearly"].includes(task.recurrence) ? task.recurrence : "none",
+    followers: (Array.isArray(task.followers) ? task.followers : String(task.followers || "").split(","))
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter((value, index, values) => value && values.indexOf(value) === index),
+    checklist,
+    comments: (Array.isArray(task.comments) ? task.comments : []).map((comment) => ({
+      id: comment.id || uid("comment"),
+      body: String(comment.body || comment.message || "").trim(),
+      author: comment.author || "CRM user",
+      createdAt: comment.createdAt || new Date().toISOString(),
+    })).filter((comment) => comment.body),
+    timeEntries: (Array.isArray(task.timeEntries) ? task.timeEntries : []).map((entry) => ({
+      id: entry.id || uid("time"),
+      startedAt: entry.startedAt || new Date().toISOString(),
+      stoppedAt: entry.stoppedAt || "",
+      userEmail: entry.userEmail || "",
+    })),
     createdAt: task.createdAt || new Date().toISOString(),
-    completed: Boolean(task.completed),
+    updatedAt: task.updatedAt || task.createdAt || new Date().toISOString(),
+    completed: workflowStatus === "completed" || Boolean(task.completed),
     googleEventId: task.googleEventId || "",
     googleEventUrl: task.googleEventUrl || "",
     googleSyncStatus: ["synced", "pending", "not_connected", "error"].includes(task.googleSyncStatus) ? task.googleSyncStatus : "",
@@ -2814,6 +3205,119 @@ async function initializeDurableRecords() {
       queueDurableRecordsReload();
     })
     .subscribe();
+}
+
+async function initializeFinancialLedger() {
+  if (!cloudReady || !cloudClient || !authSession?.user?.id) {
+    financialLedgerReady = true;
+    return true;
+  }
+  const companyId = supabaseStateId();
+  const tables = [
+    "crm_invoices",
+    "crm_invoice_items",
+    "crm_payments",
+    "crm_payment_allocations",
+    "crm_expenses",
+    "crm_credit_notes",
+    "crm_refunds",
+    "crm_invoice_schedules",
+    "crm_billing_notices",
+  ];
+  try {
+    const results = await Promise.all(tables.map((table) => cloudClient.from(table).select("*").eq("company_state_id", companyId)));
+    const failed = results.find((result) => result.error);
+    if (failed) throw failed.error;
+    const [invoiceRows, itemRows, paymentRows, allocationRows, expenseRows, creditRows, refundRows, scheduleRows, noticeRows] = results.map((result) => result.data || []);
+    const itemsByInvoice = new Map();
+    itemRows.forEach((item) => {
+      if (!itemsByInvoice.has(item.invoice_id)) itemsByInvoice.set(item.invoice_id, []);
+      itemsByInvoice.get(item.invoice_id).push(item);
+    });
+    state.invoices = invoiceRows.map((invoice) => normalizeInvoice({
+      ...invoice,
+      items: (itemsByInvoice.get(invoice.id) || []).sort((a, b) => number(a.position) - number(b.position)),
+    }));
+    state.financialPayments = paymentRows.map(normalizeFinancialPayment);
+    state.paymentAllocations = allocationRows.map(normalizePaymentAllocation);
+    state.financialExpenses = expenseRows.map(normalizeFinancialExpense);
+    state.creditNotes = creditRows.map(normalizeCreditNote);
+    state.financialRefunds = refundRows.map(normalizeFinancialRefund);
+    state.invoiceSchedules = scheduleRows.map(normalizeInvoiceSchedule);
+    state.billingNotices = noticeRows.map(normalizeBillingNotice);
+    financialLedgerReady = true;
+    saveState({ localOnly: true });
+    return true;
+  } catch (error) {
+    financialLedgerReady = false;
+    console.warn("The financial ledger could not be loaded", error);
+    return false;
+  }
+}
+
+async function initializeProjectDelivery() {
+  if (!cloudReady || !cloudClient || !authSession?.user?.id) return true;
+  const tables = ["crm_project_members","crm_project_discussions","crm_project_notes","crm_job_time_entries","crm_project_templates","crm_job_milestones"];
+  try {
+    const results = await Promise.all(tables.map((table) => cloudClient.from(table).select("*").eq("company_state_id",supabaseStateId())));
+    const failed = results.find((result) => result.error);
+    if (failed) throw failed.error;
+    const [memberRows,discussionRows,noteRows,timeRows,templateRows,milestoneRows] = results.map((result) => result.data || []);
+    state.projectMembers = memberRows.map(normalizeProjectMember);
+    state.projectDiscussions = discussionRows.map(normalizeProjectDiscussion);
+    state.projectNotes = noteRows.map(normalizeProjectNote);
+    state.jobTimeEntries = timeRows.map(normalizeJobTimeEntry);
+    state.projectTemplates = templateRows.map(normalizeProjectTemplate);
+    const milestonesByJob=new Map();
+    milestoneRows.forEach((row)=>{if(!milestonesByJob.has(row.job_id))milestonesByJob.set(row.job_id,[]);milestonesByJob.get(row.job_id).push(normalizeJobMilestone(row));});
+    state.contacts=state.contacts.map((contact)=>({...contact,jobs:contactJobs(contact).map((job)=>{const relational=milestonesByJob.get(job.id)||[];return relational.length?{...job,milestones:relational}:job;})}));
+    saveState({ localOnly: true });
+    return true;
+  } catch (error) {
+    console.warn("Project delivery records could not be loaded",error);
+    return false;
+  }
+}
+
+async function insertProjectDeliveryRow(table,row) {
+  if (!canUseCloudSync()) return true;
+  const { error } = await cloudClient.from(table).insert({ company_state_id: supabaseStateId(), ...row });
+  if (error) throw error;
+  return initializeProjectDelivery();
+}
+
+async function initializeLeadOrganization() {
+  if (!cloudReady || !cloudClient || !authSession?.user?.id) return true;
+  const tables=["crm_lead_sources","crm_tags","crm_record_tags","crm_custom_fields","crm_custom_field_values","crm_saved_filters"];
+  try {
+    const results=await Promise.all(tables.map((table)=>cloudClient.from(table).select("*").eq("company_state_id",supabaseStateId())));
+    const failed=results.find((result)=>result.error);if(failed)throw failed.error;
+    const [sources,tags,recordTags,fields,values,filters]=results.map((result)=>result.data||[]);
+    state.leadSources=sources.map((item)=>({id:item.id,name:item.name,displayOrder:number(item.display_order),active:item.active!==false}));
+    state.leadTags=tags.map((item)=>({id:item.id,name:item.name,color:item.color,active:item.active!==false}));
+    state.recordTags=recordTags.map((item)=>({id:item.id,contactId:item.lead_id,jobId:item.job_id,recordType:item.record_type,recordId:item.record_id,tagId:item.tag_id}));
+    state.customFields=fields.map((item)=>({id:item.id,label:item.label,fieldKey:item.field_key,appliesTo:item.applies_to,fieldType:item.field_type,options:item.options||[],required:item.required,displayOrder:number(item.display_order),active:item.active!==false}));
+    state.customFieldValues=values.map((item)=>({id:item.id,contactId:item.lead_id,jobId:item.job_id,recordType:item.record_type,recordId:item.record_id,fieldId:item.field_id,value:item.value}));
+    state.savedLeadFilters=filters.map((item)=>({id:item.id,name:item.name,criteria:item.criteria||{},viewName:item.view_name}));
+    saveState({localOnly:true});return true;
+  }catch(error){console.warn("Lead organization records could not be loaded",error);return false;}
+}
+
+async function initializeCommunications() {
+  if(!cloudReady||!cloudClient||!authSession?.user?.id)return true;
+  const tables=["crm_email_templates","crm_scheduled_messages","crm_reminders","crm_notifications"];
+  try{const results=await Promise.all(tables.map((table)=>cloudClient.from(table).select("*").eq("company_state_id",supabaseStateId())));const failed=results.find((result)=>result.error);if(failed)throw failed.error;const [templates,messages,reminders,notifications]=results.map((result)=>result.data||[]);state.emailTemplates=templates.map((item)=>({id:item.id,name:item.name,subjectTemplate:item.subject_template,bodyTemplate:item.body_template,category:item.category,active:item.active!==false}));state.scheduledMessages=messages.map((item)=>({id:item.id,contactId:item.lead_id,jobId:item.job_id,recipient:item.recipient,subject:item.subject,body:item.body,scheduledFor:item.scheduled_for,status:item.status,attempts:number(item.attempts),lastError:item.last_error}));state.crmReminders=reminders;state.crmNotifications=notifications;saveState({localOnly:true});return true;}catch(error){console.warn("Communication records could not be loaded",error);return false;}
+}
+
+async function initializeDocumentOperations() {
+  if(!cloudReady||!cloudClient||!authSession?.user?.id)return true;
+  const tables=["crm_document_versions","crm_document_comments","crm_document_access","crm_document_templates","crm_signature_requests"];
+  try{const results=await Promise.all(tables.map((table)=>cloudClient.from(table).select("*").eq("company_state_id",supabaseStateId())));const failed=results.find((result)=>result.error);if(failed)throw failed.error;const [versions,comments,access,templates,signatures]=results.map((result)=>result.data||[]);
+    state.documentVersions=versions.map((item)=>({id:item.id,documentId:item.document_id,contactId:item.lead_id,jobId:item.job_id,versionNumber:number(item.version_number),fileName:item.file_name,mimeType:item.mime_type,fileSize:number(item.file_size),storagePath:item.storage_path,checksum:item.checksum,createdAt:item.created_at}));
+    state.documentComments=comments.map((item)=>({id:item.id,documentId:item.document_id,contactId:item.lead_id,jobId:item.job_id,body:item.body,customerVisible:item.customer_visible,createdAt:item.created_at}));
+    state.documentAccess=access.map((item)=>({documentId:item.document_id,contactId:item.lead_id,jobId:item.job_id,customerVisible:item.customer_visible,downloadAllowed:item.download_allowed,updatedAt:item.updated_at}));
+    state.documentTemplates=templates;state.signatureRequests=signatures;saveState({localOnly:true});return true;
+  }catch(error){console.warn("Document operations could not be loaded",error);return false;}
 }
 
 async function createDailyRecoveryBackup() {
@@ -5103,6 +5607,7 @@ function renderContacts() {
 function renderLeadsView() {
   if (!els.leadsList) return;
   const stage = statuses.includes(state.leadStageFilter) ? state.leadStageFilter : "";
+  const activeTag = (state.leadTags || []).some((tag) => tag.id === state.leadTagFilter) ? state.leadTagFilter : "";
   if (els.leadStageFilter) {
     const openLeadCount = visibleContacts().filter((contact) =>
       contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
@@ -5118,10 +5623,19 @@ function renderLeadsView() {
     ].join("");
     els.leadStageFilter.value = stage;
   }
+  if (els.leadTagFilter) {
+    els.leadTagFilter.innerHTML = '<option value="">All tags</option>' + (state.leadTags || []).filter((tag) => tag.active !== false).map((tag) => `<option value="${escapeHtml(tag.id)}">${escapeHtml(tag.name)}</option>`).join("");
+    els.leadTagFilter.value = activeTag;
+  }
+  if (els.savedLeadFilter) {
+    els.savedLeadFilter.innerHTML = '<option value="">Current view</option>' + (state.savedLeadFilters || []).map((filter) => `<option value="${escapeHtml(filter.id)}">${escapeHtml(filter.name)}</option>`).join("");
+    els.savedLeadFilter.value = state.savedLeadFilterId || "";
+  }
   const leads = sortLeadIntakeChronologically(filteredContacts().filter((contact) =>
-    stage
+    (stage
       ? contactJobs(contact).some((job) => job.status === stage)
-      : contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
+      : contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)))
+      && (!activeTag || (state.recordTags || []).some((item) => item.recordType === "lead" && item.recordId === contact.id && item.tagId === activeTag)),
   ));
   const filterSummary = stage
     ? `
@@ -5139,6 +5653,26 @@ function renderLeadsView() {
     ? leads.map((contact) => renderRecordCard(contact)).join("")
     : `<div class="empty-state">No leads are currently in ${escapeHtml(stage || "this view")}</div>`);
   hydrateIcons(els.leadsList);
+}
+
+async function saveCurrentLeadFilter() {
+  const name = String(window.prompt("Name this lead view:", "My lead view") || "").trim().slice(0,120);
+  if (!name) return;
+  const filter={id:uid("filter"),name,viewName:"leads",criteria:{stage:state.leadStageFilter||"",tagId:state.leadTagFilter||"",search:state.search||""}};
+  try {
+    if(canUseCloudSync()){
+      const {error}=await cloudClient.from("crm_saved_filters").insert({company_state_id:supabaseStateId(),id:filter.id,owner_user_id:authSession.user.id,name:filter.name,view_name:"leads",criteria:filter.criteria});
+      if(error)throw error;await initializeLeadOrganization();
+    } else state.savedLeadFilters.push(filter);
+    state.savedLeadFilterId=filter.id;saveUiState();saveState({localOnly:true});renderLeadsView();showToast(`Saved view: ${name}`);
+  }catch(error){console.error(error);showToast(error?.message||"The view could not be saved");}
+}
+
+function applySavedLeadFilter(filterId) {
+  const filter=(state.savedLeadFilters||[]).find((item)=>item.id===filterId);
+  state.savedLeadFilterId=filter?.id||"";
+  if(filter){state.leadStageFilter=statuses.includes(filter.criteria?.stage)?filter.criteria.stage:"";state.leadTagFilter=filter.criteria?.tagId||"";state.search=String(filter.criteria?.search||"");if(els.globalSearch)els.globalSearch.value=state.search;}
+  saveUiState();renderLeadsView();
 }
 
 function renderJobsView() {
@@ -5228,6 +5762,8 @@ function renderRecordCard(contact) {
   const createdTimestamp = localTimestamp(contact.createdAt) || 0;
   const activityLabel = activityTimestamp > createdTimestamp ? "Updated" : "Added";
   const activityDate = activityTimestamp ? formatDateTime(new Date(activityTimestamp).toISOString()) : "Date unavailable";
+  const tags = (state.recordTags || []).filter((item) => item.recordType === "lead" && item.recordId === contact.id)
+    .map((item) => (state.leadTags || []).find((tag) => tag.id === item.tagId)).filter(Boolean);
   return `
     <article class="lead-intake-row ${sc}">
       <div class="lead-intake-person">
@@ -5236,6 +5772,7 @@ function renderRecordCard(contact) {
           <button class="link-button lead-intake-name" type="button" data-action="open-contact" data-contact-id="${contact.id}">${escapeHtml(contact.name)}</button>
           <span>${escapeHtml(contact.leadNumber || "Lead not numbered yet")}</span>
           <small>${activityLabel} ${escapeHtml(activityDate)}</small>
+          ${tags.length ? `<span class="lead-tag-row">${tags.map((tag) => `<span class="lead-tag" style="--tag-color:${escapeHtml(tag.color || "#2563eb")}">${escapeHtml(tag.name)}</span>`).join("")}</span>` : ""}
         </div>
       </div>
       <div class="lead-intake-stage">
@@ -5347,6 +5884,7 @@ function renderLeadDetail() {
     documents: els.leadDocumentsPanel,
     photos: els.leadPhotosPanel,
     conversation: els.leadConversationPanel,
+    activity: els.leadActivityPanel,
   };
   Object.entries(panels).forEach(([tab, panel]) => {
     if (!panel) return;
@@ -5439,6 +5977,7 @@ function renderLeadDetail() {
   renderLeadDocuments(contact);
   renderLeadPhotos(contact);
   renderLeadConversation(contact);
+  renderLeadActivity(contact);
 }
 
 function renderLeadJobs(contact) {
@@ -5509,6 +6048,352 @@ function renderLeadJobs(contact) {
     )
     .join("");
   hydrateIcons(els.leadJobsList);
+  renderJobMilestones(contact);
+  renderProjectDelivery(contact);
+}
+
+function milestoneStatusLabel(status) {
+  return ({
+    not_started: "Not started",
+    in_progress: "In progress",
+    blocked: "Blocked",
+    completed: "Completed",
+  })[status] || "Not started";
+}
+
+function renderJobMilestones(contact) {
+  if (!els.jobMilestonesList || !els.jobMilestoneForm) return;
+  const job = selectedLeadJob(contact);
+  if (!job) {
+    els.jobMilestonesList.innerHTML = '<div class="empty-state">Create a job before adding milestones.</div>';
+    els.jobMilestoneForm.classList.add("hidden");
+    if (els.jobMilestoneProgress) els.jobMilestoneProgress.textContent = "";
+    return;
+  }
+  els.jobMilestoneForm.classList.remove("hidden");
+  const milestones = [...(job.milestones || [])].sort((a, b) => number(a.position) - number(b.position));
+  const completed = milestones.filter((item) => item.status === "completed").length;
+  if (els.jobMilestoneProgress) {
+    els.jobMilestoneProgress.textContent = milestones.length
+      ? `${completed} of ${milestones.length} complete`
+      : `Add the first milestone for ${job.name}`;
+  }
+  els.jobMilestonesList.innerHTML = milestones.length
+    ? milestones.map((milestone) => `
+        <article class="workflow-row ${milestone.status === "completed" ? "is-complete" : ""}">
+          <button class="workflow-check" type="button" data-action="toggle-job-milestone" data-milestone-id="${milestone.id}" aria-label="${milestone.status === "completed" ? "Reopen" : "Complete"} ${escapeHtml(milestone.title)}">
+            <span aria-hidden="true" data-icon="${milestone.status === "completed" ? "check" : "calendar"}"></span>
+          </button>
+          <div class="workflow-row-copy">
+            <strong>${escapeHtml(milestone.title)}</strong>
+            <span>${escapeHtml(milestoneStatusLabel(milestone.status))}${milestone.dueDate ? ` · Due ${escapeHtml(formatDate(milestone.dueDate))}` : ""}</span>
+          </div>
+          <button class="mini-button" type="button" data-action="delete-job-milestone" data-milestone-id="${milestone.id}" aria-label="Delete ${escapeHtml(milestone.title)}">
+            <span aria-hidden="true" data-icon="trash"></span>
+          </button>
+        </article>
+      `).join("")
+    : '<div class="empty-state">No milestones yet. Add the major checkpoints for this job.</div>';
+  hydrateIcons(els.jobMilestonesList);
+}
+
+async function persistSelectedJobWorkflow(jobId, updateId = "") {
+  saveState({ localOnly: true });
+  render();
+  if (!canUseCloudSync()) return true;
+  try {
+    const saved = await persistLeadJobRecord(jobId, updateId);
+    if (saved) queueCloudSave();
+    else queueDurableRecordsSave();
+    return saved;
+  } catch (error) {
+    console.warn("Job workflow update could not be confirmed", error);
+    queueDurableRecordsSave();
+    return false;
+  }
+}
+
+async function saveJobMilestone(event) {
+  event.preventDefault();
+  if (!requireAction("manageJobs")) return;
+  const contact = getSelectedContact();
+  const job = selectedLeadJob(contact);
+  if (!contact || !job) return;
+  const formData = new FormData(els.jobMilestoneForm);
+  const title = String(formData.get("title") || "").trim();
+  if (!title) return;
+  const milestoneId = String(formData.get("milestoneId") || "") || uid("milestone");
+  const existing = (job.milestones || []).find((item) => item.id === milestoneId);
+  const milestone = normalizeJobMilestone({
+    ...(existing || {}),
+    id: milestoneId,
+    title,
+    dueDate: formData.get("dueDate") || "",
+    status: formData.get("status") || "not_started",
+    position: existing?.position ?? (job.milestones || []).length,
+    completedAt: formData.get("status") === "completed" ? existing?.completedAt || new Date().toISOString() : "",
+    updatedAt: new Date().toISOString(),
+  });
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    milestones: existing
+      ? (currentJob.milestones || []).map((item) => item.id === milestoneId ? milestone : item)
+      : [...(currentJob.milestones || []), milestone],
+  }));
+  const updated = addContactUpdate(contact.id, {
+    author: state.currentUser.name || "CRM user",
+    jobId: job.id,
+    message: `${existing ? "Updated" : "Added"} milestone on ${job.name}: ${milestone.title}.`,
+  });
+  els.jobMilestoneForm.reset();
+  const saved = await persistSelectedJobWorkflow(job.id, updated?.updates?.[0]?.id || "");
+  showToast(saved ? "Milestone saved" : "Milestone is local while shared CRM sync retries");
+}
+
+async function toggleJobMilestone(milestoneId) {
+  if (!requireAction("manageJobs")) return;
+  const contact = getSelectedContact();
+  const job = selectedLeadJob(contact);
+  const milestone = (job?.milestones || []).find((item) => item.id === milestoneId);
+  if (!contact || !job || !milestone) return;
+  const completed = milestone.status !== "completed";
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    milestones: (currentJob.milestones || []).map((item) => item.id === milestoneId
+      ? { ...item, status: completed ? "completed" : "not_started", completedAt: completed ? new Date().toISOString() : "", updatedAt: new Date().toISOString() }
+      : item),
+  }));
+  const updated = addContactUpdate(contact.id, {
+    author: state.currentUser.name || "CRM user",
+    jobId: job.id,
+    message: `${completed ? "Completed" : "Reopened"} milestone on ${job.name}: ${milestone.title}.`,
+  });
+  await persistSelectedJobWorkflow(job.id, updated?.updates?.[0]?.id || "");
+}
+
+async function deleteJobMilestone(milestoneId) {
+  if (!requireAction("manageJobs")) return;
+  const contact = getSelectedContact();
+  const job = selectedLeadJob(contact);
+  const milestone = (job?.milestones || []).find((item) => item.id === milestoneId);
+  if (!contact || !job || !milestone) return;
+  updateSelectedProfitJob((currentJob) => ({
+    ...currentJob,
+    milestones: (currentJob.milestones || []).filter((item) => item.id !== milestoneId),
+  }));
+  const updated = addContactUpdate(contact.id, {
+    author: state.currentUser.name || "CRM user",
+    jobId: job.id,
+    message: `Removed milestone from ${job.name}: ${milestone.title}.`,
+  });
+  await persistSelectedJobWorkflow(job.id, updated?.updates?.[0]?.id || "");
+}
+
+function projectDeliveryContext() {
+  const contact = getContact(state.selectedContactId);
+  const job = contact ? selectedLeadJob(contact) : null;
+  return { contact, job };
+}
+
+function jobTimeHours(entry, now = Date.now()) {
+  const start = new Date(entry.startedAt).getTime();
+  const stop = entry.stoppedAt ? new Date(entry.stoppedAt).getTime() : now;
+  return Number.isFinite(start) && Number.isFinite(stop) ? Math.max((stop-start)/3600000,0) : 0;
+}
+
+function renderProjectDelivery(contact) {
+  if (!els.projectDeliverySection) return;
+  const job = selectedLeadJob(contact);
+  els.projectDeliverySection.classList.toggle("hidden",!job);
+  if (!job) return;
+  const jobFilter = (item) => item.contactId === contact.id && item.jobId === job.id;
+  const members = (state.projectMembers || []).filter(jobFilter).filter((item) => item.active);
+  const notes = (state.projectNotes || []).filter(jobFilter).sort((a,b) => Number(b.pinned)-Number(a.pinned) || activityTimestamp(b.createdAt)-activityTimestamp(a.createdAt));
+  const discussions = (state.projectDiscussions || []).filter(jobFilter).sort((a,b) => activityTimestamp(b.createdAt)-activityTimestamp(a.createdAt));
+  const times = (state.jobTimeEntries || []).filter(jobFilter).sort((a,b) => activityTimestamp(b.startedAt)-activityTimestamp(a.startedAt));
+  const active = times.find((item) => !item.stoppedAt && (!item.userId || item.userId === authSession?.user?.id));
+  const totalHours = times.reduce((sum,item) => sum+jobTimeHours(item),0);
+  const billableValue = times.filter((item) => item.billable).reduce((sum,item) => sum+jobTimeHours(item)*number(item.hourlyRate),0);
+  els.projectMembersList.innerHTML = members.length ? members.map((item) => `<span class="project-member-chip"><strong>${escapeHtml(item.memberName)}</strong><small>${escapeHtml(item.roleName)}</small></span>`).join("") : '<span class="muted-copy">No project members assigned.</span>';
+  els.projectNotesList.innerHTML = notes.length ? notes.slice(0,20).map((item) => `<article class="workflow-row"><span data-icon="${item.pinned ? "star" : "file"}" aria-hidden="true"></span><div><strong>${item.pinned ? "Pinned note" : "Internal note"}</strong><span>${escapeHtml(item.body)}</span></div></article>`).join("") : '<div class="empty-state compact-empty">No internal notes.</div>';
+  els.projectDiscussionsList.innerHTML = discussions.length ? discussions.slice(0,20).map((item) => `<article class="workflow-row"><span data-icon="message-circle" aria-hidden="true"></span><div><strong>${item.visibility === "customer" ? "Customer-visible update" : "Internal update"}</strong><span>${escapeHtml(item.body)}</span></div></article>`).join("") : '<div class="empty-state compact-empty">No project discussion yet.</div>';
+  els.jobTimeSummary.textContent = `${totalHours.toFixed(2)} hours tracked · ${money.format(billableValue)} billable`;
+  els.toggleJobTimerButton.textContent = active ? "Stop timer" : "Start timer";
+  els.jobTimerBillable.disabled = Boolean(active);
+  els.jobTimerRate.disabled = Boolean(active);
+  els.jobTimeEntriesList.innerHTML = times.length ? times.slice(0,20).map((item) => `<article class="workflow-row"><span data-icon="clock" aria-hidden="true"></span><div><strong>${jobTimeHours(item).toFixed(2)} hours${item.billable ? ` · ${money.format(item.hourlyRate)}/hr` : ""}</strong><span>${escapeHtml(formatDate(item.startedAt))}${item.stoppedAt ? "" : " · Running"}</span></div></article>`).join("") : '<div class="empty-state compact-empty">No time recorded.</div>';
+  const templates = (state.projectTemplates || []).filter((item) => item.active);
+  els.projectTemplateSelect.innerHTML = '<option value="">Choose template</option>'+templates.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  els.applyProjectTemplateButton.disabled = !templates.length;
+  hydrateIcons(els.projectDeliverySection);
+}
+
+async function saveProjectMember(event) {
+  event.preventDefault();
+  const { contact,job } = projectDeliveryContext(); if(!contact||!job)return;
+  const data=new FormData(event.currentTarget);
+  const item=normalizeProjectMember({id:uid("member"),contactId:contact.id,jobId:job.id,memberName:data.get("memberName"),memberEmail:data.get("memberEmail"),roleName:data.get("roleName"),active:true});
+  try { await insertProjectDeliveryRow("crm_project_members",{id:item.id,lead_id:contact.id,job_id:job.id,member_name:item.memberName,member_email:item.memberEmail,role_name:item.roleName,active:true}); if(!canUseCloudSync())state.projectMembers.unshift(item); event.currentTarget.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Project member added"); } catch(error){console.error(error);showToast(error?.message||"Project member could not be added");}
+}
+
+async function saveProjectNote(event) {
+  event.preventDefault(); const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
+  const data=new FormData(event.currentTarget); const item=normalizeProjectNote({id:uid("projectnote"),contactId:contact.id,jobId:job.id,body:data.get("body"),pinned:data.get("pinned")==="on"});
+  try { await insertProjectDeliveryRow("crm_project_notes",{id:item.id,lead_id:contact.id,job_id:job.id,body:item.body,pinned:item.pinned}); if(!canUseCloudSync())state.projectNotes.unshift(item); event.currentTarget.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Internal note added"); } catch(error){console.error(error);showToast(error?.message||"Note could not be added");}
+}
+
+async function saveProjectDiscussion(event) {
+  event.preventDefault(); const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
+  const data=new FormData(event.currentTarget); const item=normalizeProjectDiscussion({id:uid("discussion"),contactId:contact.id,jobId:job.id,body:data.get("body"),visibility:data.get("visibility")});
+  try { await insertProjectDeliveryRow("crm_project_discussions",{id:item.id,lead_id:contact.id,job_id:job.id,body:item.body,visibility:item.visibility}); if(!canUseCloudSync())state.projectDiscussions.unshift(item); event.currentTarget.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Project update posted"); } catch(error){console.error(error);showToast(error?.message||"Update could not be posted");}
+}
+
+async function toggleJobDeliveryTimer() {
+  const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
+  const active=(state.jobTimeEntries||[]).find((item)=>item.contactId===contact.id&&item.jobId===job.id&&!item.stoppedAt&&(!item.userId||item.userId===authSession?.user?.id));
+  try {
+    if(active){ const stoppedAt=new Date().toISOString(); if(canUseCloudSync()){const {error}=await cloudClient.from("crm_job_time_entries").update({stopped_at:stoppedAt}).eq("company_state_id",supabaseStateId()).eq("id",active.id);if(error)throw error;await initializeProjectDelivery();}else active.stoppedAt=stoppedAt; }
+    else { const item=normalizeJobTimeEntry({id:uid("time"),contactId:contact.id,jobId:job.id,startedAt:new Date().toISOString(),billable:els.jobTimerBillable.checked,hourlyRate:parseCurrencyInput(els.jobTimerRate.value),userId:authSession?.user?.id||""}); await insertProjectDeliveryRow("crm_job_time_entries",{id:item.id,lead_id:contact.id,job_id:job.id,started_at:item.startedAt,billable:item.billable,hourly_rate:item.hourlyRate,note:""}); if(!canUseCloudSync())state.jobTimeEntries.unshift(item); }
+    saveState({localOnly:true}); renderProjectDelivery(contact); showToast(active?"Job timer stopped":"Job timer started");
+  } catch(error){console.error(error);showToast(error?.message||"Timer could not be updated");}
+}
+
+async function applySelectedProjectTemplate() {
+  const {contact,job}=projectDeliveryContext(); const template=(state.projectTemplates||[]).find((item)=>item.id===els.projectTemplateSelect.value); if(!contact||!job||!template)return showToast("Choose a project template");
+  try {
+    if(canUseCloudSync()){const {error}=await cloudClient.rpc("crm_apply_project_template",{p_template_id:template.id,p_lead_id:contact.id,p_job_id:job.id});if(error)throw error;await initializeProjectDelivery();}
+    else { job.milestones=[...(job.milestones||[]),...template.milestones.map((item,index)=>normalizeJobMilestone({id:uid("milestone"),title:item.title,description:item.description||"",position:(job.milestones||[]).length+index}))]; saveState({localOnly:true}); }
+    renderJobMilestones(contact); showToast(`${template.name} applied`);
+  } catch(error){console.error(error);showToast(error?.message||"Template could not be applied");}
+}
+
+function activityTimestamp(value) {
+  const time = new Date(value || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function renderLeadActivity(contact) {
+  if (!els.leadActivityTimeline) return;
+  const jobs = contactJobs(contact);
+  const jobName = (jobId) => jobs.find((job) => job.id === jobId)?.name || "";
+  const events = [];
+  events.push({
+    id: `lead-${contact.id}`,
+    at: contact.createdAt,
+    type: "lead",
+    title: "Lead created",
+    detail: `${contact.name} entered the CRM${contact.source ? ` from ${contact.source}` : ""}.`,
+  });
+  (contact.updates || []).forEach((update) => events.push({
+    id: update.id,
+    at: update.createdAt,
+    type: update.status ? "status" : "note",
+    title: update.status ? `Status: ${update.status}` : "Lead update",
+    detail: `${update.message || "Update recorded"}${update.jobId && jobName(update.jobId) ? ` · ${jobName(update.jobId)}` : ""}`,
+    actor: update.author,
+  }));
+  jobs.forEach((job) => {
+    events.push({ id: `job-${job.id}`, at: job.createdAt, type: "job", title: `Job created: ${job.name}`, detail: job.address || "No address saved" });
+    (job.manualPayments || []).forEach((payment) => events.push({
+      id: payment.id,
+      at: payment.createdAt || payment.date,
+      type: "payment",
+      title: `Payment recorded · ${money.format(number(payment.amount))}`,
+      detail: `${job.name} · ${payment.method}${payment.reference ? ` · ${payment.reference}` : ""}`,
+      actor: payment.createdBy,
+    }));
+    (job.emails || []).forEach((email) => events.push({
+      id: email.id,
+      at: email.createdAt,
+      type: "email",
+      title: `${email.direction === "inbound" ? "Email received" : "Email sent"}: ${email.subject || "No subject"}`,
+      detail: `${job.name} · ${email.direction === "inbound" ? email.fromEmail : email.toEmail}`,
+      actor: email.createdBy,
+    }));
+    (job.milestones || []).filter((milestone) => milestone.completedAt).forEach((milestone) => events.push({
+      id: `milestone-${milestone.id}`,
+      at: milestone.completedAt,
+      type: "milestone",
+      title: `Milestone completed: ${milestone.title}`,
+      detail: job.name,
+    }));
+  });
+  (contact.documents || []).forEach((document) => events.push({
+    id: document.id,
+    at: document.uploadedAt,
+    type: document.kind === "photo" ? "photo" : "document",
+    title: `${document.kind === "photo" ? "Photo" : "Document"} uploaded: ${document.name}`,
+    detail: `${jobName(document.jobId) || "Lead file"} · ${document.category || "Other"}`,
+    actor: document.uploadedBy,
+  }));
+  state.estimates.filter((estimate) => estimate.contactId === contact.id).forEach((estimate) => events.push({
+    id: estimate.id,
+    at: estimate.updatedAt || estimate.createdAt || estimate.issueDate,
+    type: "estimate",
+    title: `Estimate ${estimate.status || "Draft"}: ${estimate.estimateNumber || estimate.projectTitle}`,
+    detail: `${jobName(estimate.jobId) || contact.name} · ${money.format(totalsFor(estimate).total)}`,
+  }));
+  (state.invoices || []).filter((invoice) => invoice.contactId === contact.id).forEach((invoice) => events.push({
+    id: `invoice-${invoice.id}`,
+    at: invoice.updatedAt || invoice.createdAt || invoice.issueDate,
+    type: "invoice",
+    title: `Invoice ${invoice.status}: ${invoice.invoiceNumber}`,
+    detail: `${jobName(invoice.jobId) || contact.name} · ${money.format(invoice.totalAmount)}`,
+  }));
+  (state.financialPayments || []).filter((payment) => payment.contactId === contact.id).forEach((payment) => events.push({
+    id: `ledger-payment-${payment.id}`,
+    at: payment.receivedAt || payment.createdAt,
+    type: "payment",
+    title: `Invoice payment recorded · ${money.format(payment.amount)}`,
+    detail: `${jobName(payment.jobId) || contact.name} · ${payment.method}${payment.reference ? ` · ${payment.reference}` : ""}`,
+  }));
+  (state.creditNotes || []).filter((credit) => credit.contactId === contact.id).forEach((credit) => events.push({
+    id: `ledger-credit-${credit.id}`,
+    at: credit.issuedAt || credit.createdAt,
+    type: "payment",
+    title: `Invoice credit applied · ${money.format(credit.amount)}`,
+    detail: `${jobName(credit.jobId) || contact.name} · ${credit.creditNumber} · ${credit.reason}`,
+  }));
+  (state.financialExpenses || []).filter((expense) => expense.contactId === contact.id).forEach((expense) => events.push({
+    id: `ledger-expense-${expense.id}`,
+    at: expense.expenseDate || expense.createdAt,
+    type: "payment",
+    title: `Job expense recorded · ${money.format(expense.amount)}`,
+    detail: `${jobName(expense.jobId) || contact.name} · ${expense.category}${expense.vendor ? ` · ${expense.vendor}` : ""}`,
+  }));
+  (state.financialRefunds || []).filter((refund) => refund.contactId === contact.id).forEach((refund) => events.push({
+    id: `ledger-refund-${refund.id}`,
+    at: refund.refundedAt || refund.createdAt,
+    type: "payment",
+    title: `Payment refund recorded · ${money.format(refund.amount)}`,
+    detail: `${jobName(refund.jobId) || contact.name} · ${refund.reason}`,
+  }));
+  (state.projectDiscussions || []).filter((item) => item.contactId === contact.id).forEach((item) => events.push({ id:`project-discussion-${item.id}`,at:item.createdAt,type:"note",title:item.visibility === "customer" ? "Customer-visible project update" : "Project discussion",detail:`${jobName(item.jobId)||contact.name} · ${item.body}` }));
+  (state.projectNotes || []).filter((item) => item.contactId === contact.id).forEach((item) => events.push({ id:`project-note-${item.id}`,at:item.createdAt,type:"note",title:item.pinned ? "Pinned internal note" : "Internal project note",detail:`${jobName(item.jobId)||contact.name} · ${item.body}` }));
+  (state.jobTimeEntries || []).filter((item) => item.contactId === contact.id && item.stoppedAt).forEach((item) => events.push({ id:`job-time-${item.id}`,at:item.stoppedAt,type:"task",title:`Job time recorded · ${jobTimeHours(item).toFixed(2)} hours`,detail:`${jobName(item.jobId)||contact.name}${item.billable ? ` · ${money.format(item.hourlyRate)}/hr` : ""}` }));
+  state.calendarTasks.filter((task) => task.contactId === contact.id).forEach((task) => events.push({
+    id: task.id,
+    at: task.createdAt || task.dueAt,
+    type: "task",
+    title: `${task.completed ? "Task completed" : "Task created"}: ${task.title}`,
+    detail: `Due ${formatDateTime(task.dueAt)} · ${task.rep}`,
+  }));
+  events.sort((a, b) => activityTimestamp(b.at) - activityTimestamp(a.at));
+  els.leadActivityTimeline.innerHTML = events.length
+    ? events.map((event) => `
+        <article class="activity-timeline-item">
+          <span class="activity-timeline-dot activity-type-${escapeHtml(event.type)}" aria-hidden="true"></span>
+          <div>
+            <div class="activity-timeline-heading">
+              <strong>${escapeHtml(event.title)}</strong>
+              <time>${escapeHtml(formatDateTime(event.at))}</time>
+            </div>
+            <p>${escapeHtml(event.detail || "")}</p>
+            ${event.actor ? `<small>${escapeHtml(event.actor)}</small>` : ""}
+          </div>
+        </article>
+      `).join("")
+    : '<div class="empty-state">No activity has been recorded for this lead.</div>';
 }
 
 function selectedLeadJob(contact) {
@@ -6222,6 +7107,8 @@ function leadEmailTemplate(contact, job = selectedLeadJob(contact), template = "
   const firstName = String(contact.name || "there").trim().split(/\s+/)[0] || "there";
   const company = state.company.name || "our team";
   const sender = state.currentUser.name || company;
+  const configured=(state.emailTemplates||[]).find((item)=>item.id===template&&item.active!==false);
+  if(configured){const tokens={"{{first_name}}":firstName,"{{customer_name}}":contact.name||"","{{project_name}}":projectLabel,"{{company_name}}":company,"{{sender_name}}":sender};const merge=(value)=>Object.entries(tokens).reduce((text,[token,replacement])=>text.split(token).join(replacement),String(value||""));return {fromEmail:googleIntegrationState.providerEmail||state.currentUser.email||state.company.email||"",toEmail:contact.email||"",subject:merge(configured.subjectTemplate),message:merge(configured.bodyTemplate)};}
   const choices = {
     inspection: [`Inspection confirmation for ${projectLabel}`, `Hi ${firstName},\n\nThis is a confirmation regarding the inspection for ${projectLabel}. Please let me know if the scheduled time still works or if anything has changed.\n\nThank you,\n${sender}`],
     estimate: [`Estimate follow-up for ${projectLabel}`, `Hi ${firstName},\n\nI wanted to follow up on the estimate for ${projectLabel}. I am happy to answer any questions or review the scope with you.\n\nThank you,\n${sender}`],
@@ -6246,6 +7133,7 @@ function applyLeadEmailTemplate(contact, job, template = "follow-up") {
 function renderLeadEmail(contact) {
   if (!els.leadEmailForm) return;
   const job = selectedLeadJob(contact);
+  if(els.leadEmailTemplate){const builtIn=[['follow-up','General Follow-up'],['inspection','Inspection Confirmation'],['estimate','Estimate Follow-up'],['deposit','Deposit Reminder'],['production','Production Update'],['review','Review Request']];const current=els.leadEmailTemplate.value||'follow-up';els.leadEmailTemplate.innerHTML=[...builtIn,...(state.emailTemplates||[]).filter((item)=>item.active!==false).map((item)=>[item.id,item.name])].map(([value,label])=>`<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');els.leadEmailTemplate.value=[...els.leadEmailTemplate.options].some((option)=>option.value===current)?current:'follow-up';}
   if (els.leadEmailJobSelect) {
     els.leadEmailJobSelect.innerHTML = jobContextOptions(contact, job?.id);
     els.leadEmailJobSelect.disabled = !job;
@@ -6266,7 +7154,19 @@ function renderLeadEmail(contact) {
     if (googleIntegrationState.gmailSend && googleIntegrationState.providerEmail) fromField.value = googleIntegrationState.providerEmail;
   }
   if (els.leadEmailHistory) {
-    const emails = [...(job?.emails || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const scheduled = (state.scheduledMessages || [])
+      .filter((item) => item.contactId === contact.id && item.jobId === (job?.id || ""))
+      .map((item) => ({
+        subject: item.subject,
+        message: item.body,
+        createdAt: item.scheduledFor,
+        direction: "outbound",
+        deliveryStatus: item.status || "queued",
+        toEmail: item.recipient,
+        createdBy: "Scheduled message",
+        scheduled: true,
+      }));
+    const emails = [...(job?.emails || []), ...scheduled].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     els.leadEmailHistory.innerHTML = emails.length
       ? emails
           .map(
@@ -6276,7 +7176,7 @@ function renderLeadEmail(contact) {
                   <strong>${escapeHtml(email.subject || "Client email")}</strong>
                   <span>${escapeHtml(formatDateTime(email.createdAt))}</span>
                 </div>
-                <span class="status-pill">${email.direction === "inbound" ? "Reply received" : escapeHtml(email.deliveryStatus === "sent" ? "Sent with Gmail" : email.toEmail || "No recipient")}</span>
+                <span class="status-pill">${email.direction === "inbound" ? "Reply received" : email.scheduled ? escapeHtml(`${email.deliveryStatus || "queued"} · ${formatDateTime(email.createdAt)}`) : escapeHtml(email.deliveryStatus === "sent" ? "Sent with Gmail" : email.toEmail || "No recipient")}</span>
                 <p>${nl2br(email.message || "No message saved")}</p>
                 ${email.attachmentName ? `<small><strong>Attachment:</strong> ${escapeHtml(email.attachmentName)}</small>` : ""}
                 <small>Prepared by ${escapeHtml(email.createdBy || "CRM user")}</small>
@@ -6305,7 +7205,17 @@ function leadEmailPayload() {
     toEmail: formData.get("toEmail").trim(),
     subject: formData.get("subject").trim(),
     message: formData.get("message").trim(),
+    scheduledFor: String(formData.get("scheduledFor") || ""),
+    templateId: String(formData.get("template") || ""),
   };
+}
+
+async function scheduleLeadEmail() {
+  if(!requireAction("sendEmail"))return;const payload=leadEmailPayload();if(!payload)return;
+  if(!payload.toEmail||!payload.subject||!payload.message)return showToast("Add the recipient, subject, and message first");
+  const scheduledAt=new Date(payload.scheduledFor).getTime();if(!payload.scheduledFor||!Number.isFinite(scheduledAt)||scheduledAt<=Date.now())return showToast("Choose a future date and time");
+  const message={id:uid("scheduledmessage"),contactId:payload.contact.id,jobId:payload.job.id,templateId:payload.templateId,recipient:payload.toEmail,subject:payload.subject,body:payload.message,scheduledFor:new Date(scheduledAt).toISOString(),status:"queued",attempts:0};
+  try{if(canUseCloudSync()){const {error}=await cloudClient.rpc("crm_schedule_email",{p_message:{id:message.id,lead_id:message.contactId,job_id:message.jobId,template_id:message.templateId,recipient:message.recipient,subject:message.subject,body:message.body,scheduled_for:message.scheduledFor}});if(error)throw error;await initializeCommunications();}else state.scheduledMessages.unshift(message);saveState({localOnly:true});renderLeadEmail(payload.contact);showToast(`Email scheduled for ${formatDateTime(message.scheduledFor)}`);}catch(error){console.error(error);showToast(error?.message||"The email could not be scheduled");}
 }
 
 function mailtoUrl(toEmail, subject, message) {
@@ -6618,6 +7528,7 @@ function renderLeadDocuments(contact) {
                               </div>
                               <div class="row-actions">
                                 <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="download"></span>Download</button>
+                                <button class="secondary-button" type="button" data-action="document-operations" data-document-id="${escapeHtml(document.id)}"><span aria-hidden="true" data-icon="message"></span>Details</button>
                                 ${nativeSmartDocumentButton(document)}
                                 ${zohoSmartDocumentButton(document)}
                                 ${googleDriveDocumentButton(document)}
@@ -7425,6 +8336,7 @@ function renderCompanyDocumentRow(document, folders = companyDocumentFolders()) 
     <div class="row-actions company-document-row-actions">
       ${changeable ? `<select class="company-document-move-select" data-company-document-folder="${escapeHtml(document.id)}" aria-label="Move ${escapeHtml(document.name)} to folder" title="Move to another folder">${folders.map((folder) => `<option value="${escapeHtml(folder.id)}" ${folder.id === currentFolder?.id ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}</select>` : ""}
       <button class="mini-button" type="button" data-action="download-document" data-document-id="${escapeHtml(document.id)}" title="Open ${escapeHtml(document.name)}" aria-label="Open ${escapeHtml(document.name)}"><span aria-hidden="true" data-icon="open"></span></button>
+      <button class="mini-button" type="button" data-action="document-operations" data-document-id="${escapeHtml(document.id)}" title="Document access, versions, and comments" aria-label="Document details for ${escapeHtml(document.name)}"><span aria-hidden="true" data-icon="message"></span></button>
       ${changeable ? `${nativeSmartDocumentButton(document)}
       ${zohoSmartDocumentButton(document)}
       ${googleDriveDocumentButton(document)}
@@ -7630,6 +8542,18 @@ function findManagedDocument(documentId) {
   const record = lead?.documents?.find((item) => item.id === documentId) || state.companyDocuments.find((item) => item.id === documentId);
   return { record, lead };
 }
+
+function renderDocumentOperations(document) {
+  if(!document||!els.documentOperationsForm)return;
+  const {lead}=findManagedDocument(document.id);const jobId=document.jobId||"";const access=state.documentAccess.find((item)=>item.documentId===document.id)||{customerVisible:false,downloadAllowed:true};
+  els.documentOperationsTitle.textContent=document.name||"Document details";els.documentOperationsForm.elements.documentId.value=document.id;els.documentOperationsForm.elements.customerVisible.value=String(Boolean(access.customerVisible));els.documentOperationsForm.elements.downloadAllowed.value=String(access.downloadAllowed!==false);els.documentOperationsForm.elements.comment.value="";els.documentOperationsForm.elements.commentCustomerVisible.checked=false;
+  const versions=(state.documentVersions||[]).filter((item)=>item.documentId===document.id).sort((a,b)=>b.versionNumber-a.versionNumber);els.documentVersionHistory.innerHTML=versions.length?versions.map((item)=>`<article><strong>Version ${item.versionNumber}</strong><span>${escapeHtml(item.fileName)} · ${escapeHtml(formatDateTime(item.createdAt))}</span></article>`).join(""):`<article><strong>Version ${document.versionNumber||1}</strong><span>${escapeHtml(document.name||"")} · current CRM file</span></article>`;
+  const comments=(state.documentComments||[]).filter((item)=>item.documentId===document.id).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));els.documentCommentList.innerHTML=comments.length?comments.map((item)=>`<article><strong>${item.customerVisible?"Customer-visible":"Internal"}</strong><span>${nl2br(item.body)} · ${escapeHtml(formatDateTime(item.createdAt))}</span></article>`).join(""):'<div class="empty-state">No comments yet.</div>';
+  els.documentOperationsForm.dataset.leadId=lead?.id||"";els.documentOperationsForm.dataset.jobId=jobId;setSaveState(els.documentOperationsStatus,"","");hydrateIcons(els.documentOperationsDialog);els.documentOperationsDialog.showModal();
+}
+
+async function saveDocumentOperations(event){event.preventDefault();const form=els.documentOperationsForm;const documentId=form.elements.documentId.value;const {record,lead}=findManagedDocument(documentId);if(!record)return;const leadId=lead?.id||"";const jobId=form.dataset.jobId||record.jobId||"";const access={documentId,contactId:leadId,jobId,customerVisible:form.elements.customerVisible.value==="true",downloadAllowed:form.elements.downloadAllowed.value==="true",updatedAt:new Date().toISOString()};const body=form.elements.comment.value.trim();const comment=body?{id:uid("doccomment"),documentId,contactId:leadId,jobId,body,customerVisible:form.elements.commentCustomerVisible.checked,createdAt:new Date().toISOString()}:null;
+  try{if(canUseCloudSync()){const accessRow={company_state_id:supabaseStateId(),document_id:documentId,lead_id:leadId,job_id:jobId,customer_visible:access.customerVisible,download_allowed:access.downloadAllowed,updated_by:authSession.user.id};const {error:accessError}=await cloudClient.from("crm_document_access").upsert(accessRow,{onConflict:"company_state_id,document_id"});if(accessError)throw accessError;if(comment){const {error}=await cloudClient.from("crm_document_comments").insert({company_state_id:supabaseStateId(),id:comment.id,document_id:documentId,lead_id:leadId,job_id:jobId,body,customer_visible:comment.customerVisible,created_by:authSession.user.id});if(error)throw error;}await initializeDocumentOperations();}else{state.documentAccess=[access,...state.documentAccess.filter((item)=>item.documentId!==documentId)];if(comment)state.documentComments.unshift(comment);saveState({localOnly:true});}setSaveState(els.documentOperationsStatus,"Document settings saved","success");renderDocumentOperations(record);}catch(error){console.error(error);setSaveState(els.documentOperationsStatus,error?.message||"Document settings could not be saved","error");}}
 
 function defaultSmartDocumentFields(lead) {
   return [
@@ -8605,6 +9529,7 @@ function renderCalendarFormOptions() {
       (contact) => `<option value="${contact.id}">${escapeHtml(contact.name)} (${escapeHtml(contact.status)})</option>`,
     ),
   ].join("");
+  renderCalendarTaskJobOptions(els.calendarTaskContact.value, els.calendarTaskForm?.elements?.jobId?.value || "");
   const repField = els.calendarTaskForm?.elements?.rep;
   const taskIdField = els.calendarTaskForm?.elements?.taskId;
   if (repField && !taskIdField?.value && !repField.value.trim()) {
@@ -8612,20 +9537,80 @@ function renderCalendarFormOptions() {
   }
 }
 
+function renderCalendarTaskJobOptions(contactId = "", selectedJobId = "") {
+  if (!els.calendarTaskJob) return;
+  const contact = getContact(contactId);
+  const jobs = contact ? contactJobs(contact) : [];
+  els.calendarTaskJob.innerHTML = [
+    '<option value="">No related job</option>',
+    ...jobs.map((job) => `<option value="${escapeHtml(job.id)}" ${job.id === selectedJobId ? "selected" : ""}>${escapeHtml(job.name)}</option>`),
+  ].join("");
+  els.calendarTaskJob.disabled = !jobs.length;
+}
+
+function taskChecklistProgress(task) {
+  const total = (task.checklist || []).length;
+  const completed = (task.checklist || []).filter((item) => item.completed).length;
+  return { total, completed, percent: total ? Math.round(completed / total * 100) : 0 };
+}
+
+function taskTrackedMinutes(task) {
+  return Math.round((task.timeEntries || []).reduce((total, entry) => {
+    const start = activityTimestamp(entry.startedAt);
+    const stop = activityTimestamp(entry.stoppedAt) || Date.now();
+    return total + Math.max(0, stop - start);
+  }, 0) / 60000);
+}
+
 function renderTaskCard(task, options = {}) {
   const contact = getContact(task.contactId);
+  const job = contact ? contactJobs(contact).find((item) => item.id === task.jobId) : null;
   const calendarUrl = task.googleEventUrl || googleCalendarUrl(task);
   const due = localTimestamp(task.dueAt);
   const overdue = !task.completed && Number.isFinite(due) && due < Date.now();
+  const progress = taskChecklistProgress(task);
+  const activeTimer = (task.timeEntries || []).some((entry) => !entry.stoppedAt);
+  const statusLabel = ({ not_started: "Not started", in_progress: "In progress", blocked: "Blocked", completed: "Completed", cancelled: "Cancelled" })[task.workflowStatus] || "Not started";
   return `
-    <article class="task-card ${overdue ? "task-overdue" : ""}">
+    <article class="task-card task-priority-${escapeHtml(task.priority)} ${task.completed ? "is-complete" : ""} ${overdue ? "task-overdue" : ""}">
       <div>
-        <strong>${escapeHtml(task.title)}</strong>
-        ${task.completed ? '<span class="task-state">Completed</span>' : overdue ? '<span class="task-state task-state-overdue">Overdue</span>' : ""}
+        <div class="task-title-row">
+          <strong>${escapeHtml(task.title)}</strong>
+          <span class="status-pill">${escapeHtml(task.priority)} priority</span>
+          <span class="status-pill">${escapeHtml(statusLabel)}</span>
+          ${task.completed ? '<span class="task-state">Completed</span>' : overdue ? '<span class="task-state task-state-overdue">Overdue</span>' : ""}
+        </div>
         <span>${escapeHtml(task.rep)} - ${escapeHtml(formatDateTime(task.dueAt))}</span>
         ${contact ? `<span>Related lead: ${escapeHtml(contact.name)}</span>` : ""}
+        ${job ? `<span>Related job: ${escapeHtml(job.name)}</span>` : ""}
+        ${task.recurrence !== "none" ? `<span>Repeats ${escapeHtml(task.recurrence)}</span>` : ""}
+        ${task.followers?.length ? `<span>Followers: ${escapeHtml(task.followers.join(", "))}</span>` : ""}
         ${taskGoogleSyncLabel(task)}
         ${task.notes && !options.compact ? `<p>${nl2br(task.notes)}</p>` : ""}
+        ${!options.compact && progress.total ? `
+          <div class="task-progress"><span style="width:${progress.percent}%"></span></div>
+          <small>${progress.completed} of ${progress.total} checklist items complete</small>
+          <div class="task-checklist">
+            ${(task.checklist || []).map((item) => `
+              <label class="task-checklist-item ${item.completed ? "is-complete" : ""}">
+                <input type="checkbox" data-action="toggle-task-checklist" data-task-id="${task.id}" data-checklist-id="${item.id}" ${item.completed ? "checked" : ""} />
+                <span>${escapeHtml(item.label)}</span>
+              </label>
+            `).join("")}
+          </div>
+        ` : ""}
+        ${!options.compact && task.comments?.length ? `
+          <div class="task-comments">
+            ${task.comments.slice(-3).map((comment) => `<p><strong>${escapeHtml(comment.author)}</strong> ${escapeHtml(comment.body)} <small>${escapeHtml(formatDateTime(comment.createdAt))}</small></p>`).join("")}
+          </div>
+        ` : ""}
+        ${!options.compact ? `
+          <form class="task-comment-form" data-task-comment-form data-task-id="${task.id}">
+            <input name="comment" required maxlength="10000" autocomplete="off" placeholder="Add a comment" aria-label="Comment on ${escapeHtml(task.title)}" />
+            <button class="mini-button" type="submit" aria-label="Post comment"><span aria-hidden="true" data-icon="send"></span></button>
+          </form>
+          <small>${taskTrackedMinutes(task)} minute${taskTrackedMinutes(task) === 1 ? "" : "s"} tracked</small>
+        ` : ""}
         ${task.googleSyncError && !options.compact ? `<p class="field-error">${escapeHtml(task.googleSyncError)}</p>` : ""}
       </div>
       <div class="row-actions">
@@ -8636,7 +9621,11 @@ function renderTaskCard(task, options = {}) {
         ${
           options.compact
             ? ""
-            : `<button class="mini-button" type="button" title="Edit task" aria-label="Edit task" data-action="edit-calendar-task" data-task-id="${task.id}">
+            : `<button class="secondary-button" type="button" data-action="toggle-task-timer" data-task-id="${task.id}">
+                <span aria-hidden="true" data-icon="${activeTimer ? "x" : "calendar"}"></span>
+                ${activeTimer ? "Stop timer" : "Start timer"}
+              </button>
+              <button class="mini-button" type="button" title="Edit task" aria-label="Edit task" data-action="edit-calendar-task" data-task-id="${task.id}">
                 <span aria-hidden="true" data-icon="edit"></span>
               </button>
               <button class="mini-button" type="button" title="Mark complete" aria-label="Mark task complete" data-action="complete-calendar-task" data-task-id="${task.id}" ${task.completed ? "disabled" : ""}>
@@ -8677,12 +9666,23 @@ async function saveCalendarTask(event) {
     title: formData.get("title").trim(),
     rep,
     contactId: formData.get("contactId"),
+    jobId: formData.get("jobId"),
     dueAt: formData.get("dueAt"),
     duration: number(formData.get("duration")),
     reminder: formData.get("reminder"),
     notes: formData.get("notes").trim(),
+    priority: formData.get("priority"),
+    workflowStatus: formData.get("workflowStatus"),
+    recurrence: formData.get("recurrence"),
+    followers: String(formData.get("followers") || "").split(","),
+    checklist: String(formData.get("checklistText") || "").split(/\r?\n/).map((label, index) => {
+      const cleanLabel = label.trim();
+      const previous = (existingTask?.checklist || []).find((item) => item.label.toLowerCase() === cleanLabel.toLowerCase());
+      return cleanLabel ? { ...(previous || {}), id: previous?.id || uid("check"), label: cleanLabel, position: index } : null;
+    }).filter(Boolean),
     createdAt: existingTask?.createdAt || new Date().toISOString(),
-    completed: existingTask?.completed || false,
+    updatedAt: new Date().toISOString(),
+    completed: formData.get("workflowStatus") === "completed",
     ownerUserId: owner.userId || "",
     ownerEmail: owner.email || "",
     ownerName: owner.name || "",
@@ -8743,11 +9743,91 @@ function fillCalendarTaskForm(task) {
   form.elements.taskId.value = task.id || "";
   form.elements.rep.value = task.rep || "";
   form.elements.contactId.value = task.contactId || "";
+  renderCalendarTaskJobOptions(task.contactId, task.jobId);
+  form.elements.jobId.value = task.jobId || "";
   form.elements.title.value = task.title || "";
   form.elements.dueAt.value = dateTimeLocalValue(task.dueAt);
   form.elements.duration.value = task.duration || 30;
   form.elements.reminder.value = task.reminder || "popup";
   form.elements.notes.value = task.notes || "";
+  form.elements.priority.value = task.priority || "normal";
+  form.elements.workflowStatus.value = task.workflowStatus || "not_started";
+  form.elements.recurrence.value = task.recurrence || "none";
+  form.elements.followers.value = (task.followers || []).join(", ");
+  form.elements.checklistText.value = (task.checklist || []).map((item) => item.label).join("\n");
+}
+
+async function persistTaskWorkflowUpdate(taskId) {
+  saveState({ localOnly: true });
+  render();
+  if (!canUseCloudSync()) return true;
+  try {
+    const saved = await persistDurableRecordNow("task", taskId, (data) => data.id === taskId);
+    if (!saved) queueDurableRecordsSave();
+    else queueCloudSave();
+    return saved;
+  } catch (error) {
+    console.warn("Task workflow update could not be confirmed", error);
+    queueDurableRecordsSave();
+    return false;
+  }
+}
+
+async function toggleTaskChecklist(taskId, checklistId) {
+  if (!requireAction("manageTasks")) return;
+  state.calendarTasks = state.calendarTasks.map((task) => {
+    if (task.id !== taskId) return task;
+    const checklist = (task.checklist || []).map((item) => item.id === checklistId
+      ? { ...item, completed: !item.completed, completedAt: !item.completed ? new Date().toISOString() : "" }
+      : item);
+    const progress = taskChecklistProgress({ checklist });
+    return normalizeCalendarTask({
+      ...task,
+      checklist,
+      workflowStatus: progress.total && progress.completed === progress.total ? "completed" : task.workflowStatus === "completed" ? "in_progress" : task.workflowStatus,
+      completed: progress.total && progress.completed === progress.total,
+      updatedAt: new Date().toISOString(),
+    });
+  });
+  await persistTaskWorkflowUpdate(taskId);
+}
+
+async function addTaskComment(taskId, body) {
+  if (!requireAction("manageTasks")) return;
+  const cleanBody = String(body || "").trim();
+  if (!cleanBody) return;
+  state.calendarTasks = state.calendarTasks.map((task) => task.id === taskId
+    ? normalizeCalendarTask({
+        ...task,
+        comments: [...(task.comments || []), {
+          id: uid("comment"),
+          body: cleanBody,
+          author: state.currentUser.name || state.currentUser.email || "CRM user",
+          createdAt: new Date().toISOString(),
+        }],
+        updatedAt: new Date().toISOString(),
+      })
+    : task);
+  await persistTaskWorkflowUpdate(taskId);
+}
+
+async function toggleTaskTimer(taskId) {
+  if (!requireAction("manageTasks")) return;
+  const now = new Date().toISOString();
+  state.calendarTasks = state.calendarTasks.map((task) => {
+    if (task.id !== taskId) return task;
+    const active = (task.timeEntries || []).find((entry) => !entry.stoppedAt);
+    const timeEntries = active
+      ? (task.timeEntries || []).map((entry) => entry.id === active.id ? { ...entry, stoppedAt: now } : entry)
+      : [...(task.timeEntries || []), { id: uid("time"), startedAt: now, stoppedAt: "", userEmail: state.currentUser.email || "" }];
+    return normalizeCalendarTask({
+      ...task,
+      timeEntries,
+      workflowStatus: active ? task.workflowStatus : task.workflowStatus === "not_started" ? "in_progress" : task.workflowStatus,
+      updatedAt: now,
+    });
+  });
+  await persistTaskWorkflowUpdate(taskId);
 }
 
 async function completeCalendarTask(taskId) {
@@ -8755,12 +9835,52 @@ async function completeCalendarTask(taskId) {
   const existing = state.calendarTasks.find((task) => task.id === taskId);
   if (!existing) return;
   if (!(await removeCalendarTaskFromGoogle(existing))) return;
+  const completedAt = new Date().toISOString();
   state.calendarTasks = state.calendarTasks.map((task) =>
-    task.id === taskId ? { ...task, completed: true, googleEventId: "", googleEventUrl: "", googleSyncStatus: "synced", googleSyncedAt: new Date().toISOString(), googleSyncError: "" } : task,
+    task.id === taskId ? normalizeCalendarTask({
+      ...task,
+      completed: true,
+      workflowStatus: "completed",
+      updatedAt: completedAt,
+      googleEventId: "",
+      googleEventUrl: "",
+      googleSyncStatus: "synced",
+      googleSyncedAt: completedAt,
+      googleSyncError: "",
+    }) : task,
   );
-  saveState();
-  render();
-  showToast("Task marked complete");
+  let nextTask = null;
+  if (existing.recurrence && existing.recurrence !== "none") {
+    const nextDue = new Date(existing.dueAt);
+    if (existing.recurrence === "daily") nextDue.setDate(nextDue.getDate() + 1);
+    if (existing.recurrence === "weekly") nextDue.setDate(nextDue.getDate() + 7);
+    if (existing.recurrence === "monthly") nextDue.setMonth(nextDue.getMonth() + 1);
+    if (existing.recurrence === "yearly") nextDue.setFullYear(nextDue.getFullYear() + 1);
+    nextTask = normalizeCalendarTask({
+      ...existing,
+      id: uid("task"),
+      dueAt: nextDue.toISOString(),
+      workflowStatus: "not_started",
+      completed: false,
+      checklist: (existing.checklist || []).map((item) => ({ ...item, id: uid("check"), completed: false, completedAt: "" })),
+      comments: [],
+      timeEntries: [],
+      createdAt: completedAt,
+      updatedAt: completedAt,
+      googleEventId: "",
+      googleEventUrl: "",
+      googleSyncStatus: "pending",
+      googleSyncedAt: "",
+      googleSyncError: "",
+    });
+    state.calendarTasks.unshift(nextTask);
+  }
+  await persistTaskWorkflowUpdate(taskId);
+  if (nextTask) {
+    if (canUseCloudSync()) await persistDurableRecordNow("task", nextTask.id, (data) => data.id === nextTask.id);
+    await syncCalendarTaskToGoogle(nextTask);
+  }
+  showToast(nextTask ? "Task completed and the next recurring task was created" : "Task marked complete");
 }
 
 async function deleteCalendarTask(taskId) {
@@ -8769,7 +9889,9 @@ async function deleteCalendarTask(taskId) {
   if (!task) return;
   if (!(await removeCalendarTaskFromGoogle(task))) return;
   state.calendarTasks = state.calendarTasks.filter((task) => task.id !== taskId);
-  saveState();
+  saveState({ localOnly: true });
+  queueDurableRecordsSave();
+  queueCloudSave();
   render();
   showToast("Task deleted");
 }
@@ -9324,6 +10446,441 @@ function startSquarePoll() {
   squarePollInterval = setInterval(pollSquarePayments, 30000);
 }
 
+function internalInvoiceForEstimate(estimateId) {
+  return (state.invoices || []).find((invoice) => invoice.estimateId === estimateId && invoice.provider === "internal");
+}
+
+function nextInternalInvoiceNumber(estimate) {
+  const base = `INV-${String(estimate.estimateNumber || estimate.projectNumber || estimate.id).replace(/^EST-/i, "")}`;
+  const used = new Set((state.invoices || []).map((invoice) => invoice.invoiceNumber));
+  if (!used.has(base)) return base;
+  let suffix = 2;
+  while (used.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
+}
+
+function dueDateAfter(issueDate, days = 14) {
+  const date = new Date(`${issueDate}T12:00:00`);
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+async function createInternalInvoiceFromEstimate(estimateId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can create an invoice");
+  const estimate = state.estimates.find((item) => item.id === estimateId);
+  const contact = estimate && getEstimateContact(estimate);
+  const job = contact && contactJobs(contact).find((item) => item.id === estimate.jobId);
+  if (!estimate || estimate.status !== "Won" || !contact || !job || job.status !== "Won") {
+    return showToast("Save the won estimate and complete its job-stage checklist before creating an invoice");
+  }
+  const existing = internalInvoiceForEstimate(estimate.id);
+  if (existing) return showToast(`${existing.invoiceNumber} already exists for this estimate`);
+  if (invalidEstimateLineItems(estimate).length) return showToast("Fix incomplete estimate line items before creating the invoice");
+
+  const totals = totalsFor(estimate);
+  const issueDate = todayISO();
+  const owner = currentOwner();
+  const invoice = normalizeInvoice({
+    id: uid("invoice"),
+    invoiceNumber: nextInternalInvoiceNumber(estimate),
+    contactId: contact.id,
+    leadId: contact.id,
+    jobId: job.id,
+    estimateId: estimate.id,
+    status: "draft",
+    subtotal: totals.subtotal,
+    taxAmount: totals.tax,
+    taxRate: number(estimate.taxRate),
+    totalAmount: totals.total,
+    amountPaid: 0,
+    issueDate,
+    dueDate: dueDateAfter(issueDate),
+    terms: "Due within 14 days",
+    notes: estimate.notes || "",
+    ownerUserId: estimate.ownerUserId || owner.userId,
+    ownerEmail: estimate.ownerEmail || owner.email,
+    ownerName: estimate.ownerName || owner.name,
+    createdAt: new Date().toISOString(),
+    items: estimate.items.map((item, position) => ({
+      id: uid("invoiceitem"),
+      description: [item.title, item.description].filter(Boolean).join(" — "),
+      quantity: number(item.quantity),
+      unitPrice: number(item.rate),
+      amount: estimateLineAmount(item),
+      position,
+    })),
+  });
+
+  try {
+    if (canUseCloudSync()) {
+      if (!financialLedgerReady) throw new Error("The financial ledger is not ready yet");
+      const { error } = await cloudClient.rpc("crm_create_invoice_from_estimate", {
+        p_invoice: {
+          id: invoice.id,
+          invoice_number: invoice.invoiceNumber,
+          lead_id: invoice.leadId,
+          job_id: invoice.jobId,
+          estimate_id: invoice.estimateId,
+          subtotal: invoice.subtotal,
+          tax_amount: invoice.taxAmount,
+          total_amount: invoice.totalAmount,
+          issue_date: invoice.issueDate,
+          due_date: invoice.dueDate,
+          terms: invoice.terms,
+          notes: invoice.notes,
+        },
+        p_items: invoice.items.map((item) => ({
+          id: item.id,
+          description: item.description,
+          quantity: item.quantity,
+          unit_price: item.unitPrice,
+          amount: item.amount,
+          position: item.position,
+        })),
+      });
+      if (error) throw error;
+      if (!(await initializeFinancialLedger())) throw new Error("The invoice was created, but the ledger could not be refreshed");
+    } else {
+      state.invoices.unshift(invoice);
+      saveState({ localOnly: true });
+    }
+    renderInvoicesView();
+    showToast(`${invoice.invoiceNumber} created from ${estimate.estimateNumber}`);
+  } catch (error) {
+    console.error("Invoice conversion failed", error);
+    showToast(error?.message || "The invoice could not be created");
+  }
+}
+
+function financialLedgerEntries() {
+  const entries = [];
+  const paymentIds = new Set();
+  const expenseIds = new Set();
+  (state.invoices || []).forEach((invoice) => entries.push({
+    id: `invoice-${invoice.id}`, at: invoice.issueDate, kind: "Invoice", contactId: invoice.contactId,
+    jobId: invoice.jobId, label: invoice.invoiceNumber, detail: invoice.status, amount: invoice.totalAmount, direction: "debit",
+  }));
+  (state.financialPayments || []).forEach((payment) => {
+    paymentIds.add(payment.id);
+    entries.push({ id: `payment-${payment.id}`, at: payment.receivedAt, kind: "Payment", contactId: payment.contactId,
+      jobId: payment.jobId, label: payment.method, detail: payment.reference || payment.provider, amount: payment.amount, direction: "credit", paymentId: payment.id });
+  });
+  (state.financialExpenses || []).forEach((expense) => {
+    expenseIds.add(expense.id);
+    entries.push({ id: `expense-${expense.id}`, at: expense.expenseDate, kind: "Expense", contactId: expense.contactId,
+      jobId: expense.jobId, label: expense.category, detail: expense.vendor || expense.description, amount: expense.amount, direction: "expense" });
+  });
+  visibleContacts().forEach((contact) => contactJobs(contact).forEach((job) => {
+    (job.manualPayments || []).filter((payment) => !paymentIds.has(payment.id)).forEach((payment) => entries.push({
+      id: `manual-${payment.id}`, at: payment.date || payment.createdAt, kind: "Payment", contactId: contact.id, jobId: job.id,
+      label: payment.method || "Manual", detail: payment.reference || "Recorded in CRM", amount: number(payment.amount), direction: "credit",
+    }));
+    if (number(job.squarePaidAmount) > 0) entries.push({
+      id: `square-${job.id}`, at: job.squareLastPaymentAt || job.lastPaymentAt, kind: "Payment", contactId: contact.id, jobId: job.id,
+      label: "Square", detail: "Confirmed Square payments", amount: number(job.squarePaidAmount), direction: "credit",
+    });
+    (job.costItems || []).filter((expense) => !expenseIds.has(expense.id)).forEach((expense) => entries.push({
+      id: `cost-${expense.id}`, at: expense.date || expense.createdAt, kind: "Expense", contactId: contact.id, jobId: job.id,
+      label: expense.category || "Job cost", detail: expense.vendor || expense.description || "Recorded job cost", amount: number(expense.amount), direction: "expense",
+    }));
+  }));
+  (state.creditNotes || []).forEach((credit) => entries.push({
+    id: `credit-${credit.id}`, at: credit.issuedAt, kind: "Credit", contactId: credit.contactId, jobId: credit.jobId,
+    label: credit.creditNumber, detail: credit.reason, amount: credit.amount, direction: "credit",
+  }));
+  (state.financialRefunds || []).forEach((refund) => entries.push({
+    id: `refund-${refund.id}`, at: refund.refundedAt, kind: "Refund", contactId: refund.contactId, jobId: refund.jobId,
+    label: "Payment refund", detail: refund.reason, amount: refund.amount, direction: "refund", paymentId: refund.paymentId,
+  }));
+  return entries.sort((a, b) => activityTimestamp(b.at) - activityTimestamp(a.at));
+}
+
+function invoiceCreditTotal(invoiceId) {
+  return (state.creditNotes || [])
+    .filter((credit) => credit.invoiceId === invoiceId && credit.status === "applied")
+    .reduce((sum, credit) => sum + number(credit.amount), 0);
+}
+
+function invoiceOutstanding(invoice) {
+  return Math.max(number(invoice.totalAmount) - number(invoice.amountPaid) - invoiceCreditTotal(invoice.id), 0);
+}
+
+function invoiceAging(invoice) {
+  if (["paid", "credited", "void"].includes(invoice.status) || invoiceOutstanding(invoice) <= 0) return { key: "closed", label: invoice.status };
+  if (!invoice.dueDate) return { key: "open", label: "No due date" };
+  const today = new Date(`${todayISO()}T12:00:00`).getTime();
+  const due = new Date(`${invoice.dueDate}T12:00:00`).getTime();
+  const days = Math.round((due - today) / 86400000);
+  if (days < 0) return { key: "overdue", label: `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue` };
+  if (days <= 7) return { key: "due-soon", label: days === 0 ? "Due today" : `Due in ${days} days` };
+  return { key: "current", label: `Due ${formatDate(invoice.dueDate)}` };
+}
+
+function openInvoicePaymentDialog(invoiceId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can record payments");
+  const invoice = (state.invoices || []).find((item) => item.id === invoiceId);
+  if (!invoice || invoiceOutstanding(invoice) <= 0) return showToast("This invoice has no outstanding balance");
+  els.invoicePaymentForm.reset();
+  els.invoicePaymentForm.elements.invoiceId.value = invoice.id;
+  els.invoicePaymentForm.elements.amount.value = invoiceOutstanding(invoice).toFixed(2);
+  els.invoicePaymentForm.elements.receivedAt.value = todayISO();
+  els.invoicePaymentTitle.textContent = `Record Payment · ${invoice.invoiceNumber}`;
+  els.invoicePaymentDialog.showModal();
+}
+
+function openInvoiceCreditDialog(invoiceId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can apply credits");
+  const invoice = (state.invoices || []).find((item) => item.id === invoiceId);
+  if (!invoice || invoiceOutstanding(invoice) <= 0) return showToast("This invoice has no outstanding balance");
+  els.invoiceCreditForm.reset();
+  els.invoiceCreditForm.elements.invoiceId.value = invoice.id;
+  els.invoiceCreditForm.elements.amount.value = invoiceOutstanding(invoice).toFixed(2);
+  els.invoiceCreditForm.elements.issuedAt.value = todayISO();
+  els.invoiceCreditTitle.textContent = `Apply Credit · ${invoice.invoiceNumber}`;
+  els.invoiceCreditDialog.showModal();
+}
+
+async function recordInvoicePayment(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) return;
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const invoice = (state.invoices || []).find((item) => item.id === data.get("invoiceId"));
+  const amount = parseCurrencyInput(data.get("amount"));
+  if (!invoice || !(amount > 0) || amount > invoiceOutstanding(invoice) + 0.005) return showToast("Enter a payment no greater than the outstanding balance");
+  const payment = normalizeFinancialPayment({
+    id: uid("payment"), contactId: invoice.contactId, jobId: invoice.jobId, amount,
+    method: data.get("method"), reference: data.get("reference"), note: data.get("note"),
+    provider: "manual", receivedAt: `${data.get("receivedAt")}T12:00:00`, createdAt: new Date().toISOString(),
+  });
+  try {
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_record_invoice_payment", { p_payment: {
+        id: payment.id, allocation_id: uid("allocation"), invoice_id: invoice.id, amount: payment.amount,
+        method: payment.method, reference: payment.reference, note: payment.note, provider: payment.provider,
+        received_at: payment.receivedAt,
+      } });
+      if (error) throw error;
+      if (!(await initializeFinancialLedger())) throw new Error("Payment saved, but ledger refresh failed");
+    } else {
+      state.financialPayments.unshift(payment);
+      state.paymentAllocations.unshift(normalizePaymentAllocation({ id: uid("allocation"), paymentId: payment.id, invoiceId: invoice.id, contactId: invoice.contactId, jobId: invoice.jobId, amount }));
+      invoice.amountPaid = Math.round((number(invoice.amountPaid) + amount) * 100) / 100;
+      invoice.status = invoiceOutstanding(invoice) <= 0.005 ? "paid" : "partial";
+      invoice.updatedAt = new Date().toISOString();
+      saveState({ localOnly: true });
+    }
+    els.invoicePaymentDialog.close();
+    renderInvoicesView();
+    showToast(`${money.format(amount)} recorded on ${invoice.invoiceNumber}`);
+  } catch (error) {
+    console.error("Invoice payment failed", error);
+    showToast(error?.message || "The payment could not be recorded");
+  }
+}
+
+async function applyInvoiceCredit(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) return;
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const invoice = (state.invoices || []).find((item) => item.id === data.get("invoiceId"));
+  const amount = parseCurrencyInput(data.get("amount"));
+  const reason = String(data.get("reason") || "").trim();
+  if (!invoice || !(amount > 0) || amount > invoiceOutstanding(invoice) + 0.005 || !reason) return showToast("Enter a valid credit and reason");
+  const credit = normalizeCreditNote({
+    id: uid("credit"), creditNumber: `CR-${invoice.invoiceNumber.replace(/^INV-/i, "")}-${Date.now().toString(36).toUpperCase()}`,
+    invoiceId: invoice.id, contactId: invoice.contactId, jobId: invoice.jobId, amount, reason, status: "applied",
+    issuedAt: data.get("issuedAt"), createdAt: new Date().toISOString(),
+  });
+  try {
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_apply_credit_note", { p_credit: {
+        id: credit.id, credit_number: credit.creditNumber, invoice_id: invoice.id, amount: credit.amount,
+        reason: credit.reason, issued_at: credit.issuedAt,
+      } });
+      if (error) throw error;
+      if (!(await initializeFinancialLedger())) throw new Error("Credit saved, but ledger refresh failed");
+    } else {
+      state.creditNotes.unshift(credit);
+      invoice.status = invoiceOutstanding(invoice) <= 0.005 ? "credited" : number(invoice.amountPaid) > 0 ? "partial" : invoice.status;
+      invoice.updatedAt = new Date().toISOString();
+      saveState({ localOnly: true });
+    }
+    els.invoiceCreditDialog.close();
+    renderInvoicesView();
+    showToast(`${credit.creditNumber} applied to ${invoice.invoiceNumber}`);
+  } catch (error) {
+    console.error("Invoice credit failed", error);
+    showToast(error?.message || "The credit could not be applied");
+  }
+}
+
+function paymentRefundTotal(paymentId) {
+  return (state.financialRefunds || []).filter((refund) => refund.paymentId === paymentId)
+    .reduce((sum, refund) => sum + number(refund.amount), 0);
+}
+
+function populateExpenseJobOptions() {
+  const form = els.financeExpenseForm;
+  if (!form) return;
+  const contact = state.contacts.find((item) => item.id === form.elements.leadId.value);
+  const jobs = contact ? contactJobs(contact) : [];
+  form.elements.jobId.innerHTML = jobs.map((job) => `<option value="${escapeHtml(job.id)}">${escapeHtml(job.name || job.projectNumber || "Job")}</option>`).join("");
+}
+
+function openFinanceExpenseDialog() {
+  if (!canManageManualPayments()) return showToast("Only an administrator can record expenses");
+  const contacts = visibleContacts().filter((contact) => contactJobs(contact).length);
+  if (!contacts.length) return showToast("Create a job before recording an expense");
+  els.financeExpenseForm.reset();
+  els.financeExpenseForm.elements.leadId.innerHTML = contacts.map((contact) => `<option value="${escapeHtml(contact.id)}">${escapeHtml(contact.name)}</option>`).join("");
+  els.financeExpenseForm.elements.expenseDate.value = todayISO();
+  populateExpenseJobOptions();
+  els.financeExpenseDialog.showModal();
+}
+
+async function recordFinanceExpense(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) return;
+  const data = new FormData(event.currentTarget);
+  const expense = normalizeFinancialExpense({
+    id: uid("expense"), contactId: data.get("leadId"), jobId: data.get("jobId"), category: data.get("category"),
+    vendor: data.get("vendor"), description: data.get("description"), amount: parseCurrencyInput(data.get("amount")),
+    expenseDate: data.get("expenseDate"), reference: data.get("reference"), status: "recorded", createdAt: new Date().toISOString(),
+  });
+  if (!(expense.amount > 0) || !expense.contactId || !expense.jobId) return showToast("Enter a valid job expense");
+  try {
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_record_expense", { p_expense: {
+        id: expense.id, lead_id: expense.contactId, job_id: expense.jobId, category: expense.category, vendor: expense.vendor,
+        description: expense.description, amount: expense.amount, expense_date: expense.expenseDate, reference: expense.reference,
+      } });
+      if (error) throw error;
+      if (!(await initializeFinancialLedger())) throw new Error("Expense saved, but the ledger refresh failed");
+    } else {
+      state.financialExpenses.unshift(expense);
+      saveState({ localOnly: true });
+    }
+    els.financeExpenseDialog.close();
+    renderInvoicesView();
+    showToast(`${money.format(expense.amount)} expense recorded`);
+  } catch (error) {
+    console.error("Expense save failed", error);
+    showToast(error?.message || "The expense could not be recorded");
+  }
+}
+
+function openInvoiceRefundDialog(paymentId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can record refunds");
+  const payment = (state.financialPayments || []).find((item) => item.id === paymentId);
+  const refundable = payment ? Math.max(payment.amount - paymentRefundTotal(payment.id), 0) : 0;
+  if (!payment || refundable <= 0) return showToast("This payment has no refundable balance");
+  els.invoiceRefundForm.reset();
+  els.invoiceRefundForm.elements.paymentId.value = payment.id;
+  els.invoiceRefundForm.elements.amount.value = refundable.toFixed(2);
+  els.invoiceRefundForm.elements.refundedAt.value = todayISO();
+  els.invoiceRefundTitle.textContent = `Record Refund · ${payment.reference || payment.method}`;
+  els.invoiceRefundDialog.showModal();
+}
+
+async function recordInvoiceRefund(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) return;
+  const data = new FormData(event.currentTarget);
+  const payment = (state.financialPayments || []).find((item) => item.id === data.get("paymentId"));
+  const amount = parseCurrencyInput(data.get("amount"));
+  const refundable = payment ? Math.max(payment.amount - paymentRefundTotal(payment.id), 0) : 0;
+  const reason = String(data.get("reason") || "").trim();
+  if (!payment || !(amount > 0) || amount > refundable + 0.005 || !reason) return showToast("Enter a valid refund and reason");
+  const allocation = (state.paymentAllocations || []).find((item) => item.paymentId === payment.id);
+  const refund = normalizeFinancialRefund({ id: uid("refund"), paymentId: payment.id, invoiceId: allocation?.invoiceId || "", contactId: payment.contactId, jobId: payment.jobId, amount, reason, refundedAt: `${data.get("refundedAt")}T12:00:00`, provider: "manual" });
+  try {
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_record_refund", { p_refund: { id: refund.id, payment_id: payment.id, amount, reason, refunded_at: refund.refundedAt, provider: "manual" } });
+      if (error) throw error;
+      if (!(await initializeFinancialLedger())) throw new Error("Refund saved, but the ledger refresh failed");
+    } else {
+      state.financialRefunds.unshift(refund);
+      const invoice = (state.invoices || []).find((item) => item.id === allocation?.invoiceId);
+      if (invoice) {
+        invoice.amountPaid = Math.max(invoice.amountPaid - amount, 0);
+        invoice.status = invoice.amountPaid > 0 ? "partial" : invoice.dueDate && invoice.dueDate < todayISO() ? "overdue" : "sent";
+      }
+      saveState({ localOnly: true });
+    }
+    els.invoiceRefundDialog.close();
+    renderInvoicesView();
+    showToast(`${money.format(amount)} refund recorded`);
+  } catch (error) {
+    console.error("Refund save failed", error);
+    showToast(error?.message || "The refund could not be recorded");
+  }
+}
+
+function openInvoiceScheduleDialog(invoiceId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can schedule invoices");
+  const invoice = (state.invoices || []).find((item) => item.id === invoiceId);
+  if (!invoice) return;
+  const existing = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id);
+  els.invoiceScheduleForm.reset();
+  els.invoiceScheduleForm.elements.invoiceId.value = invoice.id;
+  els.invoiceScheduleForm.elements.cadence.value = existing?.cadence || "monthly";
+  els.invoiceScheduleForm.elements.nextIssueDate.value = existing?.nextIssueDate || addDaysISO(30);
+  els.invoiceScheduleForm.elements.dueDays.value = existing?.dueDays ?? 14;
+  els.invoiceScheduleForm.elements.remainingCount.value = existing?.remainingCount ?? "";
+  els.invoiceScheduleTitle.textContent = `Recurring Schedule · ${invoice.invoiceNumber}`;
+  els.invoiceScheduleDialog.showModal();
+}
+
+async function saveInvoiceSchedule(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) return;
+  const data = new FormData(event.currentTarget);
+  const invoice = (state.invoices || []).find((item) => item.id === data.get("invoiceId"));
+  if (!invoice) return;
+  const existing = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id);
+  const schedule = normalizeInvoiceSchedule({ id: existing?.id || uid("schedule"), templateInvoiceId: invoice.id, contactId: invoice.contactId, jobId: invoice.jobId, cadence: data.get("cadence"), nextIssueDate: data.get("nextIssueDate"), dueDays: data.get("dueDays"), remainingCount: data.get("remainingCount") ? Number(data.get("remainingCount")) : null, active: true });
+  try {
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_save_invoice_schedule", { p_schedule: { id: schedule.id, template_invoice_id: invoice.id, cadence: schedule.cadence, next_issue_date: schedule.nextIssueDate, due_days: schedule.dueDays, remaining_count: schedule.remainingCount ?? "" } });
+      if (error) throw error;
+      if (!(await initializeFinancialLedger())) throw new Error("Schedule saved, but the ledger refresh failed");
+    } else {
+      state.invoiceSchedules = [schedule, ...(state.invoiceSchedules || []).filter((item) => item.templateInvoiceId !== invoice.id)];
+      saveState({ localOnly: true });
+    }
+    els.invoiceScheduleDialog.close();
+    renderInvoicesView();
+    showToast(`Recurring schedule saved for ${invoice.invoiceNumber}`);
+  } catch (error) {
+    console.error("Invoice schedule failed", error);
+    showToast(error?.message || "The schedule could not be saved");
+  }
+}
+
+async function runRevenueAutomation() {
+  if (!canManageManualPayments()) return;
+  try {
+    if (canUseCloudSync()) {
+      const [{ data: created, error: recurringError }, { data: queued, error: noticeError }] = await Promise.all([
+        cloudClient.rpc("crm_generate_due_recurring_invoices", { p_as_of: todayISO() }),
+        cloudClient.rpc("crm_enqueue_due_notices", { p_as_of: todayISO() }),
+      ]);
+      if (recurringError) throw recurringError;
+      if (noticeError) throw noticeError;
+      if (!(await initializeFinancialLedger())) throw new Error("Automation ran, but the ledger refresh failed");
+      renderInvoicesView();
+      showToast(`${number(created)} recurring draft${number(created) === 1 ? "" : "s"} created · ${number(queued)} reminder${number(queued) === 1 ? "" : "s"} queued`);
+      return;
+    }
+    showToast("Revenue automation requires the shared database");
+  } catch (error) {
+    console.error("Revenue automation failed", error);
+    showToast(error?.message || "Revenue automation could not run");
+  }
+}
+
 function renderInvoicesView() {
   if (!els.invoicesList) return;
   startSquarePoll();
@@ -9333,29 +10890,102 @@ function renderInvoicesView() {
     .filter((estimate) => estimate.squareInvoiceId)
     .sort((a, b) => String(a.paymentUpdatedAt || "").localeCompare(String(b.paymentUpdatedAt || "")))
     .map((estimate) => [estimate.squareInvoiceId, estimate])).values()];
-  const totalPaid = financialInvoices.reduce((sum, estimate) => sum + number(estimate.paidAmount), 0);
-  const totalPending = financialInvoices
-    .reduce((sum, estimate) => sum + Math.max((number(estimate.contractValue) || totalsFor(estimate).total) - number(estimate.paidAmount), 0), 0);
+  const internalInvoices = [...(state.invoices || [])].sort((a, b) => activityTimestamp(b.issueDate) - activityTimestamp(a.issueDate));
+  const convertedEstimateIds = new Set(internalInvoices.map((invoice) => invoice.estimateId).filter(Boolean));
+  const totalInvoiced = internalInvoices.reduce((sum, invoice) => sum + number(invoice.totalAmount), 0) + financialInvoices
+    .filter((estimate) => !convertedEstimateIds.has(estimate.id))
+    .reduce((sum, estimate) => sum + (number(estimate.contractValue) || totalsFor(estimate).total), 0);
+  const ledgerEntries = financialLedgerEntries();
+  const grossPaid = ledgerEntries.filter((entry) => entry.kind === "Payment").reduce((sum, entry) => sum + number(entry.amount), 0);
+  const totalRefunds = ledgerEntries.filter((entry) => entry.kind === "Refund").reduce((sum, entry) => sum + number(entry.amount), 0);
+  const totalPaid = Math.max(grossPaid - totalRefunds, 0);
+  const totalExpenses = ledgerEntries.filter((entry) => entry.kind === "Expense").reduce((sum, entry) => sum + number(entry.amount), 0);
+  const totalCredits = ledgerEntries.filter((entry) => entry.kind === "Credit").reduce((sum, entry) => sum + number(entry.amount), 0);
+  const totalPending = Math.max(totalInvoiced - totalPaid - totalCredits, 0);
+  const overdueInvoices = internalInvoices.filter((invoice) => invoiceAging(invoice).key === "overdue");
 
   const summaryBar = `
     <div class="invoice-summary-bar">
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Paid</span>
+        <span class="invoice-summary-label">Invoiced</span>
+        <span class="invoice-summary-value">${money.format(totalInvoiced)}</span>
+      </div>
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Collected</span>
         <span class="invoice-summary-value" style="color:var(--green)">${money.format(totalPaid)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Awaiting Payment</span>
+        <span class="invoice-summary-label">Refunded</span>
+        <span class="invoice-summary-value">${money.format(totalRefunds)}</span>
+      </div>
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Outstanding</span>
         <span class="invoice-summary-value" style="color:var(--gold)">${money.format(totalPending)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Square Invoices</span>
-        <span class="invoice-summary-value">${estimates.filter((estimate) => estimate.squareInvoiceId).length}</span>
+        <span class="invoice-summary-label">Expenses</span>
+        <span class="invoice-summary-value">${money.format(totalExpenses)}</span>
       </div>
-      <span class="invoice-poll-indicator" id="squarePollIndicator" title="Checking Square for payments every 30s">⟳ Live</span>
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Gross cash margin</span>
+        <span class="invoice-summary-value">${money.format(totalPaid - totalExpenses)}</span>
+      </div>
+      <div class="invoice-summary-stat">
+        <span class="invoice-summary-label">Overdue</span>
+        <span class="invoice-summary-value ${overdueInvoices.length ? "invoice-overdue-value" : ""}">${overdueInvoices.length}</span>
+      </div>
+      <div class="row-actions"><span class="invoice-poll-indicator" id="squarePollIndicator" title="Checking Square for payments every 30s">⟳ Live</span>${canManageManualPayments() ? '<button class="secondary-button" type="button" data-run-revenue-automation>Run billing automation</button>' : ""}</div>
     </div>
   `;
 
-  els.invoicesList.innerHTML = summaryBar + (estimates.length
+  const internalInvoiceMarkup = `
+    <section class="invoice-ledger-section">
+      <div class="invoice-section-heading"><div><p class="eyebrow">Customer invoices</p><h3>Created from won estimates</h3></div><span class="status-pill">${internalInvoices.length}</span></div>
+      ${internalInvoices.length ? `<div class="invoice-list-table">${internalInvoices.map((invoice) => {
+        const contact = state.contacts.find((item) => item.id === invoice.contactId);
+        const outstanding = invoiceOutstanding(invoice);
+        const aging = invoiceAging(invoice);
+        const schedule = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id && item.active);
+        const expenses = (state.financialExpenses || []).filter((item) => item.jobId === invoice.jobId).reduce((sum, item) => sum + number(item.amount), 0);
+        const grossProfit = number(invoice.amountPaid) - expenses;
+        return `<article class="invoice-list-row">
+          <div><strong>${escapeHtml(invoice.invoiceNumber)}</strong><small>${escapeHtml(contact?.name || "Unknown lead")} · ${escapeHtml(aging.label)}</small>${schedule ? `<small>Repeats ${escapeHtml(schedule.cadence)} · next ${escapeHtml(formatDate(schedule.nextIssueDate))}</small>` : ""}</div>
+          <span class="status-pill invoice-aging-${escapeHtml(aging.key)}">${escapeHtml(invoice.status)}</span>
+          <div class="invoice-row-amount"><strong>${money.format(invoice.totalAmount)}</strong><small>${money.format(outstanding)} outstanding · ${money.format(grossProfit)} cash margin</small></div>
+          <div class="row-actions invoice-row-actions">
+            ${outstanding > 0 && canManageManualPayments() ? `<button class="primary-button" type="button" data-record-invoice-payment="${escapeHtml(invoice.id)}">Payment</button><button class="secondary-button" type="button" data-apply-invoice-credit="${escapeHtml(invoice.id)}">Credit</button>` : ""}
+            ${canManageManualPayments() ? `<button class="secondary-button" type="button" data-schedule-invoice="${escapeHtml(invoice.id)}">${schedule ? "Edit recurring" : "Recurring"}</button>` : ""}
+            <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${escapeHtml(invoice.contactId)}">Open job</button>
+          </div>
+        </article>`;
+      }).join("")}</div>` : '<div class="empty-state compact-empty">No internal invoices yet. Convert a won estimate below.</div>'}
+    </section>
+  `;
+  const ledgerMarkup = (kinds, title, emptyMessage) => {
+    const entries = ledgerEntries.filter((entry) => kinds.includes(entry.kind));
+    return `
+    <section class="invoice-ledger-section">
+      <div class="invoice-section-heading"><div><p class="eyebrow">Financial ledger</p><h3>${escapeHtml(title)}</h3></div><span class="status-pill">${entries.length}</span></div>
+      ${entries.length ? `<div class="financial-ledger-list">${entries.slice(0, 50).map((entry) => {
+        const contact = state.contacts.find((item) => item.id === entry.contactId);
+        const job = contact && contactJobs(contact).find((item) => item.id === entry.jobId);
+        return `<div class="financial-ledger-row" role="button" tabindex="0" data-action="open-job" data-contact-id="${escapeHtml(entry.contactId)}" data-job-id="${escapeHtml(entry.jobId)}">
+          <span class="ledger-kind ledger-kind-${entry.direction}">${escapeHtml(entry.kind)}</span>
+          <span><strong>${escapeHtml(entry.label || entry.kind)}</strong><small>${escapeHtml(contact?.name || "Unknown lead")} · ${escapeHtml(job?.name || "Job")} · ${escapeHtml(entry.detail || "")}</small></span>
+          <time>${escapeHtml(formatDate(entry.at))}</time>
+          <strong class="ledger-amount ${entry.direction}">${["expense","refund"].includes(entry.direction) ? "−" : entry.direction === "credit" ? "+" : ""}${money.format(entry.amount)}</strong>
+          ${entry.kind === "Payment" && entry.paymentId && canManageManualPayments() && number(entry.amount) - paymentRefundTotal(entry.paymentId) > 0 ? `<span class="ledger-actions"><button class="secondary-button" type="button" data-refund-payment="${escapeHtml(entry.paymentId)}">Refund</button></span>` : ""}
+        </div>`;
+      }).join("")}</div>` : `<div class="empty-state compact-empty">${escapeHtml(emptyMessage)}</div>`}
+    </section>
+  `; };
+  const financeTabs = `
+    <div class="finance-tabs" role="tablist" aria-label="Billing sections">
+      ${[["invoices","Invoices"],["payments","Payments"],["expenses","Expenses"],["credits","Credits"]].map(([key,label]) => `<button type="button" role="tab" class="finance-tab ${state.financeTab === key ? "active" : ""}" aria-selected="${state.financeTab === key}" data-finance-tab="${key}">${label}</button>`).join("")}
+    </div>`;
+  const billingQueueHeading = '<div class="invoice-section-heading billing-queue-heading"><div><p class="eyebrow">Billing queue</p><h3>Won estimates and Square delivery</h3></div></div>';
+
+  const invoiceWorkspace = internalInvoiceMarkup + billingQueueHeading + (estimates.length
     ? estimates.map((estimate) => {
         const contact = getEstimateContact(estimate);
         const totals = totalsFor(estimate);
@@ -9365,6 +10995,9 @@ function renderInvoicesView() {
         const isPaid = paymentPercent >= 100 || estimate.squareStatus === "PAID";
         const isSent = !!estimate.squareInvoiceId && !isPaid;
         const canSend = currentRole() === "admin" && !estimate.squareInvoiceId && estimate.status === "Won" && Boolean(contact?.email);
+        const internalInvoice = internalInvoiceForEstimate(estimate.id);
+        const linkedJob = contact && contactJobs(contact).find((item) => item.id === estimate.jobId);
+        const canConvert = currentRole() === "admin" && estimate.status === "Won" && linkedJob?.status === "Won" && !internalInvoice;
         const emailDraft = estimate.squareInvoiceUrl && !isPaid
           ? squareInvoiceEmailDraft(estimate, contact)
           : null;
@@ -9399,6 +11032,13 @@ function renderInvoicesView() {
               <p style="font-size:12px;color:var(--muted);margin:4px 0 0">Awaiting payment · <a href="${escapeHtml(estimate.squareInvoiceUrl)}" target="_blank" rel="noopener" class="tel-link">View payment page ↗</a></p>
             ` : ""}
             <div class="row-actions" style="margin-top:8px">
+              ${canConvert ? `
+                <button class="primary-button" type="button" data-create-invoice="${estimate.id}">
+                  <span aria-hidden="true" data-icon="file"></span>
+                  Create Invoice
+                </button>
+              ` : ""}
+              ${internalInvoice ? `<span class="status-pill pill-won">${escapeHtml(internalInvoice.invoiceNumber)} created</span>` : ""}
               ${canSend ? `
                 <button class="primary-button" type="button" data-square-send="${estimate.id}">
                   <span aria-hidden="true" data-icon="send"></span>
@@ -9424,6 +11064,15 @@ function renderInvoicesView() {
       }).join("")
     : '<div class="empty-state">Won estimates will appear here for an administrator to send through Square</div>');
 
+  const activeWorkspace = state.financeTab === "invoices"
+    ? invoiceWorkspace
+      : state.financeTab === "payments"
+        ? ledgerMarkup(["Payment","Refund"], "Payments and refunds", "No payments have been recorded yet.")
+      : state.financeTab === "expenses"
+        ? `${canManageManualPayments() ? '<div class="finance-action-bar"><button class="primary-button" type="button" data-add-finance-expense><span aria-hidden="true" data-icon="plus"></span>Record Expense</button></div>' : ""}${ledgerMarkup(["Expense"], "Job expenses", "Job costs recorded under Profit & Cost will appear here.")}`
+        : ledgerMarkup(["Credit"], "Applied credit notes", "No credits have been applied yet.");
+  els.invoicesList.innerHTML = summaryBar + financeTabs + activeWorkspace;
+
   hydrateIcons(els.invoicesList);
 
   // Wire up provider-backed invoice actions only. Payment state is reconciled
@@ -9434,6 +11083,30 @@ function renderInvoicesView() {
   els.invoicesList.querySelectorAll("[data-square-copy]").forEach((btn) => {
     btn.addEventListener("click", () => copySquareInvoiceLink(btn.dataset.squareCopy));
   });
+  els.invoicesList.querySelectorAll("[data-create-invoice]").forEach((btn) => {
+    btn.addEventListener("click", () => createInternalInvoiceFromEstimate(btn.dataset.createInvoice));
+  });
+  els.invoicesList.querySelectorAll("[data-finance-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.financeTab = btn.dataset.financeTab;
+      saveUiState();
+      renderInvoicesView();
+    });
+  });
+  els.invoicesList.querySelectorAll("[data-record-invoice-payment]").forEach((btn) => {
+    btn.addEventListener("click", () => openInvoicePaymentDialog(btn.dataset.recordInvoicePayment));
+  });
+  els.invoicesList.querySelectorAll("[data-apply-invoice-credit]").forEach((btn) => {
+    btn.addEventListener("click", () => openInvoiceCreditDialog(btn.dataset.applyInvoiceCredit));
+  });
+  els.invoicesList.querySelectorAll("[data-refund-payment]").forEach((btn) => {
+    btn.addEventListener("click", (event) => { event.stopPropagation(); openInvoiceRefundDialog(btn.dataset.refundPayment); });
+  });
+  els.invoicesList.querySelectorAll("[data-schedule-invoice]").forEach((btn) => {
+    btn.addEventListener("click", () => openInvoiceScheduleDialog(btn.dataset.scheduleInvoice));
+  });
+  els.invoicesList.querySelector("[data-add-finance-expense]")?.addEventListener("click", openFinanceExpenseDialog);
+  els.invoicesList.querySelector("[data-run-revenue-automation]")?.addEventListener("click", runRevenueAutomation);
 }
 
 function reviewRequestEmail(contact) {
@@ -9513,6 +11186,11 @@ function renderReportsView() {
     (job) => canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned",
     (job) => number(job.contractValue) || number(job.value),
   );
+  const expenses=state.financialExpenses.reduce((sum,item)=>sum+number(item.amount),0);const refunds=state.financialRefunds.reduce((sum,item)=>sum+number(item.amount),0);const collected=state.financialPayments.reduce((sum,item)=>sum+number(item.amount),0)-refunds;const grossProfit=collected-expenses;
+  const sourceRows=aggregateCounts(visibleContacts(),(contact)=>contact.source||"Unspecified",(contact)=>contactJobs(contact).filter((job)=>soldJobStatuses.includes(job.status)).length);
+  const paymentMethodRows=aggregateCounts(state.financialPayments,(item)=>item.method||"Other",(item)=>number(item.amount));
+  const aging={current:0,days30:0,days60:0,days90:0};state.invoices.forEach((invoice)=>{const due=Math.max(0,invoiceBalance(invoice));if(!due)return;const days=Math.floor((Date.now()-new Date(invoice.dueDate||invoice.issueDate||Date.now()).getTime())/86400000);if(days<=0)aging.current+=due;else if(days<=30)aging.days30+=due;else if(days<=60)aging.days60+=due;else aging.days90+=due;});
+  const billableHours=state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60;const activeGoals=(state.crmGoals||[]).filter((goal)=>goal.status==="active");
   els.reportsContent.innerHTML = `
     <article class="report-card">
       <span class="eyebrow">Pipeline</span>
@@ -9560,8 +11238,28 @@ function renderReportsView() {
         </table>
       </div>
     </article>
+    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${money.format(grossProfit)}</strong><span>${money.format(collected)} collected · ${money.format(expenses)} expenses</span></article>
+    <article class="report-card"><span class="eyebrow">Billable time</span><strong>${billableHours.toFixed(1)} hours</strong><span>${state.jobTimeEntries.length} time entries</span></article>
+    <article class="report-card"><span class="eyebrow">Goals</span><strong>${activeGoals.length}</strong><span>active sales and production goals</span></article>
+    <article class="report-card wide"><span class="eyebrow">Invoice aging</span><div class="report-metric-row"><span>Current <strong>${money.format(aging.current)}</strong></span><span>1–30 days <strong>${money.format(aging.days30)}</strong></span><span>31–60 days <strong>${money.format(aging.days60)}</strong></span><span>61+ days <strong>${money.format(aging.days90)}</strong></span></div></article>
+    <article class="report-card wide"><span class="eyebrow">Lead source conversion</span><div class="table-wrap"><table class="data-table"><thead><tr><th>Source</th><th>Leads</th><th>Won jobs</th></tr></thead><tbody>${sourceRows.map((row)=>`<tr><td>${escapeHtml(row.label)}</td><td>${row.count}</td><td>${row.value}</td></tr>`).join("")||'<tr><td colspan="3">No source data</td></tr>'}</tbody></table></div></article>
+    <article class="report-card wide"><span class="eyebrow">Payment methods</span><div class="table-wrap"><table class="data-table"><thead><tr><th>Method</th><th>Payments</th><th>Collected</th></tr></thead><tbody>${paymentMethodRows.map((row)=>`<tr><td>${escapeHtml(row.label)}</td><td>${row.count}</td><td>${money.format(row.value)}</td></tr>`).join("")||'<tr><td colspan="3">No payment data</td></tr>'}</tbody></table></div></article>
   `;
 }
+
+async function initializeReportsAndGoals(){if(!cloudReady||!cloudClient||!authSession?.user?.id)return true;try{const [goals,exports]=await Promise.all([cloudClient.from("crm_goals").select("*").eq("company_state_id",supabaseStateId()),cloudClient.from("crm_report_exports").select("*").eq("company_state_id",supabaseStateId())]);if(goals.error)throw goals.error;if(exports.error)throw exports.error;state.crmGoals=goals.data||[];state.reportExports=exports.data||[];saveState({localOnly:true});return true;}catch(error){console.warn("Reports and goals could not be loaded",error);return false;}}
+
+async function initializeAdministration(){if(!cloudReady||!cloudClient||!authSession?.user?.id)return true;const tables=["crm_tax_rates","crm_payment_methods","crm_role_capabilities","crm_announcements","crm_operational_settings"];try{const results=await Promise.all(tables.map((table)=>cloudClient.from(table).select("*").eq("company_state_id",supabaseStateId())));const failed=results.find((result)=>result.error);if(failed)throw failed.error;[state.taxRates,state.paymentMethods,state.roleCapabilities,state.announcements,state.operationalSettings]=results.map((result)=>result.data||[]);saveState({localOnly:true});return true;}catch(error){console.warn("Administration configuration could not be loaded",error);return false;}}
+
+function renderAdministration(){if(!els.adminOperationsSettings)return;els.adminOperationsSettings.classList.toggle("hidden",!canManageTeamData());if(!canManageTeamData())return;els.adminTaxList.innerHTML=state.taxRates.length?state.taxRates.map((item)=>`<article><strong>${escapeHtml(item.name)}</strong><span>${(number(item.rate)*100).toFixed(3).replace(/\.?0+$/,"")}% · ${item.active===false?"Inactive":"Active"}</span></article>`).join(""):'<div class="empty-state">No tax rates configured.</div>';els.adminConfigurationSummary.innerHTML=`<article class="report-card"><span class="eyebrow">Payment methods</span><strong>${state.paymentMethods.filter((item)=>item.active!==false).length}</strong><span>${state.paymentMethods.filter((item)=>item.active!==false).map((item)=>escapeHtml(item.name)).join(", ")||"Defaults load after migration"}</span></article><article class="report-card"><span class="eyebrow">Role capabilities</span><strong>${state.roleCapabilities.length}</strong><span>granular permission rules</span></article><article class="report-card"><span class="eyebrow">Announcements</span><strong>${state.announcements.filter((item)=>item.active!==false).length}</strong><span>active team notices</span></article><article class="report-card"><span class="eyebrow">Templates</span><strong>${state.projectTemplates.length+state.documentTemplates.length}</strong><span>project and document templates</span></article>`;if(els.customerPortalLead)els.customerPortalLead.innerHTML=['<option value="">Choose lead</option>',...visibleContacts().map((contact)=>`<option value="${escapeHtml(contact.id)}">${escapeHtml(contact.name)} · ${escapeHtml(contact.email||"no email")}</option>`)].join("");}
+
+async function saveAdminTax(event){event.preventDefault();if(!requireAction("manageCompany"))return;const data=new FormData(event.currentTarget);const item={id:uid("tax"),name:String(data.get("name")||"").trim(),rate:number(data.get("rate"))/100,active:true};if(!item.name||item.rate<0||item.rate>1)return showToast("Enter a valid tax name and percentage");try{if(canUseCloudSync()){const {error}=await cloudClient.from("crm_tax_rates").insert({company_state_id:supabaseStateId(),id:item.id,name:item.name,rate:item.rate,active:true,created_by:authSession.user.id,updated_by:authSession.user.id});if(error)throw error;await initializeAdministration();}else{state.taxRates.push(item);saveState({localOnly:true});}event.currentTarget.reset();renderAdministration();showToast("Tax rate added");}catch(error){showToast(error?.message||"Tax rate could not be added");}}
+
+async function saveAdminAnnouncement(event){event.preventDefault();if(!requireAction("manageCompany"))return;const data=new FormData(event.currentTarget);const item={id:uid("announcement"),title:String(data.get("title")||"").trim(),body:String(data.get("body")||"").trim(),audience_role:String(data.get("audience")||"all"),dismissible:data.get("dismissible")==="on",active:true};if(!item.title||!item.body)return;try{if(canUseCloudSync()){const {error}=await cloudClient.from("crm_announcements").insert({company_state_id:supabaseStateId(),...item,created_by:authSession.user.id,updated_by:authSession.user.id});if(error)throw error;await initializeAdministration();}else{state.announcements.unshift(item);saveState({localOnly:true});}event.currentTarget.reset();renderAdministration();showToast("Announcement published");}catch(error){showToast(error?.message||"Announcement could not be published");}}
+
+async function inviteCustomerPortal(event){event.preventDefault();if(!requireAction("manageCompany"))return;const data=new FormData(event.currentTarget);const leadId=String(data.get("leadId")||"");const contact=getContact(leadId);const email=String(data.get("email")||"").trim();if(!contact||!email)return;setSaveState(els.customerPortalInviteStatus,"Sending secure portal invitation…","saving");try{const headers=await squareApiHeaders();const response=await fetch("/api/admin/customer-invitations",{method:"POST",headers:{"Content-Type":"application/json",...headers},body:JSON.stringify({leadId,email,displayName:contact.name}),signal:AbortSignal.timeout(20000)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||"Invitation failed");setSaveState(els.customerPortalInviteStatus,`Portal invitation sent to ${email}`,"success");event.currentTarget.reset();renderAdministration();}catch(error){setSaveState(els.customerPortalInviteStatus,error?.message||"Portal invitation failed","error");}}
+
+async function exportPerformanceReport(){const rows=[["Report","Value"],["Pipeline",dashboardMetrics().pipelineValue],["Collected",state.financialPayments.reduce((sum,item)=>sum+number(item.amount),0)],["Expenses",state.financialExpenses.reduce((sum,item)=>sum+number(item.amount),0)],["Billable hours",(state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60).toFixed(2)]];const csv=rows.map((row)=>row.map((value)=>`"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`jobcrest-performance-${todayISO()}.csv`;link.click();URL.revokeObjectURL(url);if(canUseCloudSync())await cloudClient.from("crm_report_exports").insert({company_state_id:supabaseStateId(),id:uid("reportexport"),report_type:"performance",filters:{},row_count:rows.length-1,requested_by:authSession.user.id});}
 
 function renderNewEstimatePickers() {
   if (!els.newEstimateContact || !els.newEstimateJob) return;
@@ -10113,6 +11811,7 @@ function renderCompanyForm() {
   if (typeof renderZohoIntegrationCard === "function") renderZohoIntegrationCard();
   if (typeof refreshZohoIntegrationStatus === "function") void refreshZohoIntegrationStatus();
   renderDocumentCategoriesSettings();
+  if (typeof renderAdministration === "function") renderAdministration();
 }
 
 function documentCategoryDocumentCount(categoryId) {
@@ -11500,6 +13199,10 @@ const icons = {
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>',
   message:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  "message-circle":
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.5 9.6 9.6 0 0 1-4-.9L3 21l1.9-5a9 9 0 1 1 16.1-4.5z"/></svg>',
+  clock:
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   template:
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>',
   "alert-triangle":
@@ -11674,6 +13377,7 @@ function bindEvents() {
       return;
     }
     if (action === "download-document") await downloadManagedDocument(actionButton.dataset.documentId);
+    if (action === "document-operations") { const {record}=findManagedDocument(actionButton.dataset.documentId); if(record) renderDocumentOperations(record); }
     if (action === "sync-google-drive-document") {
       const outcome = await syncDocumentsToGoogleDrive([actionButton.dataset.documentId], { force: true });
       showToast(outcome.synced ? "Drive copy completed" : outcome.skipped ? "Company Drive is not configured yet" : "Drive copy needs attention");
@@ -11794,6 +13498,12 @@ function bindEvents() {
     if (action === "delete-job") {
       deleteLeadJob(actionButton.dataset.jobId);
     }
+    if (action === "toggle-job-milestone") {
+      await toggleJobMilestone(actionButton.dataset.milestoneId);
+    }
+    if (action === "delete-job-milestone") {
+      await deleteJobMilestone(actionButton.dataset.milestoneId);
+    }
     if (action === "open-job-profit") {
       state.selectedProfitJobId = actionButton.dataset.jobId;
       openLeadDetail(contactId, "profit");
@@ -11822,6 +13532,22 @@ function bindEvents() {
     if (action === "delete-calendar-task") {
       deleteCalendarTask(actionButton.dataset.taskId);
     }
+    if (action === "toggle-task-checklist") {
+      event.preventDefault();
+      await toggleTaskChecklist(actionButton.dataset.taskId, actionButton.dataset.checklistId);
+    }
+    if (action === "toggle-task-timer") {
+      await toggleTaskTimer(actionButton.dataset.taskId);
+    }
+  });
+
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest?.("[data-task-comment-form]");
+    if (!form) return;
+    event.preventDefault();
+    const body = new FormData(form).get("comment");
+    form.reset();
+    await addTaskComment(form.dataset.taskId, body);
   });
 
   document.addEventListener("click", (event) => {
@@ -11966,6 +13692,12 @@ function bindEvents() {
   });
   els.leadConversationForm.addEventListener("submit", submitLeadConversation);
   els.leadJobForm.addEventListener("submit", saveLeadJob);
+  els.jobMilestoneForm?.addEventListener("submit", saveJobMilestone);
+  els.projectMemberForm?.addEventListener("submit", saveProjectMember);
+  els.projectNoteForm?.addEventListener("submit", saveProjectNote);
+  els.projectDiscussionForm?.addEventListener("submit", saveProjectDiscussion);
+  els.toggleJobTimerButton?.addEventListener("click", toggleJobDeliveryTimer);
+  els.applyProjectTemplateButton?.addEventListener("click", applySelectedProjectTemplate);
   els.clearJobFormButton.addEventListener("click", () => fillJobForm());
   els.profitJobSelect?.addEventListener("change", (event) => {
     if (!requireAction("manageJobFinancials")) return;
@@ -11990,6 +13722,7 @@ function bindEvents() {
   els.manualPaymentForm?.addEventListener("submit", saveManualPayment);
   els.clearManualPaymentForm?.addEventListener("click", () => fillManualPaymentForm());
   els.leadEmailForm.addEventListener("submit", submitLeadEmail);
+  els.scheduleLeadEmailButton?.addEventListener("click", scheduleLeadEmail);
   els.leadEmailTemplate?.addEventListener("change", (event) => {
     const contact = getSelectedContact();
     if (contact) applyLeadEmailTemplate(contact, selectedLeadJob(contact), event.target.value);
@@ -12004,6 +13737,12 @@ function bindEvents() {
   });
   els.copyLeadEmailButton.addEventListener("click", copyLeadEmail);
   els.refreshLeadEmailThreadsButton?.addEventListener("click", refreshLeadEmailThreads);
+  els.reportExportButton?.addEventListener("click",()=>void exportPerformanceReport());
+  els.adminTaxForm?.addEventListener("submit",saveAdminTax);
+  els.adminAnnouncementForm?.addEventListener("submit",saveAdminAnnouncement);
+  els.customerPortalInviteForm?.addEventListener("submit",inviteCustomerPortal);
+  els.documentOperationsForm?.addEventListener("submit", saveDocumentOperations);
+  els.closeDocumentOperationsDialog?.addEventListener("click",()=>els.documentOperationsDialog?.close());
   els.uploadCompanyDocumentButton.addEventListener("click", () => {
     if (!requireAction("manageDocuments")) return;
     els.companyDocumentInput.value = "";
@@ -12049,6 +13788,7 @@ function bindEvents() {
   });
   els.removeCompanyLogoButton.addEventListener("click", removeCompanyLogo);
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
+  els.calendarTaskContact?.addEventListener("change", (event) => renderCalendarTaskJobOptions(event.target.value, ""));
   els.connectGoogleWorkspaceButton?.addEventListener("click", connectGoogleWorkspace);
   els.calendarGoogleConnectButton?.addEventListener("click", connectGoogleWorkspace);
   els.disconnectGoogleWorkspaceButton?.addEventListener("click", disconnectGoogleWorkspace);
@@ -12136,6 +13876,17 @@ function bindEvents() {
     renderCalendarMonth();
   });
   els.closeContactDialog.addEventListener("click", () => els.contactDialog.close());
+  els.closeInvoicePaymentDialog?.addEventListener("click", () => els.invoicePaymentDialog.close());
+  els.closeInvoiceCreditDialog?.addEventListener("click", () => els.invoiceCreditDialog.close());
+  els.closeFinanceExpenseDialog?.addEventListener("click", () => els.financeExpenseDialog.close());
+  els.closeInvoiceRefundDialog?.addEventListener("click", () => els.invoiceRefundDialog.close());
+  els.closeInvoiceScheduleDialog?.addEventListener("click", () => els.invoiceScheduleDialog.close());
+  els.invoicePaymentForm?.addEventListener("submit", recordInvoicePayment);
+  els.invoiceCreditForm?.addEventListener("submit", applyInvoiceCredit);
+  els.financeExpenseForm?.addEventListener("submit", recordFinanceExpense);
+  els.financeExpenseForm?.elements.leadId?.addEventListener("change", populateExpenseJobOptions);
+  els.invoiceRefundForm?.addEventListener("submit", recordInvoiceRefund);
+  els.invoiceScheduleForm?.addEventListener("submit", saveInvoiceSchedule);
   els.contactForm.addEventListener("submit", saveContactFromForm);
   els.deleteContactButton.addEventListener("click", () => {
     if (!requireAction("manageContacts")) return;
@@ -12162,9 +13913,13 @@ function bindEvents() {
 
   els.leadStageFilter?.addEventListener("change", (event) => {
     state.leadStageFilter = statuses.includes(event.target.value) ? event.target.value : "";
+    state.savedLeadFilterId = "";
     saveUiState();
     renderLeadsView();
   });
+  els.leadTagFilter?.addEventListener("change",(event)=>{state.leadTagFilter=event.target.value||"";state.savedLeadFilterId="";saveUiState();renderLeadsView();});
+  els.savedLeadFilter?.addEventListener("change",(event)=>applySavedLeadFilter(event.target.value));
+  els.saveLeadFilterButton?.addEventListener("click",saveCurrentLeadFilter);
 
   els.toggleEstimateHistoryButton?.addEventListener("click", () => {
     const willOpen = els.estimateHistoryPanel.classList.contains("hidden");
@@ -12520,6 +14275,41 @@ async function startApp() {
     state.estimates = [];
     state.calendarTasks = [];
     state.companyDocuments = [];
+    state.invoices = [];
+    state.financialPayments = [];
+    state.financialExpenses = [];
+    state.creditNotes = [];
+    state.paymentAllocations = [];
+    state.financialRefunds = [];
+    state.invoiceSchedules = [];
+    state.billingNotices = [];
+    state.projectMembers = [];
+    state.projectDiscussions = [];
+    state.projectNotes = [];
+    state.jobTimeEntries = [];
+    state.projectTemplates = [];
+    state.leadSources = [];
+    state.leadTags = [];
+    state.recordTags = [];
+    state.customFields = [];
+    state.customFieldValues = [];
+    state.savedLeadFilters = [];
+    state.emailTemplates = [];
+    state.scheduledMessages = [];
+    state.crmReminders = [];
+    state.crmNotifications = [];
+    state.documentVersions = [];
+    state.documentComments = [];
+    state.documentAccess = [];
+    state.documentTemplates = [];
+    state.signatureRequests = [];
+    state.crmGoals = [];
+    state.reportExports = [];
+    state.taxRates = [];
+    state.paymentMethods = [];
+    state.roleCapabilities = [];
+    state.announcements = [];
+    state.operationalSettings = [];
     // Older unsubmitted settings remain in the recovery export, never replayed
     // against a fresh server version without review.
     state.companyFormDraft = null;
@@ -12536,6 +14326,13 @@ async function startApp() {
     showStartupDataError();
     return;
   }
+  await initializeFinancialLedger();
+  await initializeProjectDelivery();
+  await initializeLeadOrganization();
+  await initializeCommunications();
+  await initializeDocumentOperations();
+  await initializeReportsAndGoals();
+  await initializeAdministration();
   if (canUseCloudSync()) {
     const numbering = await ensureExistingSharedSalesNumbers();
     if (numbering.failures.length) showToast("The CRM is ready, but some historical estimate numbers need administrator attention.");

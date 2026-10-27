@@ -1,0 +1,34 @@
+-- Step 9: authenticated customer accounts and strictly customer-scoped portal data.
+create table if not exists public.crm_customer_accounts(company_state_id text not null default public.crm_base_state_id(),user_id uuid not null,lead_id text not null,email text not null,display_name text not null default '',active boolean not null default true,invited_at timestamptz,accepted_at timestamptz,created_by uuid not null default auth.uid(),created_at timestamptz not null default clock_timestamp(),updated_at timestamptz not null default clock_timestamp(),primary key(company_state_id,user_id),unique(company_state_id,lead_id,email));
+create table if not exists public.crm_customer_messages(company_state_id text not null default public.crm_base_state_id(),id text not null,lead_id text not null,job_id text not null default '',sender_user_id uuid not null default auth.uid(),sender_type text not null check(sender_type in ('customer','staff')),body text not null check(char_length(btrim(body)) between 1 and 5000),created_at timestamptz not null default clock_timestamp(),primary key(company_state_id,id));
+create index if not exists crm_customer_messages_lead_idx on public.crm_customer_messages(company_state_id,lead_id,created_at desc);
+alter table public.crm_customer_accounts enable row level security;alter table public.crm_customer_messages enable row level security;
+revoke all on public.crm_customer_accounts from public,anon,authenticated;revoke all on public.crm_customer_messages from public,anon,authenticated;
+drop policy if exists "Customers read own portal account" on public.crm_customer_accounts;drop policy if exists "Admins manage customer portal accounts" on public.crm_customer_accounts;
+create policy "Customers read own portal account" on public.crm_customer_accounts for select to authenticated using(company_state_id=public.crm_base_state_id() and (user_id=(select auth.uid()) or public.can_manage_team_crm()));
+create policy "Admins manage customer portal accounts" on public.crm_customer_accounts for all to authenticated using(public.can_manage_team_crm() and company_state_id=public.crm_base_state_id()) with check(public.can_manage_team_crm() and company_state_id=public.crm_base_state_id());
+grant select,insert,update on public.crm_customer_accounts to authenticated;
+drop policy if exists "Portal participants read messages" on public.crm_customer_messages;drop policy if exists "Portal participants create messages" on public.crm_customer_messages;
+create policy "Portal participants read messages" on public.crm_customer_messages for select to authenticated using(company_state_id=public.crm_base_state_id() and (public.can_manage_team_crm() or exists(select 1 from public.crm_customer_accounts a where a.company_state_id=crm_customer_messages.company_state_id and a.user_id=(select auth.uid()) and a.lead_id=crm_customer_messages.lead_id and a.active)));
+create policy "Portal participants create messages" on public.crm_customer_messages for insert to authenticated with check(company_state_id=public.crm_base_state_id() and sender_user_id=(select auth.uid()) and ((sender_type='staff' and public.is_coastal_crest_user()) or (sender_type='customer' and exists(select 1 from public.crm_customer_accounts a where a.company_state_id=crm_customer_messages.company_state_id and a.user_id=(select auth.uid()) and a.lead_id=crm_customer_messages.lead_id and a.active))));
+grant select,insert on public.crm_customer_messages to authenticated;
+
+create or replace function public.crm_customer_portal_snapshot()
+returns jsonb language plpgsql security definer set search_path=''
+as $$declare account_row public.crm_customer_accounts%rowtype;result jsonb;
+begin
+ select * into account_row from public.crm_customer_accounts where company_state_id=public.crm_base_state_id() and user_id=auth.uid() and active limit 1;
+ if account_row.user_id is null then raise exception 'customer_portal_access_required';end if;
+ select jsonb_build_object(
+  'account',jsonb_build_object('lead_id',account_row.lead_id,'email',account_row.email,'display_name',account_row.display_name),
+  'lead',coalesce((select jsonb_build_object('id',r.id,'name',r.data->>'name','email',r.data->>'email','phone',r.data->>'phone') from public.crm_records r where r.company_state_id=account_row.company_state_id and r.record_type='contact' and r.id=account_row.lead_id and r.deleted_at is null limit 1),'{}'::jsonb),
+  'jobs',coalesce((select jsonb_agg(jsonb_build_object('id',r.id,'name',r.data->>'name','status',r.data->>'status','address',r.data->>'address','contract_value',r.data->'contractValue','paid_amount',r.data->'paidAmount') order by r.id) from public.crm_records r where r.company_state_id=account_row.company_state_id and r.record_type='job' and r.lead_id=account_row.lead_id and r.deleted_at is null),'[]'::jsonb),
+  'estimates',coalesce((select jsonb_agg(jsonb_build_object('id',r.id,'number',r.data->>'estimateNumber','title',r.data->>'projectTitle','status',r.data->>'status','total',r.data->'total') order by r.id) from public.crm_records r where r.company_state_id=account_row.company_state_id and r.record_type='estimate' and r.lead_id=account_row.lead_id and r.deleted_at is null),'[]'::jsonb),
+  'invoices',coalesce((select jsonb_agg(jsonb_build_object('id',r.id,'number',r.data->>'invoiceNumber','status',r.data->>'status','total',r.data->'total','balance',r.data->'balance','due_date',r.data->>'dueDate') order by r.id) from public.crm_records r where r.company_state_id=account_row.company_state_id and r.record_type='invoice' and r.lead_id=account_row.lead_id and r.deleted_at is null),'[]'::jsonb),
+  'documents',coalesce((select jsonb_agg(jsonb_build_object('id',r.id,'name',r.data->>'name','job_id',r.job_id,'download_allowed',a.download_allowed) order by r.id) from public.crm_document_access a join public.crm_records r on r.company_state_id=a.company_state_id and r.id=a.document_id where a.company_state_id=account_row.company_state_id and a.lead_id=account_row.lead_id and a.customer_visible and r.deleted_at is null),'[]'::jsonb),
+  'messages',coalesce((select jsonb_agg(jsonb_build_object('id',m.id,'job_id',m.job_id,'sender_type',m.sender_type,'body',m.body,'created_at',m.created_at) order by m.created_at) from public.crm_customer_messages m where m.company_state_id=account_row.company_state_id and m.lead_id=account_row.lead_id),'[]'::jsonb),
+  'signatures',coalesce((select jsonb_agg(jsonb_build_object('id',s.id,'document_id',s.document_id,'status',s.status,'sent_at',s.sent_at,'completed_at',s.completed_at) order by s.created_at desc) from public.crm_signature_requests s where s.company_state_id=account_row.company_state_id and s.lead_id=account_row.lead_id),'[]'::jsonb)
+ ) into result;return result;
+end$$;
+revoke all on function public.crm_customer_portal_snapshot() from public,anon;
+grant execute on function public.crm_customer_portal_snapshot() to authenticated;

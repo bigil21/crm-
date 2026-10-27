@@ -21,6 +21,7 @@ const {
   renderCompletedDocument,
 } = require(path.join(__dirname, "smart-documents"));
 const { createTeamInviteService } = require(path.join(__dirname, "team-invite-service"));
+const { createCustomerPortalService } = require(path.join(__dirname, "customer-portal-service"));
 
 const root = __dirname;
 const envPaths = process.env.CRM_SKIP_ENV_FILES === "true" ? [] : [path.join(root, ".env"), path.join(root, ".env.local")];
@@ -43,7 +44,7 @@ const port = Number(process.env.PORT || 4173);
 const allowedEmailDomain = process.env.ALLOWED_EMAIL_DOMAIN || "coastalcrestroofing.com";
 // Only these shipped browser assets are public. Never serve the repository itself.
 const publicAssets = new Set([
-  "/index.html", "/login.html", "/logout.html", "/reset-session.html",
+  "/index.html", "/login.html", "/logout.html", "/reset-session.html", "/portal.html", "/portal.js",
   "/styles.css", "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/sw.js",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js", "/team-onboarding.js",
   "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png",
@@ -1118,6 +1119,8 @@ async function handleTeamInvitation(req, res) {
   }
 }
 
+async function handleCustomerPortalInvitation(req,res){let payload;try{payload=JSON.parse(await readRequestBody(req));if(!payload||Array.isArray(payload)||typeof payload.email!=="string"||typeof payload.leadId!=="string"||Object.keys(payload).some((key)=>!["email","leadId","displayName"].includes(key)))throw new Error("invalid_payload");}catch{sendJson(res,400,{error:"Choose a lead and enter one customer email address."});return;}const config=squareWorkerConfig();const appOrigin=crmPublicOrigin();if(!config||!appOrigin){sendJson(res,503,{error:"Customer portal invitations are not configured on this server."});return;}try{const result=await createCustomerPortalService({fetchImpl:fetch,origin:config.origin,key:config.key,companyId:config.companyId,appOrigin}).invite(payload);sendJson(res,200,result);}catch(error){console.error("Customer portal invitation failed",{message:error?.message});sendJson(res,error?.status===400?400:503,{error:error?.message||"The customer invitation could not be completed."});}}
+
 async function squareRequest(method, path, body) {
   const https = require("https");
   return new Promise((resolve, reject) => {
@@ -1703,6 +1706,10 @@ const handleRequest = (req, res) => {
     requireApiAdmin(req, res, handleTeamInvitation);
     return;
   }
+  if (url.pathname === "/api/admin/customer-invitations" && req.method === "POST") {
+    requireApiAdmin(req,res,handleCustomerPortalInvitation);
+    return;
+  }
 
   if (url.pathname.startsWith("/api/")) {
     sendJson(res, 404, { error: "not_found" });
@@ -1729,10 +1736,16 @@ const handleRequest = (req, res) => {
     return;
   }
 
+  if (url.pathname === "/portal/") {
+    sendRedirect(res, "/portal");
+    return;
+  }
+
   const routes = {
     "/": "/index.html",
     "/login": "/login.html",
     "/logout": "/logout.html",
+    "/portal": "/portal.html",
   };
 
   if (req.method !== "GET" && req.method !== "HEAD") {
