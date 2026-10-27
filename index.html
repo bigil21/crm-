@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=72" />
+    <link rel="stylesheet" href="styles.css?v=73" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -54,13 +54,15 @@
       </div>
     </div>
     <div class="app-shell">
-      <aside class="side-nav" aria-label="Application navigation">
+      <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" tabindex="-1" hidden></button>
+      <aside class="side-nav" id="applicationNavigation" aria-label="Application navigation">
         <div class="brand">
           <img src="icon.svg" alt="" class="brand-icon" id="brandLogo" />
           <div>
             <strong>JobCrest CRM</strong>
             <span>Leads, customers, estimates</span>
           </div>
+          <button id="sidebarClose" class="icon-button sidebar-close" type="button" aria-label="Close navigation"><span aria-hidden="true" data-icon="x"></span></button>
         </div>
 
         <nav class="nav-list" aria-label="Primary">
@@ -122,7 +124,7 @@
       <main class="workspace">
         <header class="topbar" style="z-index: 40; overflow: visible">
           <div class="topbar-title">
-            <button class="icon-button menu-button" type="button" aria-label="Menu">
+            <button class="icon-button menu-button" type="button" aria-label="Expand navigation" aria-controls="applicationNavigation" aria-expanded="false">
               <span aria-hidden="true" data-icon="menu"></span>
             </button>
             <div>
@@ -141,7 +143,8 @@
                 <input
                   id="globalSearch"
                   type="search"
-                  placeholder="Search leads, jobs, phone, email..."
+                  placeholder="Search name, phone, address, job #..."
+                  aria-label="Search leads by name, phone, email, address or job number"
                   autocomplete="off"
                   role="combobox"
                   aria-autocomplete="list"
@@ -175,6 +178,7 @@
         <section class="summary-strip" id="summaryStrip" aria-label="CRM summary"></section>
 
         <section class="view-panel" id="dashboardView">
+          <section id="followUpDashboard" class="follow-up-summary" aria-label="Follow-up reminders"></section>
           <div class="dashboard-layout">
             <section class="surface dashboard-panel pipeline-widget">
               <div class="view-toolbar">
@@ -199,8 +203,8 @@
             <section class="surface dashboard-panel tasks-widget">
               <div class="view-toolbar compact">
                 <div>
-                  <p class="eyebrow">Upcoming tasks</p>
-                  <h2>Rep reminders</h2>
+                  <p class="eyebrow">Next actions</p>
+                  <h2>Priority reminders</h2>
                 </div>
                 <button class="link-button" type="button" data-view="tasks">View All</button>
               </div>
@@ -1029,13 +1033,15 @@
           <div class="view-toolbar">
             <div>
               <p class="eyebrow">Tasks</p>
-              <h2>All reminders</h2>
+              <h2>Follow-ups and reminders</h2>
             </div>
             <button class="primary-button" type="button" data-view="calendar">
               <span aria-hidden="true" data-icon="calendar"></span>
               New Task
             </button>
           </div>
+          <section id="followUpTasks" class="follow-up-summary" aria-label="Filter reminders"></section>
+          <p class="reminder-note">Estimates sent at least 3 days ago appear here until their status changes.</p>
           <section class="surface lead-detail-surface">
             <div id="tasksPageList" class="task-list"></div>
           </section>
@@ -1628,7 +1634,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=156" defer></script>
+    <script src="app.js?v=157" defer></script>
     <script src="team-onboarding.js?v=2" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>

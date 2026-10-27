@@ -851,6 +851,8 @@ function uiStateSnapshot() {
     search: state.search,
     pipelineFilter: state.pipelineFilter,
     leadStageFilter: state.leadStageFilter,
+    sidebarMode: state.sidebarMode || "auto",
+    reminderFilter: state.reminderFilter || "all",
     leaderboardRange: state.leaderboardRange,
     leadDetailTab: state.leadDetailTab,
     selectedContactId: state.selectedContactId,
@@ -927,6 +929,8 @@ function normalizeState(nextState) {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
     leadStageFilter: statuses.includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
+    sidebarMode: ["expanded", "compact"].includes(nextState.sidebarMode) ? nextState.sidebarMode : "auto",
+    reminderFilter: ["overdue", "today", "estimates", "upcoming", "completed"].includes(nextState.reminderFilter) ? nextState.reminderFilter : "all",
     leadDetailTab: nextState.leadDetailTab || "overview",
     newEstimateContactId: nextState.newEstimateContactId || "",
     newEstimateJobId: nextState.newEstimateJobId || "",
@@ -1739,6 +1743,8 @@ function applySharedState(data = {}) {
   const personalState = {
     view: state.view,
     search: state.search,
+    sidebarMode: state.sidebarMode,
+    reminderFilter: state.reminderFilter,
     pipelineFilter: state.pipelineFilter,
     leadStageFilter: state.leadStageFilter,
     leaderboardRange: state.leaderboardRange,
@@ -3116,36 +3122,40 @@ function ensureExistingSalesNumbers() {
 }
 
 function filteredContacts() {
-  const query = state.search.trim().toLowerCase();
   const contacts = visibleContacts();
-  if (!query) return contacts;
-  return contacts.filter((contact) =>
-    [
-      contact.name,
-      contact.leadNumber,
-      contact.type,
-      contact.status,
-      contact.source,
-      contact.salesRep,
-      contact.email,
-      contact.phone,
-      contact.address,
-      contact.notes,
-      ...contactJobs(contact).flatMap((job) => [
-        job.name,
-        job.projectNumber,
-        job.address,
-        job.status,
-        job.salesRep,
-        job.notes,
-        money.format(number(job.value)),
-      ]),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase()
-      .includes(query),
-  );
+  return !state.search.trim() ? contacts : contacts.filter((contact) => contactMatchesSearch(contact, state.search));
+}
+
+function normalizeLeadSearch(value) {
+  return String(value || "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function contactSearchFields(contact, jobs = contactJobs(contact)) {
+  return [contact.name, contact.leadNumber, contact.type, contact.status, contact.source,
+    contact.salesRep, contact.email, contact.phone, contact.address, contact.notes,
+    ...jobs.flatMap((job) => [job.name, job.projectNumber, job.address, job.status, job.salesRep, job.notes, money.format(number(job.value))])]
+    .filter(Boolean).map(normalizeLeadSearch);
+}
+
+function contactMatchesSearch(contact, query, jobs = contactJobs(contact)) {
+  const normalized = normalizeLeadSearch(query);
+  if (!normalized) return false;
+  const fields = contactSearchFields(contact, jobs);
+  const searchable = fields.join(" ");
+  if (normalized.split(/\s+/).every((term) => searchable.includes(term))) return true;
+  // Phone punctuation and spaces should never prevent a pasted number matching.
+  const digits = String(query).replace(/\D/g, "");
+  if (/^[\d\s()+.\-]+$/.test(query) && digits.length >= 3 &&
+      String(contact.phone || "").replace(/\D/g, "").includes(digits)) return true;
+  const compact = normalized.replace(/\s/g, "");
+  return compact.length >= 3 && fields.some((field) => field.replace(/\s/g, "").includes(compact));
+}
+
+function searchResultJob(contact, query) {
+  const jobs = contactJobs(contact);
+  if (contactMatchesSearch(contact, query, [])) return jobs[0];
+  return jobs.find((job) => contactMatchesSearch(contact, query, [job])) || jobs[0];
 }
 
 async function ensureExistingSharedSalesNumbers() {
@@ -3235,34 +3245,16 @@ function sortLeadIntakeChronologically(contacts = []) {
 }
 
 function liveLeadSearchMatches(query = state.search, limit = 8) {
-  const normalizedQuery = String(query || "").trim().toLowerCase();
+  const normalizedQuery = normalizeLeadSearch(query);
   if (!normalizedQuery) return { matches: [], total: 0 };
-  const terms = normalizedQuery.split(/\s+/).filter(Boolean);
-  const scored = state.contacts
+  const scored = visibleContacts()
     .map((contact) => {
-      const jobs = contactJobs(contact);
-      const name = String(contact.name || "").toLowerCase();
-      const leadNumber = String(contact.leadNumber || "").toLowerCase();
+      const name = normalizeLeadSearch(contact.name);
+      const leadNumber = normalizeLeadSearch(contact.leadNumber);
       const email = String(contact.email || "").toLowerCase();
       const phone = String(contact.phone || "").toLowerCase();
       const phoneDigits = phone.replace(/\D/g, "");
-      const searchable = [
-        name,
-        leadNumber,
-        contact.type,
-        contact.status,
-        contact.source,
-        contact.salesRep,
-        email,
-        phone,
-        phoneDigits,
-        contact.address,
-        ...jobs.flatMap((job) => [job.name, job.projectNumber, job.address, job.status, job.salesRep]),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      if (!terms.every((term) => searchable.includes(term))) return null;
+      if (!contactMatchesSearch(contact, query)) return null;
       let score = 50;
       if (name === normalizedQuery || leadNumber === normalizedQuery) score = 0;
       else if (name.startsWith(normalizedQuery)) score = 5;
@@ -3298,7 +3290,7 @@ function renderLiveSearchResults() {
   els.globalSearchResults.innerHTML = matches.length
     ? `${matches
         .map((contact, index) => {
-          const job = primaryJob(contact);
+          const job = searchResultJob(contact, query);
           const meta = [contact.leadNumber, contact.phone, contact.email].filter(Boolean).join(" · ");
           return `
             <button
@@ -3308,11 +3300,13 @@ function renderLiveSearchResults() {
               role="option"
               aria-selected="${index === liveSearchActiveIndex}"
               data-live-search-contact="${escapeHtml(contact.id)}"
+              data-live-search-job="${escapeHtml(job?.id || "")}"
             >
               <span class="live-search-result-avatar">${escapeHtml(contactInitials(contact.name))}</span>
               <span class="live-search-result-copy">
                 <strong>${escapeHtml(contact.name || "Unnamed lead")}</strong>
                 <span>${escapeHtml(meta || job?.address?.split("\n")[0] || "No contact details")}</span>
+                ${job ? `<span class="live-search-job">${escapeHtml([job.projectNumber, job.name, job.address?.split("\n")[0]].filter(Boolean).join(" · "))}</span>` : ""}
               </span>
               <span class="status-pill ${statusPillClass(job?.status || contact.status)}">${escapeHtml(job?.status || contact.status || "New")}</span>
             </button>`;
@@ -3341,13 +3335,13 @@ function renderSearchFilteredView() {
   renderers[state.view]?.();
 }
 
-function openLiveSearchResult(contactId) {
+function openLiveSearchResult(contactId, jobId = "") {
   if (!contactId) return;
   state.search = "";
   liveSearchActiveIndex = -1;
   els.globalSearch.value = "";
   hideLiveSearchResults();
-  openLeadDetail(contactId);
+  openLeadDetail(contactId, "overview", jobId);
 }
 
 function filteredEstimates() {
@@ -4207,6 +4201,7 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
 }
 
 function render() {
+  renderSidebar();
   if (!canView(state.view)) {
     state.view = firstAllowedView();
   }
@@ -4295,11 +4290,13 @@ function renderTopbarProfile() {
     hydrateIcons(els.dashboardDateRange);
   }
 
-  const pendingTasks = state.calendarTasks.filter((task) => !task.completed).length;
+  const followUps = followUpSummary();
+  const pendingTasks = followUps.overdue.length + followUps.today.length + followUps.estimates.length;
   document.querySelectorAll(".notification-dot").forEach((node) => {
     node.textContent = pendingTasks;
     node.classList.toggle("hidden", pendingTasks === 0);
   });
+  document.querySelector(".notification-button")?.setAttribute("aria-label", `Open reminders: ${pendingTasks} need attention`);
 
   if (els.userChip) {
     const initials = (state.currentUser.name || "User")
@@ -4628,11 +4625,13 @@ function renderDashboard() {
 }
 
 function renderDashboardTasks() {
+  renderFollowUpSummary("followUpDashboard");
   if (!els.dashboardTasksList) return;
-  const tasks = upcomingTasks(5);
+  const summary = followUpSummary();
+  const tasks = [...summary.overdue, ...summary.today, ...summary.upcoming].slice(0, 5);
   els.dashboardTasksList.innerHTML = tasks.length
     ? tasks.map((task) => renderTaskCard(task, { compact: true })).join("")
-    : '<div class="empty-state">No upcoming calendar tasks</div>';
+    : '<div class="empty-state">No open calendar tasks</div>';
   hydrateIcons(els.dashboardTasksList);
 }
 
@@ -8616,10 +8615,13 @@ function renderCalendarFormOptions() {
 function renderTaskCard(task, options = {}) {
   const contact = getContact(task.contactId);
   const calendarUrl = task.googleEventUrl || googleCalendarUrl(task);
+  const due = localTimestamp(task.dueAt);
+  const overdue = !task.completed && Number.isFinite(due) && due < Date.now();
   return `
-    <article class="task-card">
+    <article class="task-card ${overdue ? "task-overdue" : ""}">
       <div>
         <strong>${escapeHtml(task.title)}</strong>
+        ${task.completed ? '<span class="task-state">Completed</span>' : overdue ? '<span class="task-state task-state-overdue">Overdue</span>' : ""}
         <span>${escapeHtml(task.rep)} - ${escapeHtml(formatDateTime(task.dueAt))}</span>
         ${contact ? `<span>Related lead: ${escapeHtml(contact.name)}</span>` : ""}
         ${taskGoogleSyncLabel(task)}
@@ -8637,7 +8639,7 @@ function renderTaskCard(task, options = {}) {
             : `<button class="mini-button" type="button" title="Edit task" aria-label="Edit task" data-action="edit-calendar-task" data-task-id="${task.id}">
                 <span aria-hidden="true" data-icon="edit"></span>
               </button>
-              <button class="mini-button" type="button" title="Mark complete" aria-label="Mark task complete" data-action="complete-calendar-task" data-task-id="${task.id}">
+              <button class="mini-button" type="button" title="Mark complete" aria-label="Mark task complete" data-action="complete-calendar-task" data-task-id="${task.id}" ${task.completed ? "disabled" : ""}>
                 <span aria-hidden="true" data-icon="check"></span>
               </button>
               <button class="mini-button" type="button" title="Delete task" aria-label="Delete task" data-action="delete-calendar-task" data-task-id="${task.id}">
@@ -8772,13 +8774,118 @@ async function deleteCalendarTask(taskId) {
   showToast("Task deleted");
 }
 
+function followUpSummary(now = new Date()) {
+  const tomorrow = new Date(now);
+  tomorrow.setHours(24, 0, 0, 0);
+  const result = { overdue: [], today: [], upcoming: [], completed: [], undated: [], estimates: [] };
+  for (const task of visibleCalendarTasks()) {
+    if (task.completed) { result.completed.push(task); continue; }
+    const due = localTimestamp(task.dueAt);
+    if (!Number.isFinite(due)) result.undated.push(task);
+    else if (due < now.getTime()) result.overdue.push(task);
+    else if (due < tomorrow.getTime()) result.today.push(task);
+    else result.upcoming.push(task);
+  }
+  for (const key of ["overdue", "today", "upcoming", "completed"]) {
+    result[key].sort((a, b) => localTimestamp(a.dueAt) - localTimestamp(b.dueAt));
+  }
+  if (canView("estimates")) {
+    const day = (date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    const closed = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid", "Lost"];
+    result.estimates = visibleEstimates().filter((estimate) => {
+      if (estimate.status !== "Sent") return false;
+      const job = getEstimateJob(estimate);
+      if (closed.includes(job?.status)) return false;
+      const sent = localTimestamp(estimate.sentAt || estimate.issueDate || estimate.createdAt);
+      return Number.isFinite(sent) && day(now) - day(new Date(sent)) >= 3 * 86400000;
+    }).sort((a, b) => localTimestamp(a.sentAt || a.issueDate || a.createdAt) - localTimestamp(b.sentAt || b.issueDate || b.createdAt));
+  }
+  return result;
+}
+
+function renderFollowUpSummary(elementId) {
+  const panel = document.getElementById(elementId);
+  if (!panel) return;
+  const summary = followUpSummary();
+  const groups = [
+    ["overdue", "Overdue tasks", "alert-triangle", summary.overdue.length],
+    ["today", "Due today", "calendar", summary.today.length],
+    ["estimates", "Estimates awaiting response", "file", summary.estimates.length],
+    ["upcoming", "Upcoming tasks", "clipboard", summary.upcoming.length],
+  ];
+  panel.innerHTML = groups.map(([filter, label, icon, count]) => `
+    <button class="follow-up-card ${filter === "overdue" && count ? "needs-attention" : ""}" type="button"
+      data-reminder-filter="${filter}" aria-pressed="${state.view === "tasks" && state.reminderFilter === filter}">
+      <span aria-hidden="true" data-icon="${icon}"></span><span>${label}<strong>${count}</strong></span>
+    </button>`).join("");
+  hydrateIcons(panel);
+}
+
+function estimateFollowUpCard(estimate) {
+  const contact = getEstimateContact(estimate);
+  return `<article class="task-card follow-up-estimate">
+    <div><strong>${escapeHtml(estimate.projectTitle || estimate.estimateNumber || "Estimate")}</strong>
+      <span>${escapeHtml(contact?.name || "Customer")} · ${escapeHtml(estimate.estimateNumber || "")}</span>
+      <span>Sent ${escapeHtml(formatDate(estimate.sentAt || estimate.issueDate || estimate.createdAt))} · Awaiting response</span>
+    </div>
+    <button class="secondary-button" type="button" data-action="review-follow-up-estimate" data-estimate-id="${escapeHtml(estimate.id)}">Review estimate</button>
+  </article>`;
+}
+
 function renderTasksView() {
   if (!els.tasksPageList) return;
-  const tasks = [...state.calendarTasks].sort((a, b) => taskDueTime(a) - taskDueTime(b));
-  els.tasksPageList.innerHTML = tasks.length
-    ? tasks.map((task) => renderTaskCard(task)).join("")
-    : '<div class="empty-state">No tasks yet. Create one from the Calendar tab.</div>';
+  renderFollowUpSummary("followUpTasks");
+  const summary = followUpSummary();
+  const selected = state.reminderFilter || "all";
+  const groups = [["overdue", "Overdue"], ["today", "Due today"], ["estimates", "Estimates awaiting response"],
+    ["upcoming", "Upcoming"], ["undated", "No due date"], ["completed", "Completed"]];
+  const sections = groups.filter(([key]) => selected === "all" || selected === key).map(([key, title]) => {
+    const items = summary[key];
+    if (!items.length && selected === "all") return "";
+    const cards = items.map((item) => key === "estimates" ? estimateFollowUpCard(item) : renderTaskCard(item)).join("");
+    const body = cards || '<div class="empty-state">Nothing in this group</div>';
+    return key === "completed" && selected === "all"
+      ? `<details class="reminder-group"><summary>Completed (${items.length})</summary>${body}</details>`
+      : `<section class="reminder-group"><h3>${title} <span>${items.length}</span></h3>${body}</section>`;
+  }).join("");
+  els.tasksPageList.innerHTML = `<div class="reminder-filters"><button class="secondary-button" type="button" data-reminder-filter="all" aria-pressed="${selected === "all"}">All reminders</button>
+    <button class="secondary-button" type="button" data-reminder-filter="completed" aria-pressed="${selected === "completed"}">Completed</button></div>` +
+    (sections || '<div class="empty-state">You’re caught up. Create a task from Calendar when you need a reminder.</div>');
   hydrateIcons(els.tasksPageList);
+}
+
+function renderSidebar() {
+  const shell = document.querySelector(".app-shell");
+  const button = document.querySelector(".menu-button");
+  if (!shell || !button) return;
+  const mode = state.sidebarMode || "auto";
+  const expanded = mode === "expanded" || (mode === "auto" && window.matchMedia("(min-width: 1441px)").matches);
+  shell.dataset.sidebar = mode;
+  button.setAttribute("aria-expanded", String(expanded));
+  button.setAttribute("aria-label", expanded ? "Collapse navigation" : "Expand navigation");
+  button.title = expanded ? "Collapse navigation" : "Expand navigation";
+  const overlay = expanded && window.matchMedia("(max-width: 820px)").matches;
+  const backdrop = document.getElementById("sidebarBackdrop");
+  if (backdrop) backdrop.hidden = !overlay;
+  const workspace = document.querySelector(".workspace");
+  if (workspace) workspace.inert = overlay;
+}
+
+function setSidebarMode(mode) {
+  const wasOverlay = document.querySelector(".workspace")?.inert;
+  state.sidebarMode = mode;
+  saveUiState();
+  renderSidebar();
+  if (mode === "expanded" && window.matchMedia("(max-width: 820px)").matches) document.getElementById("sidebarClose")?.focus();
+  else if (wasOverlay) document.querySelector(".menu-button")?.focus();
+}
+
+function refreshReminderDisplays() {
+  // Refresh time-sensitive labels without rebuilding forms or disturbing drafts.
+  if (document.hidden) return;
+  renderTopbarProfile();
+  if (state.view === "dashboard") renderDashboardTasks();
+  if (state.view === "tasks") renderTasksView();
 }
 
 function squareStatusPill(estimate) {
@@ -10569,6 +10676,7 @@ function updateSelectedEstimateFromField(fieldName, value) {
     renderEstimateForm(estimate);
     return;
   }
+  const enteringSent = fieldName === "status" && value === "Sent" && estimate.status !== "Sent";
   if (["taxRate", "deposit"].includes(fieldName)) {
     estimate[fieldName] = Math.max(0, number(value));
   } else if (fieldName === "projectManager") {
@@ -10578,6 +10686,7 @@ function updateSelectedEstimateFromField(fieldName, value) {
   }
 
   if (fieldName === "status") {
+    if (enteringSent) estimate.sentAt = new Date().toISOString();
     syncEstimatePipelineStage(estimate, value);
   }
 
@@ -11464,6 +11573,30 @@ const icons = {
 };
 
 function bindEvents() {
+  document.querySelector(".menu-button")?.addEventListener("click", () => {
+    const expanded = document.querySelector(".menu-button").getAttribute("aria-expanded") === "true";
+    setSidebarMode(expanded ? "compact" : "expanded");
+  });
+  document.getElementById("sidebarBackdrop")?.addEventListener("click", () => setSidebarMode("compact"));
+  document.getElementById("sidebarClose")?.addEventListener("click", () => {
+    setSidebarMode("compact");
+    document.querySelector(".menu-button")?.focus();
+  });
+  window.matchMedia("(min-width: 1441px)").addEventListener("change", renderSidebar);
+  window.matchMedia("(max-width: 820px)").addEventListener("change", renderSidebar);
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      els.globalSearch.focus();
+      els.globalSearch.select();
+    }
+    if (event.key === "Escape" && state.sidebarMode === "expanded" && window.matchMedia("(max-width: 820px)").matches) {
+      setSidebarMode("compact");
+      document.querySelector(".menu-button")?.focus();
+    }
+  });
+  window.setInterval(refreshReminderDisplays, 60000);
+  document.addEventListener("visibilitychange", refreshReminderDisplays);
   document.addEventListener("focusout", () => {
     if (!pendingDurableRender) return;
     window.setTimeout(() => {
@@ -11485,6 +11618,13 @@ function bindEvents() {
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".global-search")) hideLiveSearchResults();
 
+    const reminderFilter = event.target.closest("[data-reminder-filter]");
+    if (reminderFilter) {
+      state.reminderFilter = reminderFilter.dataset.reminderFilter;
+      setView("tasks");
+      return;
+    }
+
     const dashboardStage = event.target.closest("[data-dashboard-stage]");
     if (dashboardStage) {
       state.leadStageFilter = dashboardStage.dataset.dashboardStage || "";
@@ -11497,6 +11637,8 @@ function bindEvents() {
 
     const navButton = event.target.closest("[data-view]");
     if (navButton) {
+      if (state.sidebarMode === "expanded" && window.matchMedia("(max-width: 820px)").matches) setSidebarMode("compact");
+      if (navButton.dataset.view === "tasks") state.reminderFilter = "all";
       if (navButton.dataset.view === "leads") state.leadStageFilter = "";
       setView(navButton.dataset.view);
     }
@@ -11521,6 +11663,16 @@ function bindEvents() {
     const { action, contactId, nextStatus, lineIndex } = actionButton.dataset;
     const permission = actionPermissions[action];
     if (permission && !requireAction(permission)) return;
+    if (action === "review-follow-up-estimate") {
+      const estimate = visibleEstimates().find((item) => item.id === actionButton.dataset.estimateId);
+      if (estimate && canView("estimates")) {
+        state.search = "";
+        state.selectedEstimateId = estimate.id;
+        state.selectedContactId = estimate.contactId;
+        setView("estimates");
+      }
+      return;
+    }
     if (action === "download-document") await downloadManagedDocument(actionButton.dataset.documentId);
     if (action === "sync-google-drive-document") {
       const outcome = await syncDocumentsToGoogleDrive([actionButton.dataset.documentId], { force: true });
@@ -11689,7 +11841,7 @@ function bindEvents() {
     if (!result) return;
     event.preventDefault();
     event.stopPropagation();
-    openLiveSearchResult(result.dataset.liveSearchContact);
+    openLiveSearchResult(result.dataset.liveSearchContact, result.dataset.liveSearchJob);
   };
   els.globalSearchResults.addEventListener("pointerdown", selectLiveSearchResult);
   els.globalSearchResults.addEventListener("click", selectLiveSearchResult);
@@ -11719,7 +11871,8 @@ function bindEvents() {
       renderLiveSearchResults();
     } else if (event.key === "Enter") {
       event.preventDefault();
-      openLiveSearchResult(matches[Math.max(liveSearchActiveIndex, 0)]?.id);
+      const contact = matches[Math.max(liveSearchActiveIndex, 0)];
+      openLiveSearchResult(contact?.id, contact && searchResultJob(contact, state.search)?.id);
     }
   });
 
