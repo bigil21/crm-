@@ -71,6 +71,11 @@ function formatCurrencyInput(value = "") {
   });
 }
 
+function parseCurrencyInput(value = "") {
+  const parsed = number(value);
+  return Math.round((parsed + Number.EPSILON) * 100) / 100;
+}
+
 const uid = (prefix) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
