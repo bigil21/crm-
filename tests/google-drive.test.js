@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const {
-  GOOGLE_DRIVE_SCOPE, safeFolderName, createServiceAccountAssertion, ensureDocumentFolder, uploadDocument,
+  GOOGLE_DRIVE_SCOPE, safeFolderName, createServiceAccountAssertion, exchangeServiceAccountToken, ensureDocumentFolder, uploadDocument,
 } = require('../google-drive');
 
 test('Drive service account assertion is short-lived and limited to Drive', () => {
@@ -15,6 +15,28 @@ test('Drive service account assertion is short-lived and limited to Drive', () =
   assert.equal(claims.iss, 'jobcrest@example.iam.gserviceaccount.com');
   assert.equal(claims.scope, GOOGLE_DRIVE_SCOPE);
   assert.equal(claims.exp - claims.iat, 3600);
+});
+
+test('Drive uses short-lived application default credentials when no private key is configured', async () => {
+  const requestedScopes = [];
+  const token = await exchangeServiceAccountToken(null, {
+    scopes: [GOOGLE_DRIVE_SCOPE, GOOGLE_DRIVE_SCOPE],
+    googleAuth: {
+      async getClient() {
+        requestedScopes.push(GOOGLE_DRIVE_SCOPE);
+        return { async getAccessToken() { return { token: 'short-lived-token' }; } };
+      },
+    },
+  });
+  assert.equal(token, 'short-lived-token');
+  assert.deepEqual(requestedScopes, [GOOGLE_DRIVE_SCOPE]);
+});
+
+test('Drive rejects domain delegation when using keyless application credentials', async () => {
+  await assert.rejects(
+    exchangeServiceAccountToken(null, { subject: 'admin@example.com', googleAuth: {} }),
+    /google_domain_delegation_requires_private_key/,
+  );
 });
 
 test('Drive folder names remove filesystem separators and control characters', () => {

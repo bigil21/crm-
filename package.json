@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@cantoo/pdf-lib": "2.11.1",
+    "google-auth-library": "^10.3.0",
     "pdfjs-dist": "6.4.299"
   }
 }

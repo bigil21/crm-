@@ -253,10 +253,12 @@ function googleWorkspaceConfig() {
 function googleDriveConfig() {
   const clientEmail = String(process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || "").trim().toLowerCase();
   const privateKey = String(process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY || "").replaceAll("\\n", "\n").trim();
+  const applicationCredentials = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || "").trim();
   const rootFolderId = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim();
-  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.iam\.gserviceaccount\.com$/.test(clientEmail) || !privateKey.includes("BEGIN PRIVATE KEY")) return null;
+  const hasPrivateKey = privateKey.includes("BEGIN PRIVATE KEY");
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.iam\.gserviceaccount\.com$/.test(clientEmail) || (!hasPrivateKey && !applicationCredentials)) return null;
   try { safeDriveId(rootFolderId, "drive_root"); } catch { return null; }
-  return { clientEmail, privateKey, rootFolderId };
+  return { clientEmail, ...(hasPrivateKey ? { privateKey } : {}), rootFolderId, credentialMode: hasPrivateKey ? "private-key" : "application-default" };
 }
 
 function googleProductsConfig() {

@@ -52,8 +52,9 @@ Drive document storage uses a dedicated service account instead of an employee's
 4. Add the service account email as a **Content manager** of that Shared Drive, or grant it access to the selected root folder.
 5. Add these protected Render settings:
 
-   - `GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL`: `client_email` from the service-account key
-   - `GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY`: `private_key` from the service-account key
+   - `GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL`: the Google service-account email
+   - Preferred on Render: configure Render managed GCP OIDC with `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT_EMAIL`. Render supplies `GOOGLE_APPLICATION_CREDENTIALS` automatically, so no long-lived private key is stored.
+   - Legacy fallback only: `GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY` from a service-account key
    - `GOOGLE_DRIVE_ROOT_FOLDER_ID`: the folder ID from the selected JobCrest root folder URL
 
 Never put the service-account JSON file or private key in the repository or browser code. JobCrest creates folders using durable CRM identifiers, so renaming a customer or project does not create a duplicate folder. Each stored document version is copied only once.

@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { GoogleAuth } = require("google-auth-library");
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -47,6 +48,16 @@ function createServiceAccountAssertion(config, now = Date.now()) {
 }
 
 async function exchangeServiceAccountToken(fetchImpl, config, now = Date.now()) {
+  if (!config.privateKey) {
+    if (config.subject) throw new Error("google_domain_delegation_requires_private_key");
+    const scopes = [...new Set(Array.isArray(config.scopes) && config.scopes.length ? config.scopes : [GOOGLE_DRIVE_SCOPE])];
+    const auth = config.googleAuth || new GoogleAuth({ scopes });
+    const client = await auth.getClient();
+    const tokenResult = await client.getAccessToken();
+    const accessToken = typeof tokenResult === "string" ? tokenResult : tokenResult?.token;
+    if (typeof accessToken !== "string" || !accessToken) throw new Error("google_drive_token_failed");
+    return accessToken;
+  }
   const response = await fetchImpl(GOOGLE_TOKEN_URL, {
     method: "POST", signal: AbortSignal.timeout(15000),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
