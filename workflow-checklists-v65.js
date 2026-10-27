@@ -120,14 +120,14 @@
     {
       label: "Sales Process",
       items: [
-        { view: "leads", label: "Lead Intake", icon: "user", step: "1" },
-        { view: "contacts", label: "Contacts", icon: "users", step: "2" },
-        { view: "jobs", label: "Inspections & Jobs", icon: "briefcase", step: "3" },
-        { view: "estimates", label: "Estimates", icon: "file", step: "4" },
-        { view: "projects", label: "Sold Jobs & Production", icon: "hammer", step: "5" },
-        { view: "invoices", label: "Billing & Payments", icon: "invoice", step: "6" },
-        { view: "reviews", label: "Reviews & Referrals", icon: "star", step: "7" },
-        { view: "pipeline", label: "Sales Pipeline", icon: "bar-chart" },
+        { view: "leads", label: "Lead Intake", icon: "user" },
+        { view: "contacts", label: "Contacts", icon: "users" },
+        { view: "jobs", label: "Inspections & Jobs", icon: "briefcase" },
+        { view: "estimates", label: "Estimates", icon: "file" },
+        { view: "projects", label: "Sold Jobs & Production", icon: "hammer" },
+        { view: "invoices", label: "Billing & Payments", icon: "invoice" },
+        { view: "reviews", label: "Reviews & Referrals", icon: "star" },
+        { view: "pipeline", label: "Sales Pipeline", icon: "pipeline" },
       ],
     },
     {
@@ -499,11 +499,7 @@
               .map(
                 (item) => `
                   <button class="nav-item" type="button" data-view="${item.view}" aria-label="${escapeHtml(item.label)}" title="${escapeHtml(item.label)}">
-                    ${
-                      item.step
-                        ? `<span class="workflow-nav-step" aria-hidden="true">${item.step}</span>`
-                        : `<span aria-hidden="true" data-icon="${item.icon}"></span>`
-                    }
+                    <span aria-hidden="true" data-icon="${item.icon}"></span>
                     <span>${escapeHtml(item.label)}</span>
                   </button>
                 `,
@@ -955,23 +951,6 @@
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0;
-      }
-      .workflow-nav-step {
-        width: 22px;
-        height: 22px;
-        flex: 0 0 22px;
-        display: inline-grid;
-        place-items: center;
-        border: 1px solid rgba(255,255,255,.28);
-        border-radius: 50%;
-        color: rgba(255,255,255,.82);
-        font-size: 10px;
-        font-weight: 800;
-      }
-      .nav-item.active .workflow-nav-step {
-        border-color: #fff;
-        background: #fff;
-        color: #111;
       }
       .workflow-checklist {
         margin: 18px 0;
