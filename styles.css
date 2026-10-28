@@ -189,8 +189,6 @@ button:disabled {
 /* Keep long CRM workspaces on the compositor's fast scrolling path.  The
    dashboard background already has enough contrast, so the live blur added
    paint work without improving readability. */
-.dashboard-layout > .dashboard-panel,
-.dashboard-layout > .leaderboard-panel,
 .leads-list > .record-card,
 .payment-ledger-list > .payment-ledger-card {
   content-visibility: auto;
@@ -464,12 +462,13 @@ button:disabled {
 .dashboard-layout {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: stretch;
   gap: 18px;
   min-width: 0;
-  align-items: start;
 }
 
 .dashboard-layout > * {
+  align-self: stretch;
   min-width: 0;
 }
 
