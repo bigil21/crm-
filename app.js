@@ -197,6 +197,35 @@ const leaderboardRanges = {
   ytd: "Year to Date",
 };
 
+const dashboardWidgetDefaults = [
+  { id: "pipeline", columns: 5, rows: 28, order: 0 },
+  { id: "revenue", columns: 4, rows: 28, order: 1 },
+  { id: "reminders", columns: 3, rows: 28, order: 2 },
+  { id: "lead-sources", columns: 3, rows: 18, order: 3 },
+  { id: "job-types", columns: 3, rows: 18, order: 4 },
+  { id: "project-status", columns: 3, rows: 18, order: 5 },
+  { id: "activity", columns: 3, rows: 18, order: 6 },
+  { id: "schedule", columns: 8, rows: 20, order: 7 },
+  { id: "weather", columns: 4, rows: 20, order: 8 },
+  { id: "leaderboard", columns: 12, rows: 18, order: 9 },
+];
+
+function normalizeDashboardWidgetLayout(value) {
+  const provided = new Map((Array.isArray(value) ? value : []).map((item) => [String(item?.id || ""), item]));
+  return dashboardWidgetDefaults.map((fallback) => {
+    const item = provided.get(fallback.id) || {};
+    const columns = Number(item.columns);
+    const rows = Number(item.rows);
+    const order = Number(item.order);
+    return {
+      id: fallback.id,
+      columns: Math.max(3, Math.min(12, Math.round(Number.isFinite(columns) ? columns : fallback.columns))),
+      rows: Math.max(12, Math.min(40, Math.round(Number.isFinite(rows) ? rows : fallback.rows))),
+      order: Math.max(0, Math.min(dashboardWidgetDefaults.length - 1, Math.round(Number.isFinite(order) ? order : fallback.order))),
+    };
+  }).sort((left, right) => left.order - right.order).map((item, order) => ({ ...item, order }));
+}
+
 const sharedCrmViews = [
   "dashboard",
   "leads",
@@ -521,6 +550,7 @@ const createInitialState = () => ({
   leadTagFilter: "",
   savedLeadFilterId: "",
   leaderboardRange: "month",
+  dashboardWidgetLayout: normalizeDashboardWidgetLayout(),
   leadDetailTab: "overview",
   financeTab: "invoices",
   selectedContactId: "contact_1002",
@@ -651,6 +681,7 @@ let smartDocumentRenderToken = 0;
 let smartDocumentAnalysisPdf = null;
 let smartDocumentZoom = 1;
 let selectedCompanyDocumentFolderId = "";
+let dashboardCustomizeActive = false;
 
 function roleLabel(role = currentRole()) {
   return String(role || "viewer")
@@ -696,6 +727,10 @@ const els = {
     company: document.querySelector("#companyView"),
   },
   summaryStrip: document.querySelector("#summaryStrip"),
+  dashboardLayout: document.querySelector("#dashboardLayout"),
+  dashboardCustomizeButton: document.querySelector("#dashboardCustomizeButton"),
+  dashboardResetLayoutButton: document.querySelector("#dashboardResetLayoutButton"),
+  dashboardLayoutHelp: document.querySelector("#dashboardLayoutHelp"),
   leaderboardTableBody: document.querySelector("#leaderboardTableBody"),
   leaderboardRangeLabel: document.querySelector("#leaderboardRangeLabel"),
   pipelineOverview: document.querySelector("#pipelineOverview"),
@@ -987,6 +1022,7 @@ function uiStateSnapshot() {
     leadTagFilter: state.leadTagFilter,
     savedLeadFilterId: state.savedLeadFilterId,
     leaderboardRange: state.leaderboardRange,
+    dashboardWidgetLayout: state.dashboardWidgetLayout,
     leadDetailTab: state.leadDetailTab,
     financeTab: state.financeTab,
     selectedContactId: state.selectedContactId,
@@ -1062,6 +1098,7 @@ function normalizeState(nextState) {
   return {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
+    dashboardWidgetLayout: normalizeDashboardWidgetLayout(nextState.dashboardWidgetLayout),
     leadStageFilter: statuses.includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
     sidebarMode: ["expanded", "compact"].includes(nextState.sidebarMode) ? nextState.sidebarMode : "auto",
     reminderFilter: ["overdue", "today", "estimates", "upcoming", "completed"].includes(nextState.reminderFilter) ? nextState.reminderFilter : "all",
@@ -5185,8 +5222,150 @@ function ensureWeatherData() {
   }
 }
 
+function dashboardWidgetLayoutItem(widgetId) {
+  return state.dashboardWidgetLayout.find((item) => item.id === widgetId);
+}
+
+function saveDashboardWidgetLayout() {
+  state.dashboardWidgetLayout = normalizeDashboardWidgetLayout(state.dashboardWidgetLayout);
+  saveUiState();
+}
+
+function renderDashboardWidgetLayout() {
+  if (!els.dashboardLayout) return;
+  state.dashboardWidgetLayout = normalizeDashboardWidgetLayout(state.dashboardWidgetLayout);
+  els.dashboardLayout.classList.toggle("is-customizing", dashboardCustomizeActive);
+  els.dashboardCustomizeButton?.setAttribute("aria-pressed", String(dashboardCustomizeActive));
+  if (els.dashboardCustomizeButton) {
+    els.dashboardCustomizeButton.lastChild.textContent = dashboardCustomizeActive ? " Done" : " Customize widgets";
+  }
+  els.dashboardResetLayoutButton?.classList.toggle("hidden", !dashboardCustomizeActive);
+  els.dashboardLayoutHelp?.classList.toggle("hidden", !dashboardCustomizeActive);
+
+  els.dashboardLayout.querySelectorAll("[data-dashboard-widget]").forEach((widget) => {
+    const item = dashboardWidgetLayoutItem(widget.dataset.dashboardWidget);
+    if (!item) return;
+    widget.style.setProperty("--dashboard-widget-columns", String(item.columns));
+    widget.style.setProperty("--dashboard-widget-rows", String(item.rows));
+    widget.style.order = String(item.order);
+    widget.classList.toggle("is-widget-editable", dashboardCustomizeActive);
+
+    let dragHandle = widget.querySelector("[data-dashboard-widget-drag]");
+    if (!dragHandle) {
+      dragHandle = document.createElement("button");
+      dragHandle.type = "button";
+      dragHandle.className = "dashboard-widget-drag-handle";
+      dragHandle.dataset.dashboardWidgetDrag = "";
+      dragHandle.textContent = "⋮⋮";
+      dragHandle.title = "Drag to move this widget";
+      dragHandle.setAttribute("aria-label", `Move ${widget.dataset.dashboardWidget} widget`);
+      widget.append(dragHandle);
+    }
+    dragHandle.draggable = dashboardCustomizeActive;
+    dragHandle.classList.toggle("hidden", !dashboardCustomizeActive);
+
+    let resizeHandle = widget.querySelector("[data-dashboard-widget-resize]");
+    if (!resizeHandle) {
+      resizeHandle = document.createElement("button");
+      resizeHandle.type = "button";
+      resizeHandle.className = "dashboard-widget-resize-handle";
+      resizeHandle.dataset.dashboardWidgetResize = "";
+      resizeHandle.title = "Drag to resize this widget";
+      resizeHandle.setAttribute("aria-label", `Resize ${widget.dataset.dashboardWidget} widget`);
+      widget.append(resizeHandle);
+    }
+    resizeHandle.classList.toggle("hidden", !dashboardCustomizeActive);
+  });
+}
+
+function moveDashboardWidget(draggedId, targetId) {
+  if (!draggedId || !targetId || draggedId === targetId) return;
+  const layout = normalizeDashboardWidgetLayout(state.dashboardWidgetLayout);
+  const dragged = layout.find((item) => item.id === draggedId);
+  if (!dragged || !layout.some((item) => item.id === targetId)) return;
+  const remaining = layout.filter((item) => item.id !== draggedId);
+  const targetIndex = remaining.findIndex((item) => item.id === targetId);
+  remaining.splice(targetIndex < 0 ? remaining.length : targetIndex, 0, dragged);
+  state.dashboardWidgetLayout = remaining.map((item, order) => ({ ...item, order }));
+  saveDashboardWidgetLayout();
+  renderDashboardWidgetLayout();
+}
+
+function beginDashboardWidgetResize(event, widget) {
+  if (!dashboardCustomizeActive || !widget || !els.dashboardLayout) return;
+  const item = dashboardWidgetLayoutItem(widget.dataset.dashboardWidget);
+  if (!item) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startColumns = item.columns;
+  const startRows = item.rows;
+  const columnStep = Math.max(60, els.dashboardLayout.getBoundingClientRect().width / 12);
+  widget.classList.add("is-resizing");
+
+  const move = (moveEvent) => {
+    item.columns = Math.max(3, Math.min(12, Math.round(startColumns + (moveEvent.clientX - startX) / columnStep)));
+    item.rows = Math.max(12, Math.min(40, Math.round(startRows + (moveEvent.clientY - startY) / 16)));
+    widget.style.setProperty("--dashboard-widget-columns", String(item.columns));
+    widget.style.setProperty("--dashboard-widget-rows", String(item.rows));
+  };
+  const finish = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", finish);
+    widget.classList.remove("is-resizing");
+    saveDashboardWidgetLayout();
+    renderDashboardWidgetLayout();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", finish, { once: true });
+}
+
+function bindDashboardWidgetEvents() {
+  if (!els.dashboardLayout) return;
+  els.dashboardCustomizeButton?.addEventListener("click", () => {
+    dashboardCustomizeActive = !dashboardCustomizeActive;
+    renderDashboardWidgetLayout();
+  });
+  els.dashboardResetLayoutButton?.addEventListener("click", () => {
+    state.dashboardWidgetLayout = normalizeDashboardWidgetLayout();
+    saveDashboardWidgetLayout();
+    renderDashboardWidgetLayout();
+    showToast("Dashboard layout reset");
+  });
+  els.dashboardLayout.addEventListener("dragstart", (event) => {
+    const handle = event.target.closest("[data-dashboard-widget-drag]");
+    const widget = handle?.closest("[data-dashboard-widget]");
+    if (!dashboardCustomizeActive || !widget) return event.preventDefault();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", widget.dataset.dashboardWidget);
+    widget.classList.add("is-dragging");
+  });
+  els.dashboardLayout.addEventListener("dragend", () => {
+    els.dashboardLayout.querySelectorAll(".is-dragging, .is-drop-target").forEach((item) => item.classList.remove("is-dragging", "is-drop-target"));
+  });
+  els.dashboardLayout.addEventListener("dragover", (event) => {
+    const widget = event.target.closest("[data-dashboard-widget]");
+    if (!dashboardCustomizeActive || !widget) return;
+    event.preventDefault();
+    els.dashboardLayout.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+    widget.classList.add("is-drop-target");
+  });
+  els.dashboardLayout.addEventListener("drop", (event) => {
+    const widget = event.target.closest("[data-dashboard-widget]");
+    if (!dashboardCustomizeActive || !widget) return;
+    event.preventDefault();
+    moveDashboardWidget(event.dataTransfer.getData("text/plain"), widget.dataset.dashboardWidget);
+  });
+  els.dashboardLayout.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest("[data-dashboard-widget-resize]");
+    if (handle) beginDashboardWidgetResize(event, handle.closest("[data-dashboard-widget]"));
+  });
+}
+
 function renderDashboard() {
   if (!els.views.dashboard) return;
+  renderDashboardWidgetLayout();
 
   document.querySelectorAll("[data-leaderboard-range]").forEach((button) => {
     button.classList.toggle("active", button.dataset.leaderboardRange === state.leaderboardRange);
@@ -13894,6 +14073,7 @@ const icons = {
 };
 
 function bindEvents() {
+  bindDashboardWidgetEvents();
   document.querySelector(".menu-button")?.addEventListener("click", () => {
     const expanded = document.querySelector(".menu-button").getAttribute("aria-expanded") === "true";
     setSidebarMode(expanded ? "compact" : "expanded");

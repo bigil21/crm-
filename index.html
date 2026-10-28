@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=79" />
+    <link rel="stylesheet" href="styles.css?v=80" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -179,8 +179,16 @@
 
         <section class="view-panel" id="dashboardView">
           <section id="followUpDashboard" class="follow-up-summary" aria-label="Follow-up reminders"></section>
-          <div class="dashboard-layout">
-            <section class="surface dashboard-panel pipeline-widget">
+          <div class="dashboard-layout-controls" aria-label="Dashboard layout controls">
+            <button class="secondary-button" type="button" id="dashboardCustomizeButton" aria-pressed="false">
+              <span aria-hidden="true" data-icon="edit"></span>
+              Customize widgets
+            </button>
+            <button class="ghost-button hidden" type="button" id="dashboardResetLayoutButton">Reset layout</button>
+            <span class="dashboard-layout-help hidden" id="dashboardLayoutHelp">Drag widgets to rearrange. Drag the lower-right corner to resize.</span>
+          </div>
+          <div class="dashboard-layout dashboard-widget-grid" id="dashboardLayout">
+            <section class="surface dashboard-panel pipeline-widget" data-dashboard-widget="pipeline">
               <div class="view-toolbar">
                 <div>
                   <p class="eyebrow">Pipeline overview</p>
@@ -190,7 +198,7 @@
               <div id="pipelineOverview" class="pipeline-overview"></div>
             </section>
 
-            <section class="surface dashboard-panel revenue-widget">
+            <section class="surface dashboard-panel revenue-widget" data-dashboard-widget="revenue">
               <div class="view-toolbar">
                 <div>
                   <p class="eyebrow">Revenue overview</p>
@@ -200,7 +208,7 @@
               <div id="revenueChart" class="revenue-chart"></div>
             </section>
 
-            <section class="surface dashboard-panel tasks-widget">
+            <section class="surface dashboard-panel tasks-widget" data-dashboard-widget="reminders">
               <div class="view-toolbar compact">
                 <div>
                   <p class="eyebrow">Next actions</p>
@@ -211,7 +219,7 @@
               <div id="dashboardTasksList" class="task-list dashboard-task-list" role="region" aria-label="Priority reminders" tabindex="0"></div>
             </section>
 
-            <section class="surface dashboard-panel donut-panel">
+            <section class="surface dashboard-panel donut-panel" data-dashboard-widget="lead-sources">
               <div class="view-toolbar compact">
                 <div>
                   <p class="eyebrow">Lead sources</p>
@@ -221,7 +229,7 @@
               <div id="leadSourcesChart" class="donut-widget"></div>
             </section>
 
-            <section class="surface dashboard-panel donut-panel">
+            <section class="surface dashboard-panel donut-panel" data-dashboard-widget="job-types">
               <div class="view-toolbar compact">
                 <div>
                   <p class="eyebrow">Jobs by type</p>
@@ -231,7 +239,7 @@
               <div id="jobsByTypeChart" class="donut-widget"></div>
             </section>
 
-            <section class="surface dashboard-panel donut-panel">
+            <section class="surface dashboard-panel donut-panel" data-dashboard-widget="project-status">
               <div class="view-toolbar compact">
                 <div>
                   <p class="eyebrow">Project status</p>
@@ -241,7 +249,7 @@
               <div id="projectStatusChart" class="donut-widget"></div>
             </section>
 
-            <section class="surface dashboard-panel activity-widget">
+            <section class="surface dashboard-panel activity-widget" data-dashboard-widget="activity">
               <div class="view-toolbar compact">
                 <div>
                   <p class="eyebrow">Recent activity</p>
@@ -251,7 +259,7 @@
               <div id="recentActivityList" class="activity-list"></div>
             </section>
 
-            <section class="surface dashboard-panel schedule-widget">
+            <section class="surface dashboard-panel schedule-widget" data-dashboard-widget="schedule">
               <div class="view-toolbar compact">
                 <div>
                   <p class="eyebrow">Today</p>
@@ -261,11 +269,11 @@
               <div id="todayScheduleList" class="schedule-strip"></div>
             </section>
 
-            <section class="surface dashboard-panel weather-widget">
+            <section class="surface dashboard-panel weather-widget" data-dashboard-widget="weather">
               <div id="weatherPanel"></div>
             </section>
 
-            <section class="surface dashboard-panel leaderboard-panel">
+            <section class="surface dashboard-panel leaderboard-panel" data-dashboard-widget="leaderboard">
               <div class="view-toolbar">
                 <div>
                   <p class="eyebrow">Sales leaderboard</p>
@@ -1932,7 +1940,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=160" defer></script>
+    <script src="app.js?v=161" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>
