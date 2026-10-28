@@ -5249,7 +5249,7 @@ function renderDashboardTasks() {
   renderFollowUpSummary("followUpDashboard");
   if (!els.dashboardTasksList) return;
   const summary = followUpSummary();
-  const tasks = [...summary.overdue, ...summary.today, ...summary.upcoming].slice(0, 5);
+  const tasks = [...summary.overdue, ...summary.today, ...summary.upcoming];
   els.dashboardTasksList.innerHTML = tasks.length
     ? tasks.map((task) => renderTaskCard(task, { compact: true })).join("")
     : '<div class="empty-state">No open calendar tasks</div>';

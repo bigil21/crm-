@@ -162,3 +162,25 @@ test('sidebar toggles update accessibility and save only a local UI preference',
   assert.equal(workspace.inert, false);
   assert.equal(saves, 2);
 });
+
+test('dashboard includes every open reminder in priority order, including items beyond the first five', () => {
+  const list = { innerHTML: '' };
+  const summary = {
+    overdue: Array.from({ length: 4 }, (_, i) => ({ id: `overdue-${i}` })),
+    today: Array.from({ length: 3 }, (_, i) => ({ id: `today-${i}` })),
+    upcoming: Array.from({ length: 5 }, (_, i) => ({ id: `upcoming-${i}` })),
+    completed: [{ id: 'completed-must-stay-out' }],
+  };
+  const rendered = [];
+  const c = load(['renderDashboardTasks'], {
+    els: { dashboardTasksList: list }, followUpSummary: () => summary,
+    renderFollowUpSummary() {}, hydrateIcons() {},
+    renderTaskCard(task, options) { assert.equal(options.compact, true); rendered.push(task.id); return `<article>${task.id}</article>`; },
+  });
+  c.renderDashboardTasks();
+  assert.equal(rendered.length, 12);
+  assert.equal(rendered[0], 'overdue-0');
+  assert.equal(rendered[4], 'today-0');
+  assert.equal(rendered[11], 'upcoming-4');
+  assert.doesNotMatch(list.innerHTML, /completed-must-stay-out/);
+});

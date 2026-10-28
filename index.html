@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=76" />
+    <link rel="stylesheet" href="styles.css?v=77" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -208,7 +208,7 @@
                 </div>
                 <button class="link-button" type="button" data-view="tasks">View All</button>
               </div>
-              <div id="dashboardTasksList" class="task-list dashboard-task-list"></div>
+              <div id="dashboardTasksList" class="task-list dashboard-task-list" role="region" aria-label="Priority reminders" tabindex="0"></div>
             </section>
 
             <section class="surface dashboard-panel donut-panel">
@@ -1932,7 +1932,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=159" defer></script>
+    <script src="app.js?v=160" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>
