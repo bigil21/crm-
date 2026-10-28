@@ -1292,7 +1292,12 @@ button:disabled {
 }
 
 .document-list,
-.conversation-list,
+.conversation-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 /* ── Monthly calendar grid ───────────────────────────────── */
 
 .cal-month-nav {
@@ -2044,6 +2049,61 @@ button:disabled {
   border-top: 4px solid var(--category-color, var(--accent));
   border-radius: var(--radius);
   background: #ffffff;
+}
+
+#leadDocumentsList {
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+  align-items: start;
+  width: 100%;
+}
+
+#leadDocumentsList .document-folder,
+#leadDocumentsList .document-folder-title,
+#leadDocumentsList .document-folder-title > div,
+#leadDocumentsList .document-folder-files,
+#leadDocumentsList .document-card > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#leadDocumentsList .document-folder-title {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+#leadDocumentsList .document-folder-header > button {
+  flex: 0 0 auto;
+}
+
+#leadDocumentsList .document-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  overflow-wrap: anywhere;
+}
+
+#leadDocumentsList .row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+#leadDocumentsList .row-actions > button {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+#leadDocumentsPanel .document-upload-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  width: 100%;
+  min-width: 0;
+}
+
+#leadDocumentsPanel .document-upload-controls > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .document-folder.is-inactive {
@@ -6256,4 +6316,125 @@ textarea:focus {
   .calendar-form-grid { grid-template-columns: 1fr; }
   .calendar-form-grid label { grid-column: 1 !important; }
   .calendar-event-context { grid-template-columns: 1fr; }
+}
+
+/* Shared screen layout rules: size content to the workspace, including browser
+   zoom and an expanded sidebar. Printed proposals retain their paper layout. */
+@media screen {
+  :where(.workspace, .surface, .form-grid, .view-toolbar, .row-actions,
+    .admin-settings-grid, .document-operations-columns, .integration-grid,
+    .project-delivery-grid, .calendar-workspace-layout) > * {
+    min-width: 0;
+  }
+
+  :where(input, select, textarea) { min-width: 0; max-width: 100%; }
+  :where(.surface, .contact-dialog) :where(h2, h3, h4, p, strong, label) {
+    overflow-wrap: anywhere;
+  }
+  :where(.row-actions, .detail-actions, .dialog-header, .dialog-actions,
+    .finance-action-bar, .invoice-section-heading, .calendar-command-bar,
+    .calendar-command-primary, .company-document-folder-toolbar,
+    .company-document-folder-toolbar > div, .job-time-panel) {
+    flex-wrap: wrap;
+  }
+  :where(.row-actions, .detail-actions, .dialog-actions, .view-toolbar) > button {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .finance-tabs { flex-wrap: wrap; }
+  .finance-tab { flex: 0 1 auto; min-width: min(105px, 100%); }
+  .lead-intake-actions { flex-wrap: wrap; max-width: 100%; }
+  .stage-filter-control { min-width: min(220px, 100%); }
+  .calendar-time-view { min-width: 0; }
+  .calendar-time-heads, .calendar-time-columns {
+    grid-template-columns: repeat(var(--calendar-days), minmax(0, 1fr));
+  }
+  .calendar-time-head { min-width: 0; padding-inline: 0; }
+  .document-upload-controls {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .smart-doc-upload-option { white-space: normal; }
+  .smart-doc-upload-option input { flex: 0 0 16px; width: 16px; }
+  .job-photo-grid,
+  .photo-grid { grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr)); }
+  .table-wrap { max-width: 100%; min-width: 0; overscroll-behavior-x: contain; }
+  .contact-dialog { max-height: calc(100dvh - 24px); overflow: auto; }
+  .portal-header { flex-wrap: wrap; gap: 12px; }
+  .portal-shell, .portal-workspace, .portal-grid > * { min-width: 0; }
+  .portal-record { overflow-wrap: anywhere; }
+  .lead-detail-surface .workflow-stage-track {
+    grid-template-columns: repeat(auto-fit, minmax(min(88px, 100%), 1fr));
+    row-gap: 14px;
+  }
+  .lead-detail-surface .workflow-stage { min-width: 0; }
+
+  @container workspace (max-width: 1200px) {
+    .calendar-workspace-layout:has(.calendar-editor-panel:not(.hidden)) {
+      grid-template-columns: 190px minmax(0, 1fr);
+    }
+    .calendar-workspace-layout:has(.calendar-editor-panel:not(.hidden)) .calendar-editor-panel {
+      grid-column: 1 / -1;
+      position: static;
+      inset: auto;
+      width: auto;
+      max-height: none;
+    }
+    .document-category-admin-row { grid-template-columns: 24px 42px minmax(0, 1fr); }
+    .document-category-meta, .document-category-actions { grid-column: 3; }
+    .document-category-actions { justify-content: flex-start; }
+  }
+
+  @container workspace (max-width: 960px) {
+    .lead-intake-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .lead-intake-contact, .lead-intake-row-actions { grid-column: 1 / -1; }
+    .lead-intake-row-actions { flex-wrap: wrap; justify-content: flex-start; }
+    .team-invite-form, .document-category-create-form,
+    .project-member-form, .document-category-fields {
+      grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+    }
+    .integration-grid, .admin-settings-grid, .document-operations-columns,
+    .project-delivery-grid { grid-template-columns: minmax(0, 1fr); }
+    .invoice-list-row, .financial-ledger-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .invoice-row-actions { flex-wrap: wrap; justify-content: flex-start; }
+    .company-document-row { grid-template-columns: 38px minmax(0, 1fr) 68px; }
+    .company-document-row-actions { grid-column: 2 / -1; justify-content: flex-start; }
+    .company-document-list-header { display: none; }
+    .company-document-row > .company-document-date { display: none; }
+  }
+
+  @container workspace (max-width: 600px) {
+    .calendar-workspace-layout,
+    .calendar-workspace-layout:has(.calendar-editor-panel:not(.hidden)),
+    .invoice-list-row, .financial-ledger-row,
+    .report-metric-row { grid-template-columns: minmax(0, 1fr); }
+    .calendar-filter-panel { position: static; }
+    .calendar-command-bar { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+    .calendar-command-primary { flex: 0 1 auto; width: 100%; }
+    .calendar-range-title { min-width: 0; white-space: normal; }
+    .calendar-view-switcher { display: flex; flex-wrap: wrap; max-width: 100%; }
+    .calendar-view-switcher button { flex: 1 1 auto; padding-inline: 10px; }
+    .document-category-fields, .document-category-meta,
+    .document-category-actions { grid-column: 1 / -1; }
+    .invoice-row-amount, .ledger-amount { text-align: left; }
+  }
+
+  @container lead-detail (max-width: 1050px) {
+    .project-member-form {
+      grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+    }
+    .project-delivery-grid, .document-operations-columns { grid-template-columns: minmax(0, 1fr); }
+  }
+}
+
+@media screen and (max-width: 520px) {
+  .smart-document-field-row,
+  .smart-document-formatting { grid-template-columns: minmax(0, 1fr); }
+  .smart-document-field-row > * { min-width: 0; }
+  .smart-document-required { white-space: normal; }
+  .portal-body { padding: 12px; }
+  .portal-login { padding: 20px; }
+  .portal-grid > .surface, .portal-workspace > .surface { padding: 14px; }
 }
