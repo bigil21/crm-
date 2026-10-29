@@ -92,6 +92,34 @@ const statuses = [
   "Paid",
   "Lost",
 ];
+const defaultDivisions = [
+  { id: "roofing", name: "Roofing", displayOrder: 10, active: true },
+  { id: "construction", name: "Construction", displayOrder: 20, active: true },
+  { id: "services", name: "Home Services", displayOrder: 30, active: true },
+];
+const defaultServices = [
+  ["roof-replacement", "roofing", "Roof Replacement"], ["roof-repair", "roofing", "Roof Repair"],
+  ["roof-inspection", "roofing", "Roof Inspection"], ["emergency-leak-repair", "roofing", "Emergency Leak Repair"],
+  ["commercial-roofing", "roofing", "Commercial Roofing"], ["preventive-maintenance", "roofing", "Preventive Maintenance"],
+  ["remodel-addition", "construction", "Remodel / Addition"], ["windows-impact-openings", "construction", "Windows & Impact Openings"],
+  ["pool-cages-screen-enclosures", "construction", "Pool Cages & Screen Enclosures"], ["carports", "construction", "Carports"],
+  ["block-masonry", "construction", "Block & Masonry"], ["general-construction", "construction", "General Construction"],
+  ["pressure-washing", "services", "Pressure Washing"], ["dump-trailer", "services", "Dump Trailer"],
+  ["seasonal-checkup", "services", "Seasonal Checkup"], ["facility-maintenance", "services", "Facility Maintenance"],
+  ["sealant-program", "services", "Sealant Program"], ["service-call", "services", "Service Call"],
+].map(([id, divisionId, name], index) => ({ id, divisionId, name, displayOrder: (index + 1) * 10, active: true }));
+const defaultPipelineStages = {
+  roofing: statuses.filter((status) => status !== "Lost"),
+  construction: ["Consultation", "Design & Selections", "Estimate", "Contract", "Permits", "Demo", "Rough-In", "Inspections", "Finishes", "Punch List", "Final Walkthrough", "Paid"],
+  services: ["Request", "Scheduled", "Completed", "Invoiced"],
+};
+const activeDivisions = () => (state.divisions?.length ? state.divisions : defaultDivisions).filter((item) => item.active !== false).sort((a, b) => number(a.displayOrder) - number(b.displayOrder));
+const activeServices = (divisionId) => (state.services?.length ? state.services : defaultServices).filter((item) => item.active !== false && (!divisionId || item.divisionId === divisionId)).sort((a, b) => number(a.displayOrder) - number(b.displayOrder));
+const pipelineStagesFor = (divisionId = "roofing") => {
+  const configured = (state.pipelineStages || []).filter((item) => item.active !== false && item.divisionId === divisionId).sort((a, b) => number(a.displayOrder) - number(b.displayOrder)).map((item) => item.name);
+  return configured.length ? configured : (defaultPipelineStages[divisionId] || defaultPipelineStages.roofing);
+};
+const allPipelineStages = () => [...new Set([...Object.values(defaultPipelineStages).flat(), ...(state.pipelineStages || []).map((item) => item.name), "Lost"])];
 const soldJobStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
 const pipelinePlaybook = [
   {
@@ -546,6 +574,7 @@ const createInitialState = () => ({
   view: "dashboard",
   search: "",
   pipelineFilter: "Lead",
+  pipelineDivision: "roofing",
   leadStageFilter: "",
   leadTagFilter: "",
   savedLeadFilterId: "",
@@ -584,6 +613,9 @@ const createInitialState = () => ({
   customFields: [],
   customFieldValues: [],
   savedLeadFilters: [],
+  divisions: [],
+  services: [],
+  pipelineStages: [],
   emailTemplates: [],
   scheduledMessages: [],
   crmReminders: [],
@@ -1099,7 +1131,8 @@ function normalizeState(nextState) {
     ...nextState,
     leaderboardRange: nextState.leaderboardRange || "month",
     dashboardWidgetLayout: normalizeDashboardWidgetLayout(nextState.dashboardWidgetLayout),
-    leadStageFilter: statuses.includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
+    leadStageFilter: [...new Set([...Object.values(defaultPipelineStages).flat(), ...(nextState.pipelineStages || []).map((item) => item.name), "Lost"])].includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
+    pipelineDivision: ["roofing", "construction", "services"].includes(nextState.pipelineDivision) ? nextState.pipelineDivision : "roofing",
     sidebarMode: ["expanded", "compact"].includes(nextState.sidebarMode) ? nextState.sidebarMode : "auto",
     reminderFilter: ["overdue", "today", "estimates", "upcoming", "completed"].includes(nextState.reminderFilter) ? nextState.reminderFilter : "all",
     leadTagFilter: nextState.leadTagFilter || "",
@@ -1135,6 +1168,9 @@ function normalizeState(nextState) {
     customFields: Array.isArray(nextState.customFields) ? nextState.customFields : [],
     customFieldValues: Array.isArray(nextState.customFieldValues) ? nextState.customFieldValues : [],
     savedLeadFilters: Array.isArray(nextState.savedLeadFilters) ? nextState.savedLeadFilters : [],
+    divisions: Array.isArray(nextState.divisions) ? nextState.divisions : [],
+    services: Array.isArray(nextState.services) ? nextState.services : [],
+    pipelineStages: Array.isArray(nextState.pipelineStages) ? nextState.pipelineStages : [],
     emailTemplates: Array.isArray(nextState.emailTemplates) ? nextState.emailTemplates : [],
     scheduledMessages: Array.isArray(nextState.scheduledMessages) ? nextState.scheduledMessages : [],
     crmReminders: Array.isArray(nextState.crmReminders) ? nextState.crmReminders : [],
@@ -1460,6 +1496,12 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
     ownerEmail: contact.ownerEmail || contact.owner_email || "",
     ownerName: contact.ownerName || contact.owner_name || "",
     salesRep: normalizePersonName(savedRep || contact.rep || contact.owner || seeded?.salesRep || "Unassigned"),
+    division: contact.division || "roofing",
+    service: contact.service || contact.serviceType || "roof-replacement",
+    propertyType: contact.propertyType || "residential",
+    urgency: contact.urgency || "normal",
+    insuranceClaim: Boolean(contact.insuranceClaim),
+    activeLeak: Boolean(contact.activeLeak),
     value: number(contact.value),
     createdAt: contact.createdAt || todayISO(),
     updatedAt: contact.updatedAt || contact.modifiedAt || contact.createdAt || todayISO(),
@@ -1537,6 +1579,12 @@ function normalizeJob(job, contact = {}) {
     ownerEmail: job.ownerEmail || contact.ownerEmail || "",
     ownerName: job.ownerName || contact.ownerName || "",
     salesRep: normalizePersonName(job.salesRep || contact.salesRep || "Unassigned"),
+    division: job.division || contact.division || "roofing",
+    service: job.service || job.serviceType || contact.service || "roof-replacement",
+    propertyType: job.propertyType || contact.propertyType || "residential",
+    urgency: job.urgency || contact.urgency || "normal",
+    insuranceClaim: Boolean(job.insuranceClaim ?? contact.insuranceClaim),
+    activeLeak: Boolean(job.activeLeak ?? contact.activeLeak),
     lastContact: job.lastContact || contact.lastContact || todayISO(),
     closedDate,
     notes: job.notes || "",
@@ -3361,17 +3409,20 @@ async function insertProjectDeliveryRow(table,row) {
 
 async function initializeLeadOrganization() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return true;
-  const tables=["crm_lead_sources","crm_tags","crm_record_tags","crm_custom_fields","crm_custom_field_values","crm_saved_filters"];
+  const tables=["crm_lead_sources","crm_tags","crm_record_tags","crm_custom_fields","crm_custom_field_values","crm_saved_filters","crm_divisions","crm_services","crm_pipeline_stages"];
   try {
     const results=await Promise.all(tables.map((table)=>cloudClient.from(table).select("*").eq("company_state_id",supabaseStateId())));
     const failed=results.find((result)=>result.error);if(failed)throw failed.error;
-    const [sources,tags,recordTags,fields,values,filters]=results.map((result)=>result.data||[]);
+    const [sources,tags,recordTags,fields,values,filters,divisions,services,pipelineStages]=results.map((result)=>result.data||[]);
     state.leadSources=sources.map((item)=>({id:item.id,name:item.name,displayOrder:number(item.display_order),active:item.active!==false}));
     state.leadTags=tags.map((item)=>({id:item.id,name:item.name,color:item.color,active:item.active!==false}));
     state.recordTags=recordTags.map((item)=>({id:item.id,contactId:item.lead_id,jobId:item.job_id,recordType:item.record_type,recordId:item.record_id,tagId:item.tag_id}));
     state.customFields=fields.map((item)=>({id:item.id,label:item.label,fieldKey:item.field_key,appliesTo:item.applies_to,fieldType:item.field_type,options:item.options||[],required:item.required,displayOrder:number(item.display_order),active:item.active!==false}));
     state.customFieldValues=values.map((item)=>({id:item.id,contactId:item.lead_id,jobId:item.job_id,recordType:item.record_type,recordId:item.record_id,fieldId:item.field_id,value:item.value}));
     state.savedLeadFilters=filters.map((item)=>({id:item.id,name:item.name,criteria:item.criteria||{},viewName:item.view_name}));
+    state.divisions=divisions.map((item)=>({id:item.id,name:item.name,displayOrder:number(item.display_order),active:item.active!==false}));
+    state.services=services.map((item)=>({id:item.id,divisionId:item.division_id,name:item.name,displayOrder:number(item.display_order),active:item.active!==false}));
+    state.pipelineStages=pipelineStages.map((item)=>({id:item.id,divisionId:item.division_id,name:item.name,displayOrder:number(item.display_order),active:item.active!==false}));
     saveState({localOnly:true});return true;
   }catch(error){console.warn("Lead organization records could not be loaded",error);return false;}
 }
@@ -5047,7 +5098,7 @@ function applyPermissionsToDom() {
 }
 
 function renderSummary() {
-  const metrics = dashboardMetrics();
+  const divisionPipelineValue = opportunities.filter((job) => job.status !== "Lost").reduce((sum, job) => sum + number(job.contractValue || job.value), 0);
 
   const cards = [
     ["Total Leads", metrics.leads, `${metrics.openLeads} open sales opportunities`, "user", "blue"],
@@ -5695,8 +5746,22 @@ function renderWeatherPanel() {
 
 function renderPipeline() {
   if (!els.views.pipeline) return;
-  const opportunities = allJobs();
-  const activeLeads = opportunities.filter((job) => !["Won", "Lost"].includes(job.status));
+  const division = activeDivisions().some((item) => item.id === state.pipelineDivision) ? state.pipelineDivision : "roofing";
+  const opportunities = allJobs().filter((job) => (job.division || "roofing") === division);
+  const divisionStages = pipelineStagesFor(division);
+  const playbook = division === "roofing" ? pipelinePlaybook : divisionStages.map((status) => ({
+    status,
+    phase: division === "construction" ? "Project delivery" : "Service delivery",
+    title: status,
+    icon: status === "Paid" || status === "Completed" || status === "Invoiced" ? "check" : "clipboard",
+    workspace: status === "Estimate" || status === "Contract" || status === "Invoiced" ? "estimates" : "jobs",
+    workspaceLabel: status === "Estimate" || status === "Contract" || status === "Invoiced" ? "Open Estimates" : "Open Jobs",
+    mission: `Complete the ${status} requirements and document the result before advancing.`,
+    actions: ["Confirm the responsible person and due date", "Save required documents, photos, and notes", "Communicate the next step to the customer"],
+    gate: `All ${status} work is complete and the next owner has a clear handoff.`,
+  }));
+  const terminalStage = divisionStages.at(-1);
+  const activeLeads = opportunities.filter((job) => ![terminalStage, "Lost"].includes(job.status));
   const followUpsDue = visibleContacts().filter((contact) => {
     const status = primaryJob(contact).status || contact.status;
     return !["Won", "Lost"].includes(status) && staleLeadDays(contact) >= 3;
@@ -5712,14 +5777,17 @@ function renderPipeline() {
         <strong>${activeLeads.length} active opportunities moving toward a decision</strong>
       </div>
       <div class="pipeline-command-stats">
+        <label class="pipeline-division-control">Division
+          <select data-pipeline-division>${activeDivisions().map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === division ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select>
+        </label>
         <span><strong>${followUpsDue}</strong> need attention</span>
-        <span><strong>${money.format(metrics.pipelineValue)}</strong> potential value</span>
-        <span><strong>${statusCount("Won")}</strong> won</span>
+        <span><strong>${money.format(divisionPipelineValue)}</strong> potential value</span>
+        <span><strong>${statusCount(terminalStage)}</strong> ${escapeHtml(terminalStage.toLowerCase())}</span>
       </div>
     </section>
 
     <div class="pipeline-journey" role="list" aria-label="Sales pipeline stages">
-      ${pipelinePlaybook
+      ${playbook
         .map((stage, index) => {
           const count = statusCount(stage.status);
           return `
@@ -5763,7 +5831,7 @@ function renderPipeline() {
                   </aside>
                 </div>
               </div>
-              ${index < pipelinePlaybook.length - 1 ? '<div class="pipeline-connector" aria-hidden="true"><span></span></div>' : ""}
+              ${index < playbook.length - 1 ? '<div class="pipeline-connector" aria-hidden="true"><span></span></div>' : ""}
             </article>
           `;
         })
@@ -5902,7 +5970,8 @@ function renderContacts() {
 
 function renderLeadsView() {
   if (!els.leadsList) return;
-  const stage = statuses.includes(state.leadStageFilter) ? state.leadStageFilter : "";
+  const stageOptions = allPipelineStages();
+  const stage = stageOptions.includes(state.leadStageFilter) ? state.leadStageFilter : "";
   const activeTag = (state.leadTags || []).some((tag) => tag.id === state.leadTagFilter) ? state.leadTagFilter : "";
   if (els.leadStageFilter) {
     const openLeadCount = visibleContacts().filter((contact) =>
@@ -5910,7 +5979,7 @@ function renderLeadsView() {
     ).length;
     els.leadStageFilter.innerHTML = [
       `<option value="">All open leads (${openLeadCount})</option>`,
-      ...statuses.map((pipelineStage) => {
+      ...stageOptions.map((pipelineStage) => {
         const count = visibleContacts().filter((contact) =>
           contactJobs(contact).some((job) => job.status === pipelineStage),
         ).length;
@@ -5967,7 +6036,7 @@ async function saveCurrentLeadFilter() {
 function applySavedLeadFilter(filterId) {
   const filter=(state.savedLeadFilters||[]).find((item)=>item.id===filterId);
   state.savedLeadFilterId=filter?.id||"";
-  if(filter){state.leadStageFilter=statuses.includes(filter.criteria?.stage)?filter.criteria.stage:"";state.leadTagFilter=filter.criteria?.tagId||"";state.search=String(filter.criteria?.search||"");if(els.globalSearch)els.globalSearch.value=state.search;}
+  if(filter){state.leadStageFilter=allPipelineStages().includes(filter.criteria?.stage)?filter.criteria.stage:"";state.leadTagFilter=filter.criteria?.tagId||"";state.search=String(filter.criteria?.search||"");if(els.globalSearch)els.globalSearch.value=state.search;}
   saveUiState();renderLeadsView();
 }
 
@@ -7196,12 +7265,50 @@ function deleteCostItem(costId) {
   showToast("Cost removed");
 }
 
+function populateDivisionFields(form, record = {}) {
+  if (!form) return;
+  const division = record.division || "roofing";
+  const divisionField = form.elements.division;
+  const serviceField = form.elements.service;
+  const statusField = form.elements.status;
+  if (divisionField) {
+    divisionField.innerHTML = activeDivisions().map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+    divisionField.value = division;
+  }
+  if (serviceField) {
+    const choices = activeServices(division);
+    serviceField.innerHTML = choices.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+    serviceField.value = choices.some((item) => item.id === record.service) ? record.service : choices[0]?.id || "";
+  }
+  if (statusField) {
+    const choices = [...pipelineStagesFor(division), "Lost"];
+    statusField.innerHTML = choices.map((item) => `<option>${escapeHtml(item)}</option>`).join("");
+    statusField.value = choices.includes(record.status) ? record.status : choices[0] || "New";
+  }
+}
+
+function refreshDivisionForm(form) {
+  if (!form) return;
+  const current = {
+    division: form.elements.division?.value || "roofing",
+    service: form.elements.service?.value || "",
+    status: form.elements.status?.value || "",
+  };
+  populateDivisionFields(form, current);
+}
+
 function fillJobForm(job = {}) {
   const contact = getSelectedContact();
   const data = {
     jobId: "",
     name: "",
-    status: "New",
+    status: pipelineStagesFor(job.division || contact?.division || "roofing")[0] || "New",
+    division: contact?.division || "roofing",
+    service: contact?.service || "roof-replacement",
+    propertyType: contact?.propertyType || "residential",
+    urgency: contact?.urgency || "normal",
+    insuranceClaim: Boolean(contact?.insuranceClaim),
+    activeLeak: Boolean(contact?.activeLeak),
     value: "",
     salesRep: contact?.salesRep || "",
     lastContact: todayISO(),
@@ -7210,9 +7317,11 @@ function fillJobForm(job = {}) {
     notes: "",
     ...job,
   };
+  populateDivisionFields(els.leadJobForm, data);
   Object.entries(data).forEach(([key, value]) => {
     const field = els.leadJobForm.elements[key];
-    if (field) field.value = key === "value" ? formatCurrencyInput(value) : value ?? "";
+    if (field?.type === "checkbox") field.checked = Boolean(value);
+    else if (field) field.value = key === "value" ? formatCurrencyInput(value) : value ?? "";
   });
   rememberFormBaseline(els.leadJobForm);
 }
@@ -7250,7 +7359,7 @@ function keepLatestUnchanged(target, latest, unchanged, fields) {
 
 function latestUnchangedJobFields(existing, unchanged) {
   const kept = {};
-  keepLatestUnchanged(kept, existing, unchanged, ["name", "status", "salesRep", "lastContact", "address", "notes"]);
+  keepLatestUnchanged(kept, existing, unchanged, ["name", "status", "division", "service", "propertyType", "urgency", "insuranceClaim", "activeLeak", "salesRep", "lastContact", "address", "notes"]);
   if (existing && unchanged.has("value")) {
     kept.value = existing.value;
     kept.contractValue = existing.contractValue ?? existing.value;
@@ -7284,6 +7393,12 @@ async function saveLeadJob(event) {
       projectNumber: existing?.projectNumber || reservedProjectNumber || (contact.leadNumber ? nextProjectNumber(contact) : ""),
       name: formData.get("name").trim(),
       status: formData.get("status"),
+      division: formData.get("division") || contact.division || "roofing",
+      service: formData.get("service") || contact.service || "",
+      propertyType: formData.get("propertyType") || contact.propertyType || "residential",
+      urgency: formData.get("activeLeak") === "on" ? "emergency" : formData.get("urgency") || "normal",
+      insuranceClaim: formData.get("insuranceClaim") === "on",
+      activeLeak: formData.get("activeLeak") === "on",
       value: number(formData.get("value")),
       contractValue: number(formData.get("value")),
       salesRep: normalizePersonName(formData.get("salesRep").trim() || contact.salesRep || "Unassigned"),
@@ -7299,13 +7414,19 @@ async function saveLeadJob(event) {
     contact,
   );
 
-  if (!existing && job.status !== "New") {
-    setSaveState(els.jobSaveStatus, "A new job must begin in the New stage.", "error");
-    showToast("Create the job in New, then complete each stage checklist in order.");
+  const initialStage = pipelineStagesFor(job.division)[0] || "New";
+  if (!existing && job.status !== initialStage) {
+    setSaveState(els.jobSaveStatus, `A new ${activeDivisions().find((item) => item.id === job.division)?.name || "job"} job must begin in ${initialStage}.`, "error");
+    showToast(`Create the job in ${initialStage}, then move through its pipeline in order.`);
     return;
   }
   if (existing && existing.status !== job.status) {
-    const transition = window.RooflineWorkflowChecklist?.transitionCheck?.(contact, existing, job.status);
+    const divisionStages = pipelineStagesFor(job.division);
+    const currentIndex = divisionStages.indexOf(existing.status);
+    const nextIndex = divisionStages.indexOf(job.status);
+    const transition = job.division === "roofing"
+      ? window.RooflineWorkflowChecklist?.transitionCheck?.(contact, existing, job.status)
+      : { allowed: job.status === "Lost" || nextIndex === currentIndex + 1, reason: `Move this job one ${job.division} stage at a time.` };
     if (transition && !transition.allowed) {
       setSaveState(els.jobSaveStatus, transition.reason, "error");
       showToast(transition.reason);
@@ -12827,6 +12948,12 @@ function openContactDialog(contactId, defaults = {}) {
     status: "New",
     name: "",
     source: "",
+    division: "roofing",
+    service: "roof-replacement",
+    propertyType: "residential",
+    urgency: "normal",
+    insuranceClaim: false,
+    activeLeak: false,
     salesRep: "",
     email: "",
     phone: "",
@@ -12837,6 +12964,7 @@ function openContactDialog(contactId, defaults = {}) {
     notes: "",
     ...contact,
   };
+  populateDivisionFields(els.contactForm, data);
 
   // Reps always own the leads they create (the database refuses anything
   // else), so their name is filled in and only managers can reassign.
@@ -12850,7 +12978,8 @@ function openContactDialog(contactId, defaults = {}) {
 
   Object.entries(data).forEach(([key, value]) => {
     const field = els.contactForm.elements[key];
-    if (field) {
+    if (field?.type === "checkbox") field.checked = Boolean(value);
+    else if (field) {
       field.value = key === "phone" ? formatPhoneNumber(value) : key === "value" ? formatCurrencyInput(value) : value ?? "";
     }
   });
@@ -12872,6 +13001,12 @@ function saveContactFromForm(event) {
     status: formData.get("status"),
     name: formData.get("name").trim(),
     source: formData.get("source").trim(),
+    division: formData.get("division") || "roofing",
+    service: formData.get("service") || "",
+    propertyType: formData.get("propertyType") || "residential",
+    urgency: formData.get("activeLeak") === "on" ? "emergency" : formData.get("urgency") || "normal",
+    insuranceClaim: formData.get("insuranceClaim") === "on",
+    activeLeak: formData.get("activeLeak") === "on",
     email: formData.get("email").trim(),
     phone: formatPhoneNumber(formData.get("phone")),
     address: formData.get("address").trim(),
@@ -12887,13 +13022,19 @@ function saveContactFromForm(event) {
     updatedAt: new Date().toISOString(),
   };
   keepLatestUnchanged(contact, existing, unchangedFormFields(els.contactForm, formData),
-    ["type", "status", "name", "source", "email", "phone", "address", "value", "salesRep", "lastContact", "notes"]);
+    ["type", "status", "name", "source", "division", "service", "propertyType", "urgency", "insuranceClaim", "activeLeak", "email", "phone", "address", "value", "salesRep", "lastContact", "notes"]);
   const currentJobs = existing?.jobs?.length ? existing.jobs : [normalizeJob({}, contact)];
   const primary = normalizeJob(
     {
       ...currentJobs[0],
       name: currentJobs[0]?.name || `${contact.name} Job`,
       status: contact.status,
+      division: contact.division,
+      service: contact.service,
+      propertyType: contact.propertyType,
+      urgency: contact.urgency,
+      insuranceClaim: contact.insuranceClaim,
+      activeLeak: contact.activeLeak,
       value: contact.value,
       contractValue: contact.value,
       salesRep: contact.salesRep,
@@ -14688,6 +14829,8 @@ function bindEvents() {
   els.invoiceRefundForm?.addEventListener("submit", recordInvoiceRefund);
   els.invoiceScheduleForm?.addEventListener("submit", saveInvoiceSchedule);
   els.contactForm.addEventListener("submit", saveContactFromForm);
+  els.contactForm.elements.division?.addEventListener("change", () => refreshDivisionForm(els.contactForm));
+  els.leadJobForm.elements.division?.addEventListener("change", () => refreshDivisionForm(els.leadJobForm));
   els.deleteContactButton.addEventListener("click", () => {
     if (!requireAction("manageContacts")) return;
     const id = els.contactForm.elements.id.value;
@@ -14712,10 +14855,16 @@ function bindEvents() {
   });
 
   els.leadStageFilter?.addEventListener("change", (event) => {
-    state.leadStageFilter = statuses.includes(event.target.value) ? event.target.value : "";
+    state.leadStageFilter = allPipelineStages().includes(event.target.value) ? event.target.value : "";
     state.savedLeadFilterId = "";
     saveUiState();
     renderLeadsView();
+  });
+  document.addEventListener("change", (event) => {
+    if (!event.target.matches("[data-pipeline-division]")) return;
+    state.pipelineDivision = event.target.value;
+    saveUiState();
+    renderPipeline();
   });
   els.leadTagFilter?.addEventListener("change",(event)=>{state.leadTagFilter=event.target.value||"";state.savedLeadFilterId="";saveUiState();renderLeadsView();});
   els.savedLeadFilter?.addEventListener("change",(event)=>applySavedLeadFilter(event.target.value));

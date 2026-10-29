@@ -481,6 +481,24 @@
                       </select>
                     </label>
                     <label>
+                      Division
+                      <select name="division" data-division-select></select>
+                    </label>
+                    <label>
+                      Service
+                      <select name="service" data-service-select></select>
+                    </label>
+                    <label>
+                      Property Type
+                      <select name="propertyType"><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="hoa">HOA / Association</option><option value="multi-family">Multi-family</option></select>
+                    </label>
+                    <label>
+                      Urgency
+                      <select name="urgency"><option value="normal">Normal</option><option value="priority">Priority</option><option value="emergency">Emergency</option></select>
+                    </label>
+                    <label class="checkbox-label"><input name="insuranceClaim" type="checkbox" /> Insurance claim</label>
+                    <label class="checkbox-label"><input name="activeLeak" type="checkbox" /> Active leak / emergency</label>
+                    <label>
                       Job Value
                       <input name="value" type="text" inputmode="decimal" autocomplete="off" data-currency-input placeholder="0.00" />
                     </label>
@@ -1756,6 +1774,24 @@
             Source
             <input name="source" autocomplete="off" />
           </label>
+          <label>
+            Division
+            <select name="division" data-division-select></select>
+          </label>
+          <label>
+            Service
+            <select name="service" data-service-select></select>
+          </label>
+          <label>
+            Property Type
+            <select name="propertyType"><option value="residential">Residential</option><option value="commercial">Commercial</option><option value="hoa">HOA / Association</option><option value="multi-family">Multi-family</option></select>
+          </label>
+          <label>
+            Urgency
+            <select name="urgency"><option value="normal">Normal</option><option value="priority">Priority</option><option value="emergency">Emergency</option></select>
+          </label>
+          <label class="checkbox-label"><input name="insuranceClaim" type="checkbox" /> Insurance claim</label>
+          <label class="checkbox-label"><input name="activeLeak" type="checkbox" /> Active leak / emergency</label>
           <label>
             Sales Representative
             <input name="salesRep" list="salesRepOptions" autocomplete="off" />

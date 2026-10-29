@@ -28,6 +28,10 @@ const {
 } = require(path.join(__dirname, "smart-documents"));
 const { createTeamInviteService } = require(path.join(__dirname, "team-invite-service"));
 const { createCustomerPortalService } = require(path.join(__dirname, "customer-portal-service"));
+const {
+  fetchPendingStoredQuotes, fetchStoredQuote, markStoredQuoteImported, normalizeStoredQuote,
+  normalizeWebsiteLead, submitWebsiteLead, verifyWebsiteIntakeSignature,
+} = require(path.join(__dirname, "website-intake"));
 
 const root = __dirname;
 const envPaths = process.env.CRM_SKIP_ENV_FILES === "true" ? [] : [path.join(root, ".env"), path.join(root, ".env.local")];
@@ -1477,6 +1481,170 @@ function squareWorkerConfig() {
   return { origin: publicConfig.origin, companyId: publicConfig.companyId, key };
 }
 
+async function handleWebsiteLeadIntake(req, res) {
+  const secret = String(process.env.WEBSITE_INTAKE_SECRET || "");
+  const store = squareWorkerConfig();
+  if (secret.length < 32 || !store) {
+    sendJson(res, 503, { error: "website_intake_not_configured" });
+    return;
+  }
+  let rawBody = "";
+  try {
+    rawBody = await readRequestBody(req);
+  } catch {
+    sendJson(res, 413, { error: "request_too_large" });
+    return;
+  }
+  if (!verifyWebsiteIntakeSignature({
+    secret,
+    timestamp: req.headers["x-jobcrest-timestamp"],
+    signature: req.headers["x-jobcrest-signature"],
+    rawBody,
+  })) {
+    sendJson(res, 401, { error: "invalid_signature" });
+    return;
+  }
+  let payload;
+  try {
+    payload = normalizeWebsiteLead(JSON.parse(rawBody));
+  } catch {
+    sendJson(res, 400, { error: "invalid_website_request" });
+    return;
+  }
+  try {
+    const result = await submitWebsiteLead({
+      fetchImpl: fetch,
+      store,
+      payload,
+      onCallUserId: String(process.env.CRM_WEBSITE_ON_CALL_USER_ID || "").trim(),
+    });
+    const emergencyAlertSent = await sendEmergencyWebsiteLeadAlert(payload, result);
+    sendJson(res, result?.created === true ? 201 : 200, { ...result, emergency_alert_sent: emergencyAlertSent });
+  } catch (error) {
+    console.error("Website lead intake failed", { code: error?.code || error?.message || "intake_failed" });
+    sendJson(res, 503, { error: "website_intake_unavailable" });
+  }
+}
+
+async function sendEmergencyWebsiteLeadAlert(payload, result) {
+  if (!(payload.activeLeak || payload.urgency === "emergency") || result?.created !== true) return false;
+  const chatWebhook = String(process.env.GOOGLE_CHAT_WEBHOOK_URL || "").trim();
+  if (!chatWebhook) return false;
+  try {
+    await sendGoogleChatWebhook(fetch, chatWebhook, {
+      title: "Emergency website lead — active leak",
+      detail: `${payload.name} · ${payload.phone || payload.email}\n${payload.address}\n${payload.service}`,
+      url: `${crmPublicOrigin() || ""}/?lead=${encodeURIComponent(result.lead_id || "")}`,
+    });
+    return true;
+  } catch (error) {
+    console.warn("Emergency website lead was saved but its Chat alert failed", { code: error?.code || error?.name || "chat_failed" });
+    return false;
+  }
+}
+
+function websiteFormOriginAllowed(origin) {
+  if (!origin) return false;
+  const allowed = new Set([
+    "https://www.thecoastalcrestgroup.com",
+    "https://thecoastalcrestgroup.com",
+    "https://coastal-crest-site.onrender.com",
+  ]);
+  if (process.env.NODE_ENV !== "production" && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return true;
+  return allowed.has(origin);
+}
+
+function setWebsiteFormCors(req, res) {
+  const origin = String(req.headers.origin || "");
+  if (!websiteFormOriginAllowed(origin)) return false;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Vary", "Origin");
+  return true;
+}
+
+async function handleStoredWebsiteQuote(req, res) {
+  if (!setWebsiteFormCors(req, res)) {
+    sendJson(res, 403, { error: "website_origin_not_allowed" });
+    return;
+  }
+  const store = squareWorkerConfig();
+  if (!store) {
+    sendJson(res, 503, { error: "website_intake_not_configured" });
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(await readRequestBody(req));
+  } catch {
+    sendJson(res, 400, { error: "invalid_request" });
+    return;
+  }
+  try {
+    const quoteRequestId = String(body?.quoteRequestId || "").trim();
+    const storedQuote = await fetchStoredQuote({ fetchImpl: fetch, store, quoteRequestId });
+    const payload = normalizeStoredQuote(storedQuote);
+    const result = await submitWebsiteLead({
+      fetchImpl: fetch,
+      store,
+      payload,
+      onCallUserId: String(process.env.CRM_WEBSITE_ON_CALL_USER_ID || "").trim(),
+    });
+    await sendEmergencyWebsiteLeadAlert(payload, result);
+    await markStoredQuoteImported({
+      fetchImpl: fetch,
+      store,
+      quoteRequestId,
+      leadId: result.lead_id,
+      jobId: result.job_id,
+    });
+    sendJson(res, result?.created === true ? 201 : 200, result);
+  } catch (error) {
+    const code = error?.message || "website_intake_unavailable";
+    const status = /invalid_quote_request_id/.test(code) ? 400 : /quote_request_not_found/.test(code) ? 404 : 503;
+    console.error("Stored website quote intake failed", { code });
+    sendJson(res, status, { error: status === 503 ? "website_intake_unavailable" : code });
+  }
+}
+
+function startWebsiteQuoteImportWorker() {
+  const store = squareWorkerConfig();
+  if (!store) return null;
+  let stopped = false;
+  let running = false;
+  const run = async () => {
+    if (stopped || running) return;
+    running = true;
+    try {
+      const rows = await fetchPendingStoredQuotes({ fetchImpl: fetch, store, limit: 25 });
+      for (const row of rows) {
+        try {
+          const payload = normalizeStoredQuote(row);
+          const result = await submitWebsiteLead({
+            fetchImpl: fetch,
+            store,
+            payload,
+            onCallUserId: String(process.env.CRM_WEBSITE_ON_CALL_USER_ID || "").trim(),
+          });
+          await sendEmergencyWebsiteLeadAlert(payload, result);
+          await markStoredQuoteImported({ fetchImpl: fetch, store, quoteRequestId: row.id, leadId: result.lead_id, jobId: result.job_id });
+        } catch (error) {
+          console.warn("A pending website quote could not be imported; it will retry", { quoteRequestId: row?.id, code: error?.message || error?.name || "import_failed" });
+        }
+      }
+    } catch (error) {
+      console.warn("Website quote import worker could not read pending requests; it will retry", { code: error?.message || error?.name || "lookup_failed" });
+    } finally {
+      running = false;
+    }
+  };
+  const timer = setInterval(run, 60_000);
+  timer.unref?.();
+  run();
+  return () => { stopped = true; clearInterval(timer); };
+}
+
 function recoveryBackupConfig() {
   const config = supabaseConfig();
   const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -2047,6 +2215,20 @@ const handleRequest = (req, res) => {
     return;
   }
 
+  if (url.pathname === "/webhooks/website-lead" && req.method === "POST") {
+    handleWebsiteLeadIntake(req, res);
+    return;
+  }
+  if (url.pathname === "/webhooks/website-lead/from-quote" && req.method === "OPTIONS") {
+    if (!setWebsiteFormCors(req, res)) sendJson(res, 403, { error: "website_origin_not_allowed" });
+    else { res.writeHead(204); res.end(); }
+    return;
+  }
+  if (url.pathname === "/webhooks/website-lead/from-quote" && req.method === "POST") {
+    handleStoredWebsiteQuote(req, res);
+    return;
+  }
+
   if (url.pathname.startsWith("/api/")) {
     sendJson(res, 404, { error: "not_found" });
     return;
@@ -2137,6 +2319,8 @@ if (require.main === module) {
   if (stopWorker) server.once("close", stopWorker);
   const stopBackupWorker = startRecoveryBackupWorker();
   if (stopBackupWorker) server.once("close", stopBackupWorker);
+  const stopWebsiteQuoteImportWorker = startWebsiteQuoteImportWorker();
+  if (stopWebsiteQuoteImportWorker) server.once("close", stopWebsiteQuoteImportWorker);
 }
 
 module.exports = { handleRequest, isApiAdmin, squareInvoicePaymentSummary };
