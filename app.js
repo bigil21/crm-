@@ -406,6 +406,7 @@ const defaultCompany = {
   address: "1800 Market Street\nSuite 210\nCharlotte, NC 28202",
   officeAddress: "1800 Market Street\nSuite 210\nCharlotte, NC 28202",
   logoDataUrl: "",
+  logoAssetVersion: "",
   googleReviewUrl: "",
   defaultTerms:
     "This estimate is valid through the date shown above. Scope may change if concealed damage is discovered after work begins. Customer approval is required before materials are ordered.",
@@ -1530,6 +1531,7 @@ function normalizeCompany(company = {}) {
     address: merged.address || officeAddress,
     officeAddress,
     logoDataUrl: merged.logoDataUrl || "",
+    logoAssetVersion: String(merged.logoAssetVersion || ""),
     documentCategories: normalizeDocumentCategories(merged.documentCategories),
     companyDocumentFolders: normalizeCompanyDocumentFolders(merged.companyDocumentFolders),
   };
@@ -3781,9 +3783,41 @@ function estimateSalesRep(estimate = {}) {
   };
 }
 
+const COASTAL_CREST_TRANSPARENT_MARK = "/coastal-crest-mark.png";
+let coastalCrestMarkDataUrlPromise = null;
+
+function isCoastalCrestCompany(company = state.company) {
+  return /coastal\s+crest/i.test(String(company?.name || ""));
+}
+
+function companyLogoSource(company = state.company) {
+  if (company?.logoDataUrl && (company.logoAssetVersion === "custom" || !isCoastalCrestCompany(company))) {
+    return company.logoDataUrl;
+  }
+  if (isCoastalCrestCompany(company)) return COASTAL_CREST_TRANSPARENT_MARK;
+  return company?.logoDataUrl || "";
+}
+
+async function companyLogoDataUrlForPdf(company = state.company) {
+  const source = companyLogoSource(company);
+  if (!source || source.startsWith("data:")) return source;
+  if (source !== COASTAL_CREST_TRANSPARENT_MARK) return "";
+  if (!coastalCrestMarkDataUrlPromise) {
+    coastalCrestMarkDataUrlPromise = fetch(source, { cache: "force-cache" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Transparent logo asset could not be loaded");
+        return response.blob();
+      })
+      .then(readFileAsDataUrl)
+      .catch(() => "");
+  }
+  return coastalCrestMarkDataUrlPromise;
+}
+
 function companyLogoTag(className = "doc-logo") {
-  if (state.company.logoDataUrl) {
-    return `<img class="${className}" src="${escapeHtml(state.company.logoDataUrl)}" alt="${escapeHtml(
+  const logoSource = companyLogoSource();
+  if (logoSource) {
+    return `<img class="${className}" src="${escapeHtml(logoSource)}" alt="${escapeHtml(
       state.company.name || "Company",
     )} logo" />`;
   }
@@ -5224,10 +5258,10 @@ function render() {
 }
 
 function renderBrandLogo() {
-  const logoSource = state.company.logoDataUrl || "icon.svg";
+  const logoSource = companyLogoSource() || "icon.svg";
   if (els.brandLogo) {
     els.brandLogo.src = logoSource;
-    els.brandLogo.alt = state.company.logoDataUrl ? `${state.company.name || "Company"} logo` : "";
+    els.brandLogo.alt = logoSource !== "icon.svg" ? `${state.company.name || "Company"} logo` : "";
   }
 }
 
@@ -10821,6 +10855,7 @@ async function uploadCompanyLogo(file) {
   state.company = normalizeCompany({
     ...state.company,
     logoDataUrl,
+    logoAssetVersion: "custom",
   });
   saveState();
   renderBrandLogo();
@@ -10834,6 +10869,7 @@ function removeCompanyLogo() {
   state.company = normalizeCompany({
     ...state.company,
     logoDataUrl: "",
+    logoAssetVersion: "",
   });
   saveState();
   renderBrandLogo();
@@ -13624,8 +13660,9 @@ function renderCompanyForm() {
     if (field && field.type !== "file" && field.value !== nextValue) field.value = nextValue;
   });
   if (els.companyLogoPreview) {
-    els.companyLogoPreview.src = state.company.logoDataUrl || "icon.svg";
-    els.companyLogoPreview.classList.toggle("logo-placeholder", !state.company.logoDataUrl);
+    const logoSource = companyLogoSource();
+    els.companyLogoPreview.src = logoSource || "icon.svg";
+    els.companyLogoPreview.classList.toggle("logo-placeholder", !logoSource);
   }
   if (typeof renderGoogleIntegrationCard === "function") renderGoogleIntegrationCard();
   if (typeof refreshGoogleIntegrationStatus === "function") void refreshGoogleIntegrationStatus();
@@ -14513,6 +14550,7 @@ async function downloadEstimatePdf(options = {}) {
   const officeAddress = companyOfficeAddress();
   const totals = totalsFor(estimate);
   const doc = new JsPdf({ unit: "pt", format: "letter" });
+  const pdfLogoDataUrl = await companyLogoDataUrlForPdf(company);
   const cursor = { y: 0 };
   const left = 48;
   const right = PDF_PAGE_WIDTH - 48;
@@ -14531,10 +14569,10 @@ async function downloadEstimatePdf(options = {}) {
 
   // Logo or initial mark
   let brandTextX = left;
-  if (company.logoDataUrl) {
+  if (pdfLogoDataUrl) {
     try {
-      doc.addImage(company.logoDataUrl, pdfImageFormat(company.logoDataUrl), left, 18, 48, 38);
-      brandTextX = left + 60;
+      doc.addImage(pdfLogoDataUrl, pdfImageFormat(pdfLogoDataUrl), left, 12, 76, 70);
+      brandTextX = left + 86;
     } catch { brandTextX = left; }
   } else {
     doc.setFillColor(166, 105, 119);
