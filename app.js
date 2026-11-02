@@ -5049,7 +5049,7 @@ function render() {
   const titles = {
     dashboard: "Dashboard",
     leads: "Leads",
-    pipeline: "Pipeline",
+    pipeline: "Sales Pipeline",
     contacts: "Contacts",
     jobs: "Jobs",
     projects: "Projects",
@@ -5898,7 +5898,9 @@ function renderPipeline() {
     const status = primaryJob(contact).status || contact.status;
     return !["Won", "Lost"].includes(status) && staleLeadDays(contact) >= 3;
   }).length;
-  const metrics = dashboardMetrics();
+  const divisionPipelineValue = opportunities
+    .filter((job) => job.status !== "Lost")
+    .reduce((total, job) => total + number(job.contractValue ?? job.value), 0);
   const statusCount = (status) => opportunities.filter((job) => job.status === status).length;
 
   els.pipelineBoard.innerHTML = `
