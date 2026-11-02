@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { PGlite } = require("@electric-sql/pglite");
 const {
-  normalizeStoredQuote, normalizeWebsiteLead, payloadHash, quoteServiceId,
+  fetchWebsiteIntakeReceipt, normalizeStoredQuote, normalizeWebsiteLead, payloadHash, quoteServiceId,
   verifyWebsiteIntakeSignature, websiteIntakeIds,
 } = require("../website-intake");
 
@@ -17,6 +17,20 @@ test("website signature is current, body-bound, and timing-safe", () => {
   assert.equal(verifyWebsiteIntakeSignature({ secret, timestamp, signature: `sha256=${signature}`, rawBody, now: timestamp * 1000 }), true);
   assert.equal(verifyWebsiteIntakeSignature({ secret, timestamp, signature, rawBody: `${rawBody} `, now: timestamp * 1000 }), false);
   assert.equal(verifyWebsiteIntakeSignature({ secret, timestamp, signature, rawBody, now: (timestamp + 301) * 1000 }), false);
+});
+
+test("existing website intake receipts make retries idempotent", async () => {
+  let requested = "";
+  const receipt = await fetchWebsiteIntakeReceipt({
+    fetchImpl: async (url) => {
+      requested = url;
+      return { ok: true, json: async () => [{ lead_id: "lead-1", job_id: "job-1" }] };
+    },
+    store: { origin: "https://unit.supabase.co", companyId: "coastal-crest", key: "sb_secret_test" },
+    requestId: "quote:123e4567-e89b-42d3-a456-426614174000",
+  });
+  assert.deepEqual(receipt, { lead_id: "lead-1", job_id: "job-1" });
+  assert.match(requested, /request_id=eq.quote%3A123e4567/);
 });
 
 test("website payload normalization preserves sales context and validates photos", () => {

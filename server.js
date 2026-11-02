@@ -29,7 +29,7 @@ const {
 const { createTeamInviteService } = require(path.join(__dirname, "team-invite-service"));
 const { createCustomerPortalService } = require(path.join(__dirname, "customer-portal-service"));
 const {
-  fetchPendingStoredQuotes, fetchStoredQuote, markStoredQuoteImported, normalizeStoredQuote,
+  fetchPendingStoredQuotes, fetchStoredQuote, fetchWebsiteIntakeReceipt, markStoredQuoteImported, normalizeStoredQuote,
   normalizeWebsiteLead, submitWebsiteLead, verifyWebsiteIntakeSignature,
 } = require(path.join(__dirname, "website-intake"));
 
@@ -1584,6 +1584,12 @@ async function handleStoredWebsiteQuote(req, res) {
   try {
     const quoteRequestId = String(body?.quoteRequestId || "").trim();
     const storedQuote = await fetchStoredQuote({ fetchImpl: fetch, store, quoteRequestId });
+    const existing = await fetchWebsiteIntakeReceipt({ fetchImpl: fetch, store, requestId: `quote:${quoteRequestId}` });
+    if (existing) {
+      await markStoredQuoteImported({ fetchImpl: fetch, store, quoteRequestId, leadId: existing.lead_id, jobId: existing.job_id });
+      sendJson(res, 200, { created: false, lead_id: existing.lead_id, job_id: existing.job_id });
+      return;
+    }
     const payload = normalizeStoredQuote(storedQuote);
     const result = await submitWebsiteLead({
       fetchImpl: fetch,
@@ -1620,6 +1626,11 @@ function startWebsiteQuoteImportWorker() {
       const rows = await fetchPendingStoredQuotes({ fetchImpl: fetch, store, limit: 25 });
       for (const row of rows) {
         try {
+          const existing = await fetchWebsiteIntakeReceipt({ fetchImpl: fetch, store, requestId: `quote:${row.id}` });
+          if (existing) {
+            await markStoredQuoteImported({ fetchImpl: fetch, store, quoteRequestId: row.id, leadId: existing.lead_id, jobId: existing.job_id });
+            continue;
+          }
           const payload = normalizeStoredQuote(row);
           const result = await submitWebsiteLead({
             fetchImpl: fetch,

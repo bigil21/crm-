@@ -180,6 +180,20 @@ async function fetchPendingStoredQuotes({ fetchImpl, store, limit = 25 }) {
   return rows;
 }
 
+async function fetchWebsiteIntakeReceipt({ fetchImpl, store, requestId }) {
+  const headers = {
+    apikey: store.key,
+    ...(!store.key.startsWith("sb_secret_") ? { Authorization: `Bearer ${store.key}` } : {}),
+  };
+  const response = await fetchImpl(`${store.origin}/rest/v1/crm_website_intake_requests?company_state_id=eq.${encodeURIComponent(store.companyId)}&request_id=eq.${encodeURIComponent(requestId)}&select=lead_id,job_id&limit=1`, {
+    headers,
+    signal: AbortSignal.timeout(15000),
+  });
+  const rows = await response.json().catch(() => []);
+  if (!response.ok || !Array.isArray(rows)) throw new Error("website_intake_receipt_lookup_failed");
+  return rows[0] || null;
+}
+
 async function markStoredQuoteImported({ fetchImpl, store, quoteRequestId, leadId, jobId }) {
   const response = await fetchImpl(`${store.origin}/rest/v1/quote_requests?id=eq.${encodeURIComponent(quoteRequestId)}`, {
     method: "PATCH",
@@ -240,6 +254,7 @@ async function submitWebsiteLead({ fetchImpl, store, payload, onCallUserId = "" 
 module.exports = {
   fetchPendingStoredQuotes,
   fetchStoredQuote,
+  fetchWebsiteIntakeReceipt,
   markStoredQuoteImported,
   normalizeStoredQuote,
   normalizeWebsiteLead,
