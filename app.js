@@ -606,6 +606,17 @@ const createInitialState = () => ({
   projectDiscussions: [],
   projectNotes: [],
   jobTimeEntries: [],
+  permits: [],
+  inspections: [],
+  jobSelections: [],
+  changeOrders: [],
+  progressBillings: [],
+  maintenancePlans: [],
+  maintenanceVisits: [],
+  customerAccounts: [],
+  accountProperties: [],
+  accountContacts: [],
+  accountRecordLinks: [],
   projectTemplates: [{ id: "roof-replacement-standard", name: "Standard Roof Replacement", description: "Reusable delivery checkpoints for a typical replacement job", active: true, milestones: ["Permit approved","Materials ordered","Materials delivered","Production scheduled","Installation complete","Final inspection","Final payment received"].map((title) => ({ title })) }],
   leadSources: [],
   leadTags: [],
@@ -787,6 +798,27 @@ const els = {
   leadDetailStats: document.querySelector("#leadDetailStats"),
   leadOverviewPanel: document.querySelector("#leadOverviewPanel"),
   leadJobsPanel: document.querySelector("#leadJobsPanel"),
+  leadOperationsPanel: document.querySelector("#leadOperationsPanel"),
+  operationsJobSelect: document.querySelector("#operationsJobSelect"),
+  operationsSummary: document.querySelector("#operationsSummary"),
+  permitForm: document.querySelector("#permitForm"),
+  inspectionForm: document.querySelector("#inspectionForm"),
+  inspectionPermitSelect: document.querySelector("#inspectionPermitSelect"),
+  permitsInspectionsList: document.querySelector("#permitsInspectionsList"),
+  selectionForm: document.querySelector("#selectionForm"),
+  changeOrderForm: document.querySelector("#changeOrderForm"),
+  selectionsChangeOrdersList: document.querySelector("#selectionsChangeOrdersList"),
+  progressBillingEditor: document.querySelector("#progressBillingEditor"),
+  progressBillingPermission: document.querySelector("#progressBillingPermission"),
+  progressBillingForm: document.querySelector("#progressBillingForm"),
+  progressBillingList: document.querySelector("#progressBillingList"),
+  maintenancePlanForm: document.querySelector("#maintenancePlanForm"),
+  maintenancePlansList: document.querySelector("#maintenancePlansList"),
+  customerAccountForm: document.querySelector("#customerAccountForm"),
+  accountPropertyLinkForm: document.querySelector("#accountPropertyLinkForm"),
+  operationsAccountSelect: document.querySelector("#operationsAccountSelect"),
+  accountPortfolioList: document.querySelector("#accountPortfolioList"),
+  operationsSaveStatus: document.querySelector("#operationsSaveStatus"),
   leadJobForm: document.querySelector("#leadJobForm"),
   jobSaveButton: document.querySelector("#jobSaveButton"),
   jobSaveStatus: document.querySelector("#jobSaveStatus"),
@@ -1162,6 +1194,17 @@ function normalizeState(nextState) {
     projectNotes: (nextState.projectNotes || []).map(normalizeProjectNote).filter((item) => isSafeRecordId(item.id)),
     jobTimeEntries: (nextState.jobTimeEntries || []).map(normalizeJobTimeEntry).filter((item) => isSafeRecordId(item.id)),
     projectTemplates: (nextState.projectTemplates || []).map(normalizeProjectTemplate).filter((item) => isSafeRecordId(item.id)),
+    permits: (nextState.permits || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    inspections: (nextState.inspections || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    jobSelections: (nextState.jobSelections || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    changeOrders: (nextState.changeOrders || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    progressBillings: (nextState.progressBillings || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    maintenancePlans: (nextState.maintenancePlans || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    maintenanceVisits: (nextState.maintenanceVisits || []).map(normalizeJobOperation).filter((item) => isSafeRecordId(item.id)),
+    customerAccounts: (nextState.customerAccounts || []).map(normalizeCustomerAccount).filter((item) => isSafeRecordId(item.id)),
+    accountProperties: (nextState.accountProperties || []).map(normalizeAccountProperty).filter((item) => isSafeRecordId(item.id)),
+    accountContacts: (nextState.accountContacts || []).map(normalizeAccountContact).filter((item) => isSafeRecordId(item.id)),
+    accountRecordLinks: (nextState.accountRecordLinks || []).map(normalizeAccountRecordLink).filter((item) => isSafeRecordId(item.id)),
     leadSources: Array.isArray(nextState.leadSources) ? nextState.leadSources : [],
     leadTags: Array.isArray(nextState.leadTags) ? nextState.leadTags : [],
     recordTags: Array.isArray(nextState.recordTags) ? nextState.recordTags : [],
@@ -1363,6 +1406,34 @@ function normalizeJobTimeEntry(item = {}) {
 
 function normalizeProjectTemplate(item = {}) {
   return { ...item, id: String(item.id || uid("projecttemplate")), name: String(item.name || "Project template"), description: String(item.description || ""), milestones: Array.isArray(item.milestones) ? item.milestones : [], active: item.active !== false };
+}
+
+function normalizeJobOperation(item = {}) {
+  return {
+    ...item,
+    id: String(item.id || uid("operation")),
+    contactId: String(item.contactId || item.leadId || item.lead_id || ""),
+    leadId: String(item.leadId || item.contactId || item.lead_id || ""),
+    jobId: String(item.jobId || item.job_id || ""),
+    createdAt: item.createdAt || item.created_at || new Date().toISOString(),
+    updatedAt: item.updatedAt || item.updated_at || item.createdAt || item.created_at || new Date().toISOString(),
+  };
+}
+
+function normalizeCustomerAccount(item = {}) {
+  return { ...item, id: String(item.id || uid("account")), accountType: String(item.accountType || item.account_type || "commercial"), ownerUserId: item.ownerUserId || item.owner_user_id || "", billingEmail: String(item.billingEmail || item.billing_email || ""), billingPhone: String(item.billingPhone || item.billing_phone || ""), billingAddress: String(item.billingAddress || item.billing_address || ""), paymentTerms: String(item.paymentTerms || item.payment_terms || "Due on receipt"), active: item.active !== false };
+}
+
+function normalizeAccountProperty(item = {}) {
+  return { ...item, id: String(item.id || uid("property")), accountId: String(item.accountId || item.account_id || ""), propertyType: String(item.propertyType || item.property_type || "commercial"), annualBudget: number(item.annualBudget ?? item.annual_budget), roofSystem: String(item.roofSystem || item.roof_system || "") };
+}
+
+function normalizeAccountContact(item = {}) {
+  return { ...item, id: String(item.id || uid("accountcontact")), accountId: String(item.accountId || item.account_id || ""), propertyId: String(item.propertyId || item.property_id || ""), roleName: String(item.roleName || item.role_name || ""), isPrimary: Boolean(item.isPrimary ?? item.is_primary) };
+}
+
+function normalizeAccountRecordLink(item = {}) {
+  return { ...normalizeJobOperation(item), accountId: String(item.accountId || item.account_id || ""), propertyId: String(item.propertyId || item.property_id || "") };
 }
 
 function normalizeCompany(company = {}) {
@@ -3407,6 +3478,67 @@ async function insertProjectDeliveryRow(table,row) {
   return initializeProjectDelivery();
 }
 
+const operationsTableStateMap = {
+  crm_permits: "permits",
+  crm_inspections: "inspections",
+  crm_job_selections: "jobSelections",
+  crm_change_orders: "changeOrders",
+  crm_progress_billings: "progressBillings",
+  crm_maintenance_plans: "maintenancePlans",
+  crm_maintenance_visits: "maintenanceVisits",
+  crm_organization_accounts: "customerAccounts",
+  crm_account_properties: "accountProperties",
+  crm_account_contacts: "accountContacts",
+  crm_account_record_links: "accountRecordLinks",
+};
+
+async function initializeJobOperations() {
+  if (!cloudReady || !cloudClient || !authSession?.user?.id) return true;
+  const tables = Object.keys(operationsTableStateMap);
+  try {
+    const results = await Promise.all(tables.map((table) => cloudClient.from(table).select("*").eq("company_state_id", supabaseStateId())));
+    const failed = results.find((result) => result.error);
+    if (failed) throw failed.error;
+    results.forEach((result, index) => {
+      const key = operationsTableStateMap[tables[index]];
+      const normalizer = key === "customerAccounts" ? normalizeCustomerAccount : key === "accountProperties" ? normalizeAccountProperty : key === "accountContacts" ? normalizeAccountContact : key === "accountRecordLinks" ? normalizeAccountRecordLink : normalizeJobOperation;
+      state[key] = (result.data || []).map(normalizer);
+    });
+    saveState({ localOnly: true });
+    return true;
+  } catch (error) {
+    console.warn("Job operations records could not be loaded", error);
+    return false;
+  }
+}
+
+async function insertJobOperation(table, row) {
+  const stateKey = operationsTableStateMap[table];
+  if (!stateKey) throw new Error("Unknown operations record type");
+  if (canUseCloudSync()) {
+    const { error } = await cloudClient.from(table).insert({ company_state_id: supabaseStateId(), ...row, created_by: authSession.user.id, updated_by: authSession.user.id });
+    if (error) throw error;
+    if (!(await initializeJobOperations())) throw new Error("The record was saved, but the operations view could not be refreshed");
+    return;
+  }
+  const normalizer = stateKey === "customerAccounts" ? normalizeCustomerAccount : stateKey === "accountProperties" ? normalizeAccountProperty : stateKey === "accountContacts" ? normalizeAccountContact : stateKey === "accountRecordLinks" ? normalizeAccountRecordLink : normalizeJobOperation;
+  state[stateKey] = [normalizer(row), ...(state[stateKey] || [])];
+  saveState({ localOnly: true });
+}
+
+async function updateJobOperation(table, id, patch) {
+  const stateKey = operationsTableStateMap[table];
+  if (!stateKey) throw new Error("Unknown operations record type");
+  if (canUseCloudSync()) {
+    const { error } = await cloudClient.from(table).update({ ...patch, updated_by: authSession.user.id }).eq("company_state_id", supabaseStateId()).eq("id", id);
+    if (error) throw error;
+    if (!(await initializeJobOperations())) throw new Error("The record was updated, but the operations view could not be refreshed");
+    return;
+  }
+  state[stateKey] = (state[stateKey] || []).map((item) => item.id === id ? { ...item, ...patch, updatedAt: new Date().toISOString() } : item);
+  saveState({ localOnly: true });
+}
+
 async function initializeLeadOrganization() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return true;
   const tables=["crm_lead_sources","crm_tags","crm_record_tags","crm_custom_fields","crm_custom_field_values","crm_saved_filters","crm_divisions","crm_services","crm_pipeline_stages"];
@@ -5098,7 +5230,7 @@ function applyPermissionsToDom() {
 }
 
 function renderSummary() {
-  const divisionPipelineValue = opportunities.filter((job) => job.status !== "Lost").reduce((sum, job) => sum + number(job.contractValue || job.value), 0);
+  const metrics = dashboardMetrics();
 
   const cards = [
     ["Total Leads", metrics.leads, `${metrics.openLeads} open sales opportunities`, "user", "blue"],
@@ -6243,6 +6375,7 @@ function renderLeadDetail() {
   const panels = {
     overview: els.leadOverviewPanel,
     jobs: els.leadJobsPanel,
+    operations: els.leadOperationsPanel,
     profit: els.leadProfitPanel,
     payments: els.leadPaymentsPanel,
     email: els.leadEmailPanel,
@@ -6337,6 +6470,7 @@ function renderLeadDetail() {
   hydrateIcons(els.leadOverviewPanel);
 
   renderLeadJobs(contact);
+  renderLeadOperations(contact);
   renderLeadProfit(contact);
   renderLeadPayments(contact);
   renderLeadEmail(contact);
@@ -6440,6 +6574,302 @@ function renderLeadJobs(contact) {
   hydrateIcons(els.leadJobsList);
   renderJobMilestones(contact);
   renderProjectDelivery(contact);
+}
+
+function operationValue(row, camelKey, snakeKey = camelKey) {
+  return row?.[camelKey] ?? row?.[snakeKey] ?? "";
+}
+
+function operationsForJob(key, contactId, jobId) {
+  return (state[key] || []).filter((item) => (item.contactId || item.leadId || item.lead_id) === contactId && (item.jobId || item.job_id) === jobId);
+}
+
+function operationEmpty(message) {
+  return `<div class="empty-state compact-empty-state">${escapeHtml(message)}</div>`;
+}
+
+function operationStatusControl(table, id, field, value, options, { disabled = false } = {}) {
+  return `<select class="operation-status-select" aria-label="Update status" data-operation-update="${escapeHtml(table)}" data-operation-id="${escapeHtml(id)}" data-operation-field="${escapeHtml(field)}" ${disabled ? "disabled" : ""}>${options.map(([optionValue, label]) => `<option value="${escapeHtml(optionValue)}" ${String(value) === String(optionValue) ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>`;
+}
+
+function renderLeadOperations(contact) {
+  if (!els.leadOperationsPanel || !els.operationsJobSelect) return;
+  const jobs = contactJobs(contact);
+  if (!jobs.some((job) => job.id === state.selectedLeadJobId)) state.selectedLeadJobId = jobs[0]?.id || "";
+  const job = jobs.find((item) => item.id === state.selectedLeadJobId);
+  els.operationsJobSelect.innerHTML = jobs.length
+    ? jobs.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === state.selectedLeadJobId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")
+    : '<option value="">No jobs available</option>';
+  [els.permitForm, els.inspectionForm, els.selectionForm, els.changeOrderForm, els.progressBillingForm, els.maintenancePlanForm, els.accountPropertyLinkForm].forEach((form) => {
+    if (!form) return;
+    [...form.elements].forEach((control) => { if ("disabled" in control) control.disabled = !job; });
+  });
+  if (!job) {
+    els.operationsSummary.innerHTML = "";
+    els.permitsInspectionsList.innerHTML = operationEmpty("Add a job before creating operational records.");
+    els.selectionsChangeOrdersList.innerHTML = "";
+    els.progressBillingList.innerHTML = "";
+    els.maintenancePlansList.innerHTML = "";
+    els.accountPortfolioList.innerHTML = "";
+    return;
+  }
+
+  const permits = operationsForJob("permits", contact.id, job.id);
+  const inspections = operationsForJob("inspections", contact.id, job.id);
+  const selections = operationsForJob("jobSelections", contact.id, job.id);
+  const changeOrders = operationsForJob("changeOrders", contact.id, job.id);
+  const draws = operationsForJob("progressBillings", contact.id, job.id).sort((a, b) => number(operationValue(a, "drawNumber", "draw_number")) - number(operationValue(b, "drawNumber", "draw_number")));
+  const plans = operationsForJob("maintenancePlans", contact.id, job.id);
+  const openPermits = permits.filter((item) => !["closed","not_required"].includes(String(item.status))).length;
+  const failedInspections = inspections.filter((item) => item.result === "failed").length;
+  const allowanceVariance = selections.reduce((sum, item) => sum + number(operationValue(item, "selectedAmount", "selected_amount")) - number(operationValue(item, "allowanceAmount", "allowance_amount")), 0);
+  const signedChanges = changeOrders.filter((item) => ["approved","signed"].includes(item.status)).reduce((sum, item) => sum + number(item.amount), 0);
+  const billed = draws.reduce((sum, item) => sum + number(item.amount), 0);
+  const contract = number(job.contractValue) || number(job.value);
+  els.operationsSummary.innerHTML = [
+    ["Open permits", openPermits, failedInspections ? `${failedInspections} inspection issue${failedInspections === 1 ? "" : "s"}` : "No failed inspections"],
+    ["Allowance variance", money.format(allowanceVariance), allowanceVariance > 0 ? "Over allowance" : allowanceVariance < 0 ? "Under allowance" : "On allowance"],
+    ["Approved changes", money.format(signedChanges), `${changeOrders.length} change order${changeOrders.length === 1 ? "" : "s"}`],
+    ["Billing schedule", money.format(billed), contract ? `${Math.round((billed / contract) * 100)}% of contract` : `${draws.length} draws`],
+    ["Maintenance", plans.filter((item) => item.active !== false).length, plans.length ? `Next ${formatDate(plans.map((item) => operationValue(item, "nextServiceOn", "next_service_on")).filter(Boolean).sort()[0])}` : "No active plan"],
+  ].map(([label, value, note]) => `<article class="summary-card"><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><span>${escapeHtml(note)}</span></article>`).join("");
+
+  els.inspectionPermitSelect.innerHTML = '<option value="">No linked permit</option>' + permits.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(operationValue(item, "permitNumber", "permit_number") || item.permit_type || "Permit")}</option>`).join("");
+  const complianceRows = [
+    ...permits.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "permitType", "permit_type"))}</strong><span>${escapeHtml(operationValue(item, "permitNumber", "permit_number") || "Number pending")} · ${escapeHtml(item.authority || "Authority not set")}</span></div><div class="workflow-meta"><span>${item.expires_on ? `Expires ${formatDate(item.expires_on)}` : item.submitted_on ? `Submitted ${formatDate(item.submitted_on)}` : "Not submitted"}</span>${operationStatusControl("crm_permits", item.id, "status", item.status, [["planned","Planned"],["submitted","Submitted"],["corrections","Corrections"],["approved","Approved"],["issued","Issued"],["closed","Closed"],["expired","Expired"]])}</div></article>`),
+    ...inspections.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.result)}">${escapeHtml(item.result)}</span><strong>${escapeHtml(operationValue(item, "inspectionType", "inspection_type"))}</strong><span>${item.scheduled_at ? formatDateTime(item.scheduled_at) : "Date pending"}${item.reinspection_required ? " · Reinspection required" : ""}</span></div><div class="workflow-meta">${operationStatusControl("crm_inspections", item.id, "result", item.result, [["scheduled","Scheduled"],["passed","Passed"],["failed","Failed"],["reschedule","Reschedule"],["cancelled","Cancelled"]])}</div></article>`),
+  ];
+  els.permitsInspectionsList.innerHTML = complianceRows.length ? complianceRows.join("") : operationEmpty("No permits or inspections recorded for this job.");
+
+  const contractRows = [
+    ...selections.map((item) => { const variance = number(operationValue(item, "selectedAmount", "selected_amount")) - number(operationValue(item, "allowanceAmount", "allowance_amount")); return `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "itemName", "item_name"))}</strong><span>${escapeHtml(operationValue(item, "selectedProduct", "selected_product") || "Selection pending")}</span></div><div class="workflow-meta"><span>Allowance ${money.format(number(operationValue(item, "allowanceAmount", "allowance_amount")))}</span><strong class="${variance > 0 ? "negative-value" : "positive-value"}">${variance >= 0 ? "+" : ""}${money.format(variance)}</strong>${operationStatusControl("crm_job_selections", item.id, "status", item.status, [["pending","Pending"],["selected","Selected"],["approved","Approved"],["ordered","Ordered"],["installed","Installed"],["declined","Declined"]])}</div></article>`; }),
+    ...changeOrders.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "changeOrderNumber", "change_order_number"))} · ${escapeHtml(item.title)}</strong><span>${escapeHtml(item.description || "No description")}</span></div><div class="workflow-meta"><strong>${money.format(number(item.amount))}</strong><span>${number(operationValue(item, "scheduleDays", "schedule_days"))} schedule days</span>${operationStatusControl("crm_change_orders", item.id, "status", item.status, [["draft","Draft"],["pending","Pending"],["approved","Approved"],["signed","Signed"],["rejected","Rejected"],["void","Void"]])}</div></article>`),
+  ];
+  els.selectionsChangeOrdersList.innerHTML = contractRows.length ? contractRows.join("") : operationEmpty("No selections, allowances, or change orders yet.");
+
+  els.progressBillingEditor.classList.toggle("hidden", !canManageManualPayments());
+  els.progressBillingPermission.classList.toggle("hidden", canManageManualPayments());
+  els.progressBillingList.innerHTML = draws.length ? draws.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>Draw ${escapeHtml(operationValue(item, "drawNumber", "draw_number"))}: ${escapeHtml(item.name)}</strong><span>${number(operationValue(item, "scheduledPercent", "scheduled_percent")).toFixed(2)}% · ${item.due_on ? `Due ${formatDate(item.due_on)}` : "No due date"}</span></div><div class="workflow-meta"><strong>${money.format(number(item.amount))}</strong><span>${money.format(number(operationValue(item, "paidAmount", "paid_amount")))} paid</span>${operationStatusControl("crm_progress_billings", item.id, "status", item.status, [["planned","Planned"],["ready","Ready"],["invoiced","Invoiced"],["partially_paid","Partial"],["paid","Paid"],["void","Void"]], { disabled: !canManageManualPayments() })}${canManageManualPayments() && !operationValue(item, "invoiceId", "invoice_id") && item.status !== "void" ? `<button class="secondary-button" type="button" data-create-progress-invoice="${escapeHtml(item.id)}">Create invoice</button>` : operationValue(item, "invoiceId", "invoice_id") ? '<span>Invoice created</span>' : ""}</div></article>`).join("") : operationEmpty("No billing draws scheduled for this job.");
+
+  els.maintenancePlansList.innerHTML = plans.length ? plans.map((item) => `<article class="workflow-item"><div><span class="status-pill ${item.active === false ? "status-muted" : "status-success"}">${item.active === false ? "inactive" : "active"}</span><strong>${escapeHtml(operationValue(item, "planName", "plan_name"))}</strong><span>${escapeHtml(operationValue(item, "serviceName", "service_name"))} · ${escapeHtml(item.frequency)}</span></div><div class="workflow-meta"><strong>${money.format(number(item.amount))}</strong><span>Next ${formatDate(operationValue(item, "nextServiceOn", "next_service_on"))}${item.auto_invoice ? " · Auto invoice" : ""}</span>${operationStatusControl("crm_maintenance_plans", item.id, "active", item.active !== false, [["true","Active"],["false","Paused"]])}</div></article>`).join("") : operationEmpty("No recurring maintenance plan is connected to this job.");
+
+  els.operationsAccountSelect.innerHTML = '<option value="">Choose account</option>' + (state.customerAccounts || []).filter((item) => item.active !== false).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  const link = (state.accountRecordLinks || []).find((item) => (item.jobId || item.job_id) === job.id);
+  const account = link && (state.customerAccounts || []).find((item) => item.id === link.accountId);
+  const property = link && (state.accountProperties || []).find((item) => item.id === link.propertyId);
+  const contacts = account ? (state.accountContacts || []).filter((item) => item.accountId === account.id && (!property || !item.propertyId || item.propertyId === property.id)) : [];
+  els.accountPortfolioList.innerHTML = account ? `<article class="workflow-item account-portfolio-item"><div><span class="status-pill status-success">${escapeHtml(account.accountType.replaceAll("_", " "))}</span><strong>${escapeHtml(account.name)}</strong><span>${escapeHtml(property?.name || "Account-level job")} · ${escapeHtml(property?.address || job.address || "No address")}</span>${contacts.map((item) => `<span>${escapeHtml(item.name)}${item.roleName ? ` · ${escapeHtml(item.roleName)}` : ""}${item.email ? ` · ${escapeHtml(item.email)}` : ""}</span>`).join("")}</div></article>` : operationEmpty("This job is not linked to a commercial or HOA property account.");
+  hydrateIcons(els.leadOperationsPanel);
+}
+
+function currentOperationsContext() {
+  const contact = getSelectedContact();
+  const job = contact && contactJobs(contact).find((item) => item.id === state.selectedLeadJobId);
+  return { contact, job };
+}
+
+function operationBaseRow(prefix, contact, job) {
+  return { id: uid(prefix), lead_id: contact.id, job_id: job.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+}
+
+function setOperationsStatus(message, kind = "success") {
+  if (els.operationsSaveStatus) setSaveState(els.operationsSaveStatus, message, kind);
+}
+
+async function savePermit(event) {
+  event.preventDefault();
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const permitType = String(data.get("permitType") || "").trim();
+  if (!permitType) return;
+  const row = { ...operationBaseRow("permit", contact, job), permit_type: permitType, permit_number: String(data.get("permitNumber") || "").trim(), authority: String(data.get("authority") || "").trim(), status: String(data.get("status") || "planned"), submitted_on: data.get("submittedOn") || null, expires_on: data.get("expiresOn") || null, notes: String(data.get("notes") || "").trim() };
+  try { await insertJobOperation("crm_permits", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Permit saved to this job"); } catch (error) { setOperationsStatus(error.message || "Permit could not be saved", "error"); }
+}
+
+async function saveInspection(event) {
+  event.preventDefault();
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const inspectionType = String(data.get("inspectionType") || "").trim();
+  if (!inspectionType || !data.get("scheduledAt")) return;
+  const row = { ...operationBaseRow("inspection", contact, job), permit_id: String(data.get("permitId") || ""), inspection_type: inspectionType, scheduled_at: new Date(String(data.get("scheduledAt"))).toISOString(), result: String(data.get("result") || "scheduled"), notes: String(data.get("notes") || "").trim() };
+  try { await insertJobOperation("crm_inspections", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Inspection saved to this job"); } catch (error) { setOperationsStatus(error.message || "Inspection could not be saved", "error"); }
+}
+
+async function saveSelection(event) {
+  event.preventDefault();
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const itemName = String(data.get("itemName") || "").trim();
+  if (!itemName) return;
+  const row = { ...operationBaseRow("selection", contact, job), item_name: itemName, category: String(data.get("category") || "Finish").trim(), allowance_amount: number(data.get("allowanceAmount")), selected_amount: number(data.get("selectedAmount")), selected_product: String(data.get("selectedProduct") || "").trim(), selected_vendor: String(data.get("selectedVendor") || "").trim(), status: String(data.get("status") || "pending") };
+  try { await insertJobOperation("crm_job_selections", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Selection and allowance saved"); } catch (error) { setOperationsStatus(error.message || "Selection could not be saved", "error"); }
+}
+
+async function saveChangeOrder(event) {
+  event.preventDefault();
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const numberValue = String(data.get("changeOrderNumber") || "").trim();
+  const title = String(data.get("title") || "").trim();
+  if (!numberValue || !title) return;
+  const row = { ...operationBaseRow("change", contact, job), change_order_number: numberValue, title, description: String(data.get("description") || "").trim(), amount: number(data.get("amount")), schedule_days: Math.round(number(data.get("scheduleDays"))), status: String(data.get("status") || "draft"), requested_by_name: state.currentUser?.name || "" };
+  try { await insertJobOperation("crm_change_orders", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Change order saved"); } catch (error) { setOperationsStatus(error.message || "Change order could not be saved", "error"); }
+}
+
+async function saveProgressBilling(event) {
+  event.preventDefault();
+  if (!canManageManualPayments()) return showToast("Only an administrator can create billing draws");
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const row = { ...operationBaseRow("draw", contact, job), draw_number: Math.round(number(data.get("drawNumber"))), name: String(data.get("name") || "").trim(), scheduled_percent: number(data.get("scheduledPercent")), amount: number(data.get("amount")), paid_amount: 0, due_on: data.get("dueOn") || null, status: String(data.get("status") || "planned"), invoice_id: "" };
+  if (!row.draw_number || !row.name || row.amount < 0) return;
+  try { await insertJobOperation("crm_progress_billings", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Progress billing draw saved"); } catch (error) { setOperationsStatus(error.message || "Billing draw could not be saved", "error"); }
+}
+
+async function createOperationalInvoice(contact, job, { id, invoiceNumber, description, amount, issueDate = todayISO(), dueDate = "", notes = "" }) {
+  const invoice = normalizeInvoice({ id, invoiceNumber, contactId: contact.id, jobId: job.id, status: "draft", currency: "USD", subtotal: amount, taxAmount: 0, totalAmount: amount, amountPaid: 0, issueDate, dueDate, terms: state.company?.defaultTerms || "", notes, provider: "internal", ownerUserId: authSession?.user?.id || "", ownerEmail: contact.email || "", ownerName: contact.name, items: [{ id: `${id}_1`, description, quantity: 1, unitPrice: amount, amount, position: 0 }] });
+  if (canUseCloudSync()) {
+    const invoiceRow = { company_state_id: supabaseStateId(), id: invoice.id, invoice_number: invoice.invoiceNumber, lead_id: contact.id, job_id: job.id, estimate_id: "", status: "draft", currency: "USD", subtotal: amount, tax_amount: 0, tax_rate: 0, total_amount: amount, amount_paid: 0, issue_date: issueDate, due_date: dueDate || null, terms: invoice.terms, notes, provider: "internal", owner_user_id: authSession.user.id, owner_email: contact.email || "", owner_name: contact.name, created_by: authSession.user.id, updated_by: authSession.user.id };
+    const { error: invoiceError } = await cloudClient.from("crm_invoices").insert(invoiceRow);
+    if (invoiceError) throw invoiceError;
+    const { error: itemError } = await cloudClient.from("crm_invoice_items").insert({ company_state_id: supabaseStateId(), id: `${id}_1`, invoice_id: id, lead_id: contact.id, job_id: job.id, description, quantity: 1, unit_price: amount, amount, position: 0, created_by: authSession.user.id, updated_by: authSession.user.id });
+    if (itemError) throw itemError;
+    await initializeFinancialLedger();
+  } else {
+    state.invoices.unshift(invoice);
+    saveState({ localOnly: true });
+  }
+  return invoice;
+}
+
+async function createProgressDrawInvoice(drawId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can create invoices");
+  const draw = (state.progressBillings || []).find((item) => item.id === drawId);
+  const contact = draw && getContact(draw.contactId || draw.leadId || draw.lead_id);
+  const job = contact && contactJobs(contact).find((item) => item.id === (draw.jobId || draw.job_id));
+  if (!draw || !contact || !job) return showToast("The billing draw is no longer connected to a job");
+  if (operationValue(draw, "invoiceId", "invoice_id")) return showToast("This draw already has an invoice");
+  try {
+    const invoiceId = `draw_invoice_${draw.id}`;
+    const invoice = await createOperationalInvoice(contact, job, {
+      id: invoiceId,
+      invoiceNumber: `DRAW-${Date.now().toString().slice(-8)}`,
+      description: `${draw.name} · ${job.name}`,
+      amount: number(draw.amount),
+      issueDate: todayISO(),
+      dueDate: draw.due_on || "",
+      notes: `Progress billing draw ${operationValue(draw, "drawNumber", "draw_number")}`,
+    });
+    await updateJobOperation("crm_progress_billings", draw.id, { status: "invoiced", invoice_id: invoice.id });
+    renderLeadDetail();
+    showToast("Billing draw converted to a draft invoice");
+  } catch (error) {
+    showToast(error.message || "The billing draw could not be invoiced");
+  }
+}
+
+async function saveMaintenancePlan(event) {
+  event.preventDefault();
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const autoInvoice = data.get("autoInvoice") === "on";
+  if (autoInvoice && !canManageManualPayments()) return showToast("Only an administrator can enable recurring invoices");
+  const planId = uid("maintenance");
+  const row = { ...operationBaseRow("maintenance", contact, job), id: planId, plan_name: String(data.get("planName") || "").trim(), service_name: String(data.get("serviceName") || "").trim(), frequency: String(data.get("frequency") || "annual"), interval_months: Math.max(1, Math.round(number(data.get("intervalMonths")) || 12)), start_on: data.get("startOn"), next_service_on: data.get("nextServiceOn"), amount: number(data.get("amount")), auto_invoice: autoInvoice, active: true, notes: "" };
+  if (!row.plan_name || !row.service_name || !row.start_on || !row.next_service_on) return;
+  try {
+    const taskId = `maintenance_task_${planId}`;
+    const visit = { ...operationBaseRow("visit", contact, job), plan_id: planId, scheduled_for: `${row.next_service_on}T09:00:00`, status: "scheduled", task_id: taskId, invoice_id: "", notes: row.service_name };
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_create_maintenance_plan", { p_plan: row, p_visit: visit });
+      if (error) throw error;
+      if (!(await initializeJobOperations())) throw new Error("The maintenance plan was saved, but the operations view could not be refreshed");
+    } else {
+      await insertJobOperation("crm_maintenance_plans", row);
+      await insertJobOperation("crm_maintenance_visits", visit);
+    }
+    const maintenanceTask = normalizeCalendarTask({
+      id: taskId,
+      title: `${row.plan_name}: ${row.service_name}`,
+      rep: job.salesRep || contact.salesRep || "Unassigned",
+      ownerUserId: job.ownerUserId || contact.ownerUserId || "",
+      ownerEmail: job.ownerEmail || contact.ownerEmail || "",
+      ownerName: job.ownerName || contact.ownerName || job.salesRep || contact.salesRep || "",
+      contactId: contact.id,
+      jobId: job.id,
+      dueAt: `${row.next_service_on}T09:00:00`,
+      duration: 60,
+      notes: `Maintenance plan: ${row.plan_name}`,
+      priority: "normal",
+      workflowStatus: "not_started",
+      recurrence: ({ monthly: "monthly", annual: "yearly" })[row.frequency] || "none",
+      googleSyncStatus: "pending",
+    });
+    state.calendarTasks = [maintenanceTask, ...state.calendarTasks.filter((item) => item.id !== taskId)];
+    saveState({ localOnly: true });
+    if (canUseCloudSync()) {
+      const taskSaved = await persistDurableRecordNow("task", maintenanceTask.id, (confirmed) => confirmed.id === maintenanceTask.id);
+      if (!taskSaved) queueDurableRecordsSave();
+    }
+    if (autoInvoice) {
+      const cadence = ({ monthly: "monthly", quarterly: "quarterly", annual: "yearly" })[row.frequency];
+      if (cadence) {
+        const templateId = `maint_invoice_${planId}`;
+        const invoice = await createOperationalInvoice(contact, job, { id: templateId, invoiceNumber: `MAINT-${Date.now().toString().slice(-8)}`, description: `${row.plan_name}: ${row.service_name}`, amount: row.amount, issueDate: row.start_on, dueDate: row.start_on, notes: `Recurring maintenance template for ${row.plan_name}` });
+        const scheduleRow = { id: `maint_schedule_${planId}`, template_invoice_id: invoice.id, lead_id: contact.id, job_id: job.id, cadence, next_issue_date: row.next_service_on, due_days: 14, remaining_count: null, active: true };
+        if (canUseCloudSync()) {
+          const { error } = await cloudClient.from("crm_invoice_schedules").insert({ company_state_id: supabaseStateId(), ...scheduleRow, created_by: authSession.user.id, updated_by: authSession.user.id });
+          if (error) throw error;
+          await initializeFinancialLedger();
+        } else state.invoiceSchedules.unshift(normalizeInvoiceSchedule(scheduleRow));
+      } else showToast("The plan was saved. Automatic invoices support monthly, quarterly, or annual plans; this frequency remains scheduled without auto-billing.");
+    }
+    event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Maintenance plan saved");
+  } catch (error) { setOperationsStatus(error.message || "Maintenance plan could not be saved", "error"); }
+}
+
+async function saveCustomerAccount(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const name = String(data.get("name") || "").trim();
+  if (!name) return;
+  const row = { id: uid("account"), name, account_type: String(data.get("accountType") || "commercial"), owner_user_id: authSession?.user?.id || "00000000-0000-4000-8000-000000000000", billing_email: String(data.get("billingEmail") || "").trim(), billing_phone: String(data.get("billingPhone") || "").trim(), billing_address: String(data.get("billingAddress") || "").trim(), payment_terms: String(data.get("paymentTerms") || "Due on receipt").trim(), active: true, notes: "" };
+  try { await insertJobOperation("crm_organization_accounts", row); event.currentTarget.reset(); renderLeadOperations(getSelectedContact()); setOperationsStatus("Customer account created"); } catch (error) { setOperationsStatus(error.message || "Account could not be created", "error"); }
+}
+
+async function saveAccountPropertyLink(event) {
+  event.preventDefault();
+  const { contact, job } = currentOperationsContext();
+  if (!contact || !job) return showToast("Choose a job first");
+  const data = new FormData(event.currentTarget);
+  const accountId = String(data.get("accountId") || "");
+  const propertyName = String(data.get("propertyName") || "").trim();
+  const address = String(data.get("address") || "").trim();
+  if (!accountId || !propertyName || !address) return;
+  const propertyId = uid("property");
+  try {
+    const contactName = String(data.get("contactName") || "").trim();
+    const propertyRow = { id: propertyId, account_id: accountId, name: propertyName, address, property_type: job.propertyType || "commercial", units: 1, annual_budget: 0, roof_system: "", notes: "" };
+    const contactRow = { id: uid("accountcontact"), account_id: accountId, property_id: propertyId, name: contactName, email: String(data.get("contactEmail") || "").trim(), phone: "", role_name: "Property contact", is_primary: true };
+    const linkRow = { ...operationBaseRow("accountlink", contact, job), account_id: accountId, property_id: propertyId, relationship: "service_location" };
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.rpc("crm_link_account_property", { p_property: propertyRow, p_contact: contactRow, p_link: linkRow });
+      if (error) throw error;
+      if (!(await initializeJobOperations())) throw new Error("The property was linked, but the account view could not be refreshed");
+    } else {
+      await insertJobOperation("crm_account_properties", propertyRow);
+      if (contactName) await insertJobOperation("crm_account_contacts", contactRow);
+      await insertJobOperation("crm_account_record_links", linkRow);
+    }
+    event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Property and job linked to the account");
+  } catch (error) { setOperationsStatus(error.message || "Property could not be linked", "error"); }
 }
 
 function milestoneStatusLabel(status) {
@@ -14636,6 +15066,43 @@ function bindEvents() {
   });
   els.leadConversationForm.addEventListener("submit", submitLeadConversation);
   els.leadJobForm.addEventListener("submit", saveLeadJob);
+  els.operationsJobSelect?.addEventListener("change", (event) => {
+    const contact = getSelectedContact();
+    if (!contact || !contactJobs(contact).some((job) => job.id === event.target.value)) return;
+    state.selectedLeadJobId = event.target.value;
+    state.selectedProfitJobId = event.target.value;
+    saveUiState();
+    renderLeadOperations(contact);
+  });
+  els.permitForm?.addEventListener("submit", savePermit);
+  els.inspectionForm?.addEventListener("submit", saveInspection);
+  els.selectionForm?.addEventListener("submit", saveSelection);
+  els.changeOrderForm?.addEventListener("submit", saveChangeOrder);
+  els.progressBillingForm?.addEventListener("submit", saveProgressBilling);
+  els.maintenancePlanForm?.addEventListener("submit", saveMaintenancePlan);
+  els.customerAccountForm?.addEventListener("submit", saveCustomerAccount);
+  els.accountPropertyLinkForm?.addEventListener("submit", saveAccountPropertyLink);
+  els.leadOperationsPanel?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-create-progress-invoice]");
+    if (button) void createProgressDrawInvoice(button.dataset.createProgressInvoice);
+  });
+  els.leadOperationsPanel?.addEventListener("change", async (event) => {
+    const select = event.target.closest("[data-operation-update]");
+    if (!select) return;
+    const table = select.dataset.operationUpdate;
+    const field = select.dataset.operationField;
+    if (!operationsTableStateMap[table] || !["status", "result", "active"].includes(field)) return;
+    const value = field === "active" ? select.value === "true" : select.value;
+    select.disabled = true;
+    try {
+      await updateJobOperation(table, select.dataset.operationId, { [field]: value });
+      renderLeadOperations(getSelectedContact());
+      setOperationsStatus("Status updated");
+    } catch (error) {
+      renderLeadOperations(getSelectedContact());
+      setOperationsStatus(error.message || "Status could not be updated", "error");
+    }
+  });
   els.jobMilestoneForm?.addEventListener("submit", saveJobMilestone);
   els.projectMemberForm?.addEventListener("submit", saveProjectMember);
   els.projectNoteForm?.addEventListener("submit", saveProjectNote);
@@ -15237,6 +15704,17 @@ async function startApp() {
     state.projectNotes = [];
     state.jobTimeEntries = [];
     state.projectTemplates = [];
+    state.permits = [];
+    state.inspections = [];
+    state.jobSelections = [];
+    state.changeOrders = [];
+    state.progressBillings = [];
+    state.maintenancePlans = [];
+    state.maintenanceVisits = [];
+    state.customerAccounts = [];
+    state.accountProperties = [];
+    state.accountContacts = [];
+    state.accountRecordLinks = [];
     state.leadSources = [];
     state.leadTags = [];
     state.recordTags = [];
@@ -15277,6 +15755,7 @@ async function startApp() {
   }
   await initializeFinancialLedger();
   await initializeProjectDelivery();
+  await initializeJobOperations();
   await initializeLeadOrganization();
   await initializeCommunications();
   await initializeDocumentOperations();

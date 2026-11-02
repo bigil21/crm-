@@ -4233,6 +4233,43 @@ textarea:focus {
 .workflow-panel { margin-top: 18px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); }
 .workflow-panel .view-toolbar { margin-bottom: 12px; }
 .workflow-panel h3 { margin: 2px 0 0; }
+
+.operations-toolbar { align-items: flex-start; gap: 18px; }
+.operations-toolbar .muted-copy { max-width: 720px; margin: 6px 0 0; }
+.operations-summary { margin: 18px 0; grid-template-columns: repeat(5, minmax(150px, 1fr)); }
+.operations-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+.operations-card { margin-top: 0; min-width: 0; }
+.operations-card-wide { grid-column: 1 / -1; }
+.operations-card > details { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.operations-card > details > summary { cursor: pointer; padding: 11px 13px; font-weight: 700; color: var(--primary); list-style-position: inside; }
+.compact-operation-form { padding: 0 13px 13px; }
+.compact-operation-form .form-grid { gap: 10px; }
+.compact-operation-form label { min-width: 0; }
+.operations-card .workflow-list { margin-top: 14px; }
+.operations-card .workflow-item { align-items: flex-start; gap: 14px; }
+.operations-card .workflow-item > div:first-child { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.operations-card .workflow-item strong, .operations-card .workflow-item span { overflow-wrap: anywhere; }
+.operations-card .workflow-meta { margin-left: auto; text-align: right; display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
+.operation-status-select { min-width: 116px; max-width: 160px; padding: 6px 28px 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.compact-empty-state { padding: 18px 12px; min-height: 0; }
+.account-portfolio-item { border-left: 4px solid var(--primary); }
+.positive-value { color: var(--success); }
+.negative-value { color: var(--danger); }
+
+@media (max-width: 1180px) {
+  .operations-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .operations-grid { grid-template-columns: 1fr; }
+  .operations-card-wide { grid-column: auto; }
+}
+
+@media (max-width: 700px) {
+  .operations-summary { grid-template-columns: 1fr; }
+  .operations-toolbar { flex-direction: column; }
+  .operations-toolbar .compact-select { width: 100%; }
+  .operations-toolbar .compact-select select { width: 100%; }
+  .operations-card .workflow-item { flex-direction: column; }
+  .operations-card .workflow-meta { margin-left: 0; text-align: left; }
+}
 .workflow-progress-label { color: var(--muted); font-size: 12px; font-weight: 800; }
 .workflow-inline-form { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(130px, 1fr) minmax(140px, 1fr) auto; gap: 10px; align-items: end; margin-bottom: 14px; }
 .workflow-inline-form label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: 12px; font-weight: 750; }

@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=80" />
+    <link rel="stylesheet" href="styles.css?v=81" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -444,6 +444,7 @@
             <div class="segmented-control detail-tabs" aria-label="Lead detail sections">
               <button type="button" class="active" data-lead-tab="overview">Overview</button>
               <button type="button" data-lead-tab="jobs">Jobs</button>
+              <button type="button" data-lead-tab="operations">Operations</button>
               <button type="button" class="hidden" data-lead-tab="profit">Profit & Cost</button>
               <button type="button" class="hidden" data-lead-tab="payments">Payments</button>
               <button type="button" data-lead-tab="email">Email</button>
@@ -600,6 +601,87 @@
                   </section>
                 </div>
               </div>
+            </div>
+
+            <div class="lead-tab-panel hidden" id="leadOperationsPanel">
+              <div class="view-toolbar operations-toolbar">
+                <div><p class="eyebrow">Job operations</p><h2>Project controls</h2><p class="muted-copy">Permits, selections, billing draws, maintenance, and property portfolios stay separated by job.</p></div>
+                <label class="compact-select">Job<select id="operationsJobSelect"></select></label>
+              </div>
+              <div id="operationsSummary" class="detail-stats operations-summary"></div>
+              <div class="operations-grid">
+                <section class="workflow-panel operations-card">
+                  <div><p class="eyebrow">Compliance</p><h3>Permits &amp; inspections</h3></div>
+                  <details><summary>Add permit</summary>
+                    <form id="permitForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Permit type<input name="permitType" required placeholder="Roofing, electrical, structural..." /></label><label>Permit number<input name="permitNumber" /></label><label>Authority<input name="authority" placeholder="City or county" /></label><label>Status<select name="status"><option value="planned">Planned</option><option value="submitted">Submitted</option><option value="corrections">Corrections</option><option value="approved">Approved</option><option value="issued">Issued</option><option value="closed">Closed</option></select></label><label>Submitted<input name="submittedOn" type="date" /></label><label>Expires<input name="expiresOn" type="date" /></label></div>
+                      <label>Notes<textarea name="notes" rows="2"></textarea></label><button class="primary-button" type="submit">Save permit</button>
+                    </form>
+                  </details>
+                  <details><summary>Schedule inspection</summary>
+                    <form id="inspectionForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Inspection<input name="inspectionType" required placeholder="Dry-in, final..." /></label><label>Permit<select name="permitId" id="inspectionPermitSelect"><option value="">No linked permit</option></select></label><label>Date &amp; time<input name="scheduledAt" type="datetime-local" required /></label><label>Result<select name="result"><option value="scheduled">Scheduled</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="reschedule">Reschedule</option><option value="cancelled">Cancelled</option></select></label></div>
+                      <label>Notes<textarea name="notes" rows="2"></textarea></label><button class="primary-button" type="submit">Save inspection</button>
+                    </form>
+                  </details>
+                  <div id="permitsInspectionsList" class="workflow-list compact-workflow-list"></div>
+                </section>
+
+                <section class="workflow-panel operations-card">
+                  <div><p class="eyebrow">Contract controls</p><h3>Selections, allowances &amp; change orders</h3></div>
+                  <details><summary>Add selection or allowance</summary>
+                    <form id="selectionForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Item<input name="itemName" required placeholder="Shingle color, tile, fixture..." /></label><label>Category<input name="category" value="Finish" /></label><label>Allowance<input name="allowanceAmount" type="number" min="0" step="0.01" /></label><label>Selected amount<input name="selectedAmount" type="number" min="0" step="0.01" /></label><label>Product<input name="selectedProduct" /></label><label>Vendor<input name="selectedVendor" /></label><label>Status<select name="status"><option value="pending">Pending</option><option value="selected">Selected</option><option value="approved">Approved</option><option value="ordered">Ordered</option><option value="installed">Installed</option></select></label></div>
+                      <button class="primary-button" type="submit">Save selection</button>
+                    </form>
+                  </details>
+                  <details><summary>Add change order</summary>
+                    <form id="changeOrderForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Number<input name="changeOrderNumber" required placeholder="CO-001" /></label><label>Title<input name="title" required /></label><label>Amount<input name="amount" type="number" step="0.01" value="0.00" /></label><label>Schedule days<input name="scheduleDays" type="number" value="0" /></label><label>Status<select name="status"><option value="draft">Draft</option><option value="pending">Pending signature</option><option value="approved">Approved</option><option value="signed">Signed</option><option value="rejected">Rejected</option></select></label></div>
+                      <label>Description<textarea name="description" rows="2"></textarea></label><button class="primary-button" type="submit">Save change order</button>
+                    </form>
+                  </details>
+                  <div id="selectionsChangeOrdersList" class="workflow-list compact-workflow-list"></div>
+                </section>
+
+                <section class="workflow-panel operations-card">
+                  <div><p class="eyebrow">Cash flow</p><h3>Progress billing</h3><p class="muted-copy">Draws stay linked to the job and can be converted into CRM invoices.</p></div>
+                  <details id="progressBillingEditor"><summary>Add billing draw</summary>
+                    <form id="progressBillingForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Draw number<input name="drawNumber" type="number" min="1" required /></label><label>Name<input name="name" required placeholder="Deposit, dry-in, final..." /></label><label>Contract percent<input name="scheduledPercent" type="number" min="0" max="100" step="0.01" /></label><label>Amount<input name="amount" type="number" min="0" step="0.01" required /></label><label>Due date<input name="dueOn" type="date" /></label><label>Status<select name="status"><option value="planned">Planned</option><option value="ready">Ready to invoice</option><option value="invoiced">Invoiced</option><option value="partially_paid">Partially paid</option><option value="paid">Paid</option></select></label></div>
+                      <button class="primary-button" type="submit">Save draw</button>
+                    </form>
+                  </details>
+                  <p id="progressBillingPermission" class="muted-copy hidden">Billing draws are visible here; only an administrator can add or change them.</p>
+                  <div id="progressBillingList" class="workflow-list compact-workflow-list"></div>
+                </section>
+
+                <section class="workflow-panel operations-card">
+                  <div><p class="eyebrow">Recurring work</p><h3>Maintenance plans</h3></div>
+                  <details><summary>Add maintenance plan</summary>
+                    <form id="maintenancePlanForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Plan name<input name="planName" required /></label><label>Service<input name="serviceName" required /></label><label>Frequency<select name="frequency"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="semiannual">Every 6 months</option><option value="annual" selected>Annual</option><option value="custom">Custom</option></select></label><label>Every months<input name="intervalMonths" type="number" min="1" max="120" value="12" /></label><label>Starts<input name="startOn" type="date" required /></label><label>Next service<input name="nextServiceOn" type="date" required /></label><label>Visit amount<input name="amount" type="number" min="0" step="0.01" /></label><label class="checkbox-label"><input name="autoInvoice" type="checkbox" /> Automatically prepare invoice</label></div>
+                      <button class="primary-button" type="submit">Save plan</button>
+                    </form>
+                  </details>
+                  <div id="maintenancePlansList" class="workflow-list compact-workflow-list"></div>
+                </section>
+
+                <section class="workflow-panel operations-card operations-card-wide">
+                  <div><p class="eyebrow">Portfolio</p><h3>Commercial &amp; HOA account</h3><p class="muted-copy">Group many properties and contacts under one customer while each job keeps its own records.</p></div>
+                  <details><summary>Create account</summary>
+                    <form id="customerAccountForm" class="conversation-form compact-operation-form">
+                      <div class="form-grid two"><label>Account name<input name="name" required /></label><label>Type<select name="accountType"><option value="commercial">Commercial</option><option value="hoa">HOA / association</option><option value="property_manager">Property manager</option><option value="municipal">Municipal</option><option value="other">Other</option></select></label><label>Billing email<input name="billingEmail" type="email" /></label><label>Billing phone<input name="billingPhone" type="tel" /></label><label>Payment terms<input name="paymentTerms" value="Due on receipt" /></label></div><label>Billing address<textarea name="billingAddress" rows="2"></textarea></label>
+                      <button class="primary-button" type="submit">Create account</button>
+                    </form>
+                  </details>
+                  <form id="accountPropertyLinkForm" class="workflow-inline-form">
+                    <label>Account<select name="accountId" id="operationsAccountSelect" required><option value="">Choose account</option></select></label><label>Property name<input name="propertyName" required placeholder="Building A, clubhouse..." /></label><label>Property address<input name="address" required /></label><label>Property contact<input name="contactName" placeholder="Manager or board member" /></label><label>Contact email<input name="contactEmail" type="email" /></label><button class="secondary-button" type="submit">Link property to job</button>
+                  </form>
+                  <div id="accountPortfolioList" class="workflow-list compact-workflow-list"></div>
+                </section>
+              </div>
+              <p class="save-state-message" id="operationsSaveStatus" role="status" aria-live="polite"></p>
             </div>
 
             <div class="lead-tab-panel hidden" id="leadProfitPanel">
@@ -1976,7 +2058,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=161" defer></script>
+    <script src="app.js?v=162" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>
