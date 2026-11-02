@@ -15568,12 +15568,36 @@ async function playSignInUnlockTransition() {
     return;
   }
 
+  const email = String(authSession?.user?.email || state.currentUser?.email || "").trim().toLowerCase();
+  const identityName = String(
+    state.currentUser?.name
+      || authSession?.user?.user_metadata?.full_name
+      || authSession?.user?.user_metadata?.name
+      || email.split("@")[0]
+      || "team",
+  ).trim().split(/\s+/)[0];
+  const welcomeName = identityName
+    ? `${identityName.charAt(0).toUpperCase()}${identityName.slice(1)}`
+    : "team";
+  const welcomeNameElement = document.querySelector("#signInWelcomeName");
+  const welcomeEmailElement = document.querySelector("#signInWelcomeEmail");
+  if (welcomeNameElement) welcomeNameElement.textContent = welcomeName;
+  if (welcomeEmailElement) welcomeEmailElement.textContent = email ? `Signed in as ${email}` : "Secure company workspace";
+
   overlay.setAttribute("aria-hidden", "false");
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   overlay.classList.add("is-active");
 
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  await new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 500 : 2850));
+  const openButton = document.querySelector("#signInOpenDashboard");
+  let openImmediately;
+  const openRequest = new Promise((resolve) => { openImmediately = resolve; });
+  openButton?.addEventListener("click", openImmediately, { once: true });
+  await Promise.race([
+    openRequest,
+    new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 500 : 4300)),
+  ]);
+  openButton?.removeEventListener("click", openImmediately);
 
   root.classList.add("vault-entry-revealing");
   overlay.classList.add("is-complete");

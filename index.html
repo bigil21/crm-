@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=81" />
+    <link rel="stylesheet" href="styles.css?v=82" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -19,38 +19,27 @@
     </script>
   </head>
   <body>
-    <div class="vault-unlock" id="vaultUnlock" aria-hidden="true">
-      <div class="vault-glow" aria-hidden="true"></div>
-      <div class="vault-scene" aria-hidden="true">
-        <div class="vault-frame">
-          <div class="vault-interior">
-            <img src="icon.svg" alt="" />
-            <span>Access granted</span>
-          </div>
-          <div class="vault-door">
-            <div class="vault-door-face">
-              <span class="vault-bolt vault-bolt-top"></span>
-              <span class="vault-bolt vault-bolt-right"></span>
-              <span class="vault-bolt vault-bolt-bottom"></span>
-              <span class="vault-bolt vault-bolt-left"></span>
-              <div class="vault-dial">
-                <span class="vault-spoke vault-spoke-one"></span>
-                <span class="vault-spoke vault-spoke-two"></span>
-                <span class="vault-spoke vault-spoke-three"></span>
-                <span class="vault-dial-hub"></span>
-              </div>
-              <div class="vault-security-mark">
-                <span></span>
-                Secure
-              </div>
-            </div>
-          </div>
+    <div class="vault-unlock brand-entry" id="vaultUnlock" aria-hidden="true">
+      <div class="brand-entry-rings" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-entry-waves" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-entry-content">
+        <div class="brand-entry-mark" aria-hidden="true">
+          <img src="coastal-crest-mark.png" alt="" />
         </div>
-      </div>
-      <div class="vault-unlock-copy" role="status" aria-live="polite">
-        <p>Identity verified</p>
-        <h1>Unlocking JobCrest</h1>
-        <div class="vault-progress"><span></span></div>
+        <div class="brand-entry-copy" role="status" aria-live="polite">
+          <p>Access verified</p>
+          <h1>Welcome back, <span id="signInWelcomeName">team</span></h1>
+          <span id="signInWelcomeEmail">Secure company workspace</span>
+        </div>
+        <div class="brand-entry-checklist" aria-label="Preparing your workspace">
+          <div class="brand-entry-progress" aria-hidden="true"><span></span></div>
+          <p><span aria-hidden="true">✓</span>Verifying your access</p>
+          <p><span aria-hidden="true">✓</span>Syncing leads and jobs</p>
+          <p><span aria-hidden="true">✓</span>Loading today's schedule</p>
+          <p><span aria-hidden="true">✓</span>Preparing your dashboard</p>
+        </div>
+        <button class="brand-entry-open" id="signInOpenDashboard" type="button">Open my dashboard <span aria-hidden="true">→</span></button>
+        <a class="brand-entry-signout" href="/logout">Sign out and replay</a>
       </div>
     </div>
     <div class="app-shell">
@@ -2058,7 +2047,7 @@
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
     <script src="draft-recovery.js?v=1" defer></script>
-    <script src="app.js?v=162" defer></script>
+    <script src="app.js?v=163" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=93" defer></script>

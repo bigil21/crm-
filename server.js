@@ -57,7 +57,7 @@ const publicAssets = new Set([
   "/index.html", "/login.html", "/logout.html", "/reset-session.html", "/portal.html", "/portal.js",
   "/styles.css", "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/sw.js",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js", "/team-onboarding.js",
-  "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png",
+  "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/coastal-crest-mark.png",
 ]);
 const publicAssetFiles = new Map([
   ["/vendor/pdf.min.mjs", path.join(root, "node_modules", "pdfjs-dist", "build", "pdf.min.mjs")],

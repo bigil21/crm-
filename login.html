@@ -6,22 +6,27 @@
     <meta name="theme-color" content="#111111" />
     <title>Login | JobCrest CRM</title>
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=51" />
+    <link rel="stylesheet" href="styles.css?v=82" />
   </head>
   <body class="auth-body">
     <main class="auth-shell">
-      <section class="auth-card surface">
-        <div class="brand auth-brand">
-          <img src="icon.svg" alt="" class="brand-icon" />
-          <div>
-            <strong>JobCrest CRM</strong>
-            <span>Coastal Crest Roofing</span>
-          </div>
-        </div>
+      <header class="auth-masthead" aria-label="Coastal Crest team workspace">
+        <img src="coastal-crest-mark.png" alt="" />
+        <div><strong>COASTAL CREST</strong><span>TEAM WORKSPACE</span></div>
+      </header>
 
-        <div>
-          <p class="eyebrow">Secure access</p>
-          <h1>Sign in</h1>
+      <section class="auth-intro" aria-labelledby="authIntroTitle">
+        <p class="auth-kicker">Every job, one crew.</p>
+        <h1 id="authIntroTitle">The workday starts here.</h1>
+        <p>Leads, jobs, schedules and customer follow-through—organized in one secure workspace for the Coastal Crest team.</p>
+        <div class="auth-trust"><span>✓</span><span>Company-approved access</span><span>•</span><span>Protected customer records</span></div>
+      </section>
+
+      <section class="auth-card" aria-labelledby="authTitle">
+        <div class="auth-card-mark" aria-hidden="true"><img src="coastal-crest-mark.png" alt="" /></div>
+        <div class="auth-card-heading">
+          <p class="eyebrow">Secure team access</p>
+          <h2 id="authTitle">Welcome back</h2>
           <p id="domainHint" class="auth-copy">Only company users can sign in.</p>
         </div>
 
@@ -38,20 +43,25 @@
             Confirm New Password
             <input id="confirmPassword" type="password" autocomplete="new-password" />
           </label>
-          <button class="primary-button" type="submit">Sign In</button>
-          <button class="secondary-button" id="createAccountButton" type="button">Create Account</button>
-          <button class="secondary-button" id="magicLinkButton" type="button">Send Magic Link</button>
-          <button class="ghost-button" id="resetPasswordButton" type="button">Reset Password</button>
-          <button class="ghost-button" id="clearSessionButton" type="button">Clear Saved Session</button>
+          <button class="primary-button auth-submit" type="submit">Sign In <span aria-hidden="true">→</span></button>
+          <div class="auth-alternatives">
+            <button class="secondary-button" id="magicLinkButton" type="button">Email me a sign-in link</button>
+            <button class="secondary-button" id="createAccountButton" type="button">Create Account</button>
+          </div>
+          <div class="auth-links">
+            <button class="ghost-button" id="resetPasswordButton" type="button">Forgot password?</button>
+            <button class="ghost-button" id="clearSessionButton" type="button">Use another account</button>
+          </div>
         </form>
 
         <p class="auth-status" id="loginStatus" role="status" aria-live="polite"></p>
       </section>
+      <footer class="auth-footer"><span>JOB<span>CREST</span> CRM</span><small>Authorized team members only</small></footer>
     </main>
 
     <script src="auth-config.js?v=46" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0" integrity="sha384-JBR+x8blGwjDRO63aHCGiZMD4VNiTR4ZUGA+N6ZKLf3zNt1fK8IBpcgPaMrxqWBp" crossorigin="anonymous" defer></script>
     <script src="auth.js?v=85" defer></script>
-    <script src="login.js?v=94" defer></script>
+    <script src="login.js?v=95" defer></script>
   </body>
 </html>
