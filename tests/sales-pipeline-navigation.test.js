@@ -18,13 +18,14 @@ test("Sales Pipeline has a real final navigation item and view title", () => {
   assert.match(app, /item\.classList\.toggle\("active", item\.dataset\.view === state\.view\)/);
 });
 
-test("pipeline renderer computes its division value before drawing the board", () => {
+test("pipeline renderer computes open and weighted values before drawing the board", () => {
   const app = read("app.js");
   const renderer = app.slice(app.indexOf("function renderPipeline()"), app.indexOf("function renderLeadCard"));
-  const declaration = renderer.indexOf("const divisionPipelineValue = opportunities");
-  const use = renderer.indexOf("money.format(divisionPipelineValue)");
-  assert.ok(declaration >= 0, "divisionPipelineValue is not calculated");
-  assert.ok(use > declaration, "divisionPipelineValue is used before it is calculated");
-  assert.match(renderer, /\.filter\(\(job\) => job\.status !== "Lost"\)/);
-  assert.match(renderer, /\.reduce\(\(total, job\) => total \+ number\(job\.contractValue \?\? job\.value\), 0\)/);
+  const declaration = renderer.indexOf("const pipelineValue = activeRows.reduce");
+  const use = renderer.indexOf("money.format(pipelineValue)");
+  assert.ok(declaration >= 0, "pipelineValue is not calculated");
+  assert.ok(use > declaration, "pipelineValue is used before it is calculated");
+  assert.match(renderer, /const weightedForecast = activeRows\.reduce/);
+  assert.match(renderer, /pipelineStageWeight\(job\.salesStage, stages\)/);
+  assert.match(renderer, /!\["Lost", stages\.at\(-1\)\]\.includes\(job\.salesStage\)/);
 });

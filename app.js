@@ -113,6 +113,61 @@ const defaultPipelineStages = {
   construction: ["Consultation", "Design & Selections", "Estimate", "Contract", "Permits", "Demo", "Rough-In", "Inspections", "Finishes", "Punch List", "Final Walkthrough", "Paid"],
   services: ["Request", "Scheduled", "Completed", "Invoiced"],
 };
+const defaultSalesPipelineStages = {
+  roofing: ["New", "Contacted", "Inspection Scheduled", "Inspection Complete", "Estimate Sent", "Follow-Up/Decision", "Contract & Deposit", "Production Handoff"],
+  construction: ["New", "Contacted", "Consultation Scheduled", "Site Visit & Measurements", "Design & Selections", "Proposal Sent", "Revisions/Decision", "Contract & Deposit", "Production Handoff"],
+  services: ["New Request", "Contacted", "Scheduled/Quoted", "Approved", "Operations Handoff"],
+};
+const commercialApprovalStages = ["Bid Preparation", "Bid Submitted", "Management Review", "Board Approval"];
+const salesPipelineStagesFor = (divisionId = "roofing", propertyType = "all") => {
+  const base = [...(defaultSalesPipelineStages[divisionId] || defaultSalesPipelineStages.roofing)];
+  if (!["commercial", "hoa"].includes(propertyType) || divisionId === "services") return base;
+  const contractIndex = base.indexOf("Contract & Deposit");
+  if (contractIndex < 0) return base;
+  return [...base.slice(0, contractIndex), ...commercialApprovalStages, ...base.slice(contractIndex)];
+};
+function legacySalesStageFor(division = "roofing", status = "", propertyType = "residential") {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "lost") return "Lost";
+  if (division === "services") {
+    if (["scheduled"].includes(normalized)) return "Scheduled/Quoted";
+    if (["completed", "invoiced", "paid"].includes(normalized)) return "Operations Handoff";
+    if (["approved", "won"].includes(normalized)) return "Approved";
+    if (["contacted"].includes(normalized)) return "Contacted";
+    return "New Request";
+  }
+  if (division === "construction") {
+    if (["paid", "final walkthrough", "punch list", "finishes", "inspections", "rough-in", "demo", "permits", "scheduled", "materials ordered", "in progress", "completed"].includes(normalized)) return "Production Handoff";
+    if (["contract", "won"].includes(normalized)) return "Contract & Deposit";
+    if (["estimate", "estimate sent"].includes(normalized)) return "Proposal Sent";
+    if (normalized === "design & selections") return "Design & Selections";
+    if (["site visit & measurements", "inspection"].includes(normalized)) return "Site Visit & Measurements";
+    if (["consultation", "consultation scheduled"].includes(normalized)) return "Consultation Scheduled";
+    if (normalized === "contacted") return "Contacted";
+    return "New";
+  }
+  if (["won"].includes(normalized)) return "Contract & Deposit";
+  if (["scheduled", "materials ordered", "in progress", "completed", "paid"].includes(normalized)) return "Production Handoff";
+  if (normalized === "estimate sent") return "Estimate Sent";
+  if (["inspection complete"].includes(normalized)) return "Inspection Complete";
+  if (["inspection", "inspection scheduled"].includes(normalized)) return "Inspection Scheduled";
+  if (normalized === "contacted") return "Contacted";
+  return "New";
+}
+
+function normalizeSalesStage(job = {}, contact = {}, division = "roofing", propertyType = "residential") {
+  const stages = salesPipelineStagesFor(division, propertyType);
+  const available = new Set([...stages, ...salesPipelineStagesFor(division, "all"), "Lost"]);
+  const requested = String(job.salesStage || job.sales_stage || "").trim();
+  const derived = legacySalesStageFor(division, job.status || contact.status, propertyType);
+  if (!available.has(requested)) return derived;
+  if (requested === "Lost" || derived === "Lost") return requested === "Lost" ? requested : derived;
+  const requestedIndex = stages.indexOf(requested);
+  const derivedIndex = stages.indexOf(derived);
+  // Existing job-progression controls remain authoritative. If a job advances
+  // outside this board, never leave its separate sales stage behind it.
+  return derivedIndex > requestedIndex ? derived : requested;
+}
 const activeDivisions = () => (state.divisions?.length ? state.divisions : defaultDivisions).filter((item) => item.active !== false).sort((a, b) => number(a.displayOrder) - number(b.displayOrder));
 const activeServices = (divisionId) => (state.services?.length ? state.services : defaultServices).filter((item) => item.active !== false && (!divisionId || item.divisionId === divisionId)).sort((a, b) => number(a.displayOrder) - number(b.displayOrder));
 const pipelineStagesFor = (divisionId = "roofing") => {
@@ -575,6 +630,16 @@ const createInitialState = () => ({
   search: "",
   pipelineFilter: "Lead",
   pipelineDivision: "roofing",
+  pipelinePropertyType: "all",
+  pipelineRep: "all",
+  pipelineService: "all",
+  pipelineSource: "all",
+  pipelineUrgency: "all",
+  pipelineDateRange: "all",
+  pipelineStaleDays: 7,
+  pipelineAttention: "all",
+  pipelineSelectedOpportunity: "",
+  pipelineGuidanceStage: "",
   leadStageFilter: "",
   leadTagFilter: "",
   savedLeadFilterId: "",
@@ -1080,6 +1145,17 @@ function uiStateSnapshot() {
     view: state.view,
     search: state.search,
     pipelineFilter: state.pipelineFilter,
+    pipelineDivision: state.pipelineDivision,
+    pipelinePropertyType: state.pipelinePropertyType,
+    pipelineRep: state.pipelineRep,
+    pipelineService: state.pipelineService,
+    pipelineSource: state.pipelineSource,
+    pipelineUrgency: state.pipelineUrgency,
+    pipelineDateRange: state.pipelineDateRange,
+    pipelineStaleDays: state.pipelineStaleDays,
+    pipelineAttention: state.pipelineAttention,
+    pipelineSelectedOpportunity: state.pipelineSelectedOpportunity,
+    pipelineGuidanceStage: state.pipelineGuidanceStage,
     leadStageFilter: state.leadStageFilter,
     sidebarMode: state.sidebarMode || "auto",
     reminderFilter: state.reminderFilter || "all",
@@ -1165,6 +1241,16 @@ function normalizeState(nextState) {
     dashboardWidgetLayout: normalizeDashboardWidgetLayout(nextState.dashboardWidgetLayout),
     leadStageFilter: [...new Set([...Object.values(defaultPipelineStages).flat(), ...(nextState.pipelineStages || []).map((item) => item.name), "Lost"])].includes(nextState.leadStageFilter) ? nextState.leadStageFilter : "",
     pipelineDivision: ["roofing", "construction", "services"].includes(nextState.pipelineDivision) ? nextState.pipelineDivision : "roofing",
+    pipelinePropertyType: ["all", "residential", "commercial", "hoa"].includes(nextState.pipelinePropertyType) ? nextState.pipelinePropertyType : "all",
+    pipelineRep: nextState.pipelineRep || "all",
+    pipelineService: nextState.pipelineService || "all",
+    pipelineSource: nextState.pipelineSource || "all",
+    pipelineUrgency: nextState.pipelineUrgency || "all",
+    pipelineDateRange: ["all", "30", "90", "365"].includes(nextState.pipelineDateRange) ? nextState.pipelineDateRange : "all",
+    pipelineStaleDays: Math.min(90, Math.max(1, Math.round(number(nextState.pipelineStaleDays) || 7))),
+    pipelineAttention: nextState.pipelineAttention || "all",
+    pipelineSelectedOpportunity: nextState.pipelineSelectedOpportunity || "",
+    pipelineGuidanceStage: nextState.pipelineGuidanceStage || "",
     sidebarMode: ["expanded", "compact"].includes(nextState.sidebarMode) ? nextState.sidebarMode : "auto",
     reminderFilter: ["overdue", "today", "estimates", "upcoming", "completed"].includes(nextState.reminderFilter) ? nextState.reminderFilter : "all",
     leadTagFilter: nextState.leadTagFilter || "",
@@ -1631,6 +1717,29 @@ function normalizeJob(job, contact = {}) {
     .filter(Boolean)
     .sort()
     .at(-1) || "";
+  const division = job.division || contact.division || "roofing";
+  const propertyType = job.propertyType || contact.propertyType || "residential";
+  const requestedSalesStage = String(job.salesStage || job.sales_stage || "").trim();
+  const salesStage = typeof normalizeSalesStage === "function"
+    ? normalizeSalesStage(job, contact, division, propertyType)
+    : String(job.salesStage || status || "New");
+  const stageTimestamp = requestedSalesStage === salesStage
+    ? job.salesStageEnteredAt || job.sales_stage_entered_at || job.updatedAt || job.modifiedAt || job.createdAt || contact.updatedAt || contact.createdAt || new Date().toISOString()
+    : job.updatedAt || job.modifiedAt || contact.updatedAt || new Date().toISOString();
+  const salesStageHistory = Array.isArray(job.salesStageHistory)
+    ? job.salesStageHistory.filter((entry) => entry && entry.stage && entry.enteredAt).map((entry) => ({
+        stage: String(entry.stage),
+        enteredAt: entry.enteredAt,
+        exitedAt: entry.exitedAt || "",
+        actor: entry.actor || "",
+      }))
+    : [];
+  if (!salesStageHistory.length) {
+    salesStageHistory.push({ stage: salesStage, enteredAt: stageTimestamp, exitedAt: "", actor: job.salesRep || contact.salesRep || "" });
+  } else if (salesStageHistory.at(-1).stage !== salesStage) {
+    if (!salesStageHistory.at(-1).exitedAt) salesStageHistory[salesStageHistory.length - 1] = { ...salesStageHistory.at(-1), exitedAt: stageTimestamp };
+    salesStageHistory.push({ stage: salesStage, enteredAt: stageTimestamp, exitedAt: "", actor: job.salesRep || contact.salesRep || "" });
+  }
   return {
     ...job,
     id: job.id || uid("job"),
@@ -1650,9 +1759,12 @@ function normalizeJob(job, contact = {}) {
     ownerEmail: job.ownerEmail || contact.ownerEmail || "",
     ownerName: job.ownerName || contact.ownerName || "",
     salesRep: normalizePersonName(job.salesRep || contact.salesRep || "Unassigned"),
-    division: job.division || contact.division || "roofing",
+    division,
     service: job.service || job.serviceType || contact.service || "roof-replacement",
-    propertyType: job.propertyType || contact.propertyType || "residential",
+    propertyType,
+    salesStage,
+    salesStageEnteredAt: stageTimestamp,
+    salesStageHistory,
     urgency: job.urgency || contact.urgency || "normal",
     insuranceClaim: Boolean(job.insuranceClaim ?? contact.insuranceClaim),
     activeLeak: Boolean(job.activeLeak ?? contact.activeLeak),
@@ -5876,7 +5988,7 @@ function renderWeatherPanel() {
   hydrateIcons(els.weatherPanel);
 }
 
-function renderPipeline() {
+function renderPipelinePlaybook() {
   if (!els.views.pipeline) return;
   const division = activeDivisions().some((item) => item.id === state.pipelineDivision) ? state.pipelineDivision : "roofing";
   const opportunities = allJobs().filter((job) => (job.division || "roofing") === division);
@@ -5988,6 +6100,366 @@ function renderPipeline() {
     </section>
   `;
   hydrateIcons(els.pipelineBoard);
+}
+
+function pipelineOpportunityKey(contactId, jobId) {
+  return `${contactId}:${jobId}`;
+}
+
+function pipelineOpportunityRows(division = state.pipelineDivision) {
+  return visibleContacts().flatMap((contact) => contactJobs(contact)
+    .filter((job) => (job.division || contact.division || "roofing") === division)
+    .map((job) => ({ contact, job, key: pipelineOpportunityKey(contact.id, job.id) })));
+}
+
+function pipelineStageEnteredTimestamp(contact, job) {
+  const direct = localTimestamp(job.salesStageEnteredAt);
+  if (Number.isFinite(direct)) return direct;
+  const history = [...(job.salesStageHistory || [])].reverse().find((entry) => entry.stage === job.salesStage);
+  const historic = localTimestamp(history?.enteredAt);
+  if (Number.isFinite(historic)) return historic;
+  const matchingUpdate = (contact.updates || []).find((update) => update.jobId === job.id && update.status === job.status);
+  return localTimestamp(matchingUpdate?.createdAt || job.updatedAt || job.createdAt || contact.createdAt) || Date.now();
+}
+
+function pipelineDaysInStage(contact, job, now = Date.now()) {
+  return Math.max(0, Math.floor((now - pipelineStageEnteredTimestamp(contact, job)) / 86400000));
+}
+
+function pipelineStageTargetDays(stage = "") {
+  const key = String(stage).toLowerCase();
+  if (key.includes("new") || key === "contacted") return 1;
+  if (key.includes("follow-up") || key.includes("revision") || key.includes("board")) return 5;
+  if (key.includes("proposal") || key.includes("estimate") || key.includes("bid")) return 3;
+  if (key.includes("inspection") || key.includes("consultation") || key.includes("site visit")) return 3;
+  return 4;
+}
+
+function pipelineNextTask(contact, job) {
+  return visibleCalendarTasks()
+    .filter((task) => !task.completed && task.contactId === contact.id && (!task.jobId || task.jobId === job.id))
+    .sort((left, right) => localTimestamp(left.dueAt) - localTimestamp(right.dueAt))[0] || null;
+}
+
+function pipelineChecklist(contact, job) {
+  return window.RooflineWorkflowChecklist?.stageChecklist?.(contact, job, job.status) || {
+    stage: job.status,
+    items: [],
+    completed: 0,
+    total: 0,
+    ready: true,
+    missing: [],
+  };
+}
+
+function pipelineLifecycleStatusFor(division, salesStage, currentStatus) {
+  if (salesStage === "Lost") return "Lost";
+  if (division === "services") {
+    if (salesStage === "Scheduled/Quoted" || salesStage === "Approved") return "Scheduled";
+    if (salesStage === "Operations Handoff") return currentStatus === "Invoiced" ? "Invoiced" : "Completed";
+    return "Request";
+  }
+  if (division === "construction") {
+    if (["New", "Contacted", "Consultation Scheduled"].includes(salesStage)) return "Consultation";
+    if (["Site Visit & Measurements", "Design & Selections"].includes(salesStage)) return "Design & Selections";
+    if (["Proposal Sent", "Revisions/Decision", "Bid Preparation", "Bid Submitted", "Management Review", "Board Approval"].includes(salesStage)) return "Estimate";
+    return "Contract";
+  }
+  if (salesStage === "New") return "New";
+  if (salesStage === "Contacted") return "Contacted";
+  if (["Inspection Scheduled", "Inspection Complete"].includes(salesStage)) return "Inspection";
+  if (["Estimate Sent", "Follow-Up/Decision", "Bid Preparation", "Bid Submitted", "Management Review", "Board Approval"].includes(salesStage)) return "Estimate Sent";
+  if (["Contract & Deposit", "Production Handoff"].includes(salesStage)) return "Won";
+  return currentStatus;
+}
+
+function pipelineOptionMarkup(values, selected, allLabel) {
+  return [`<option value="all">${escapeHtml(allLabel)}</option>`, ...values.map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`)].join("");
+}
+
+function pipelineRowAttention(row, now = Date.now()) {
+  const { contact, job } = row;
+  const stage = job.salesStage || normalizeSalesStage(job, contact, job.division, job.propertyType);
+  const task = pipelineNextTask(contact, job);
+  const inactiveDays = Math.max(0, Math.floor((now - leadActivityTimestamp(contact)) / 86400000));
+  const stageDays = pipelineDaysInStage(contact, job, now);
+  const isNewStage = stage === salesPipelineStagesFor(job.division, job.propertyType)[0];
+  return {
+    unassigned: String(contact.source || "").toLowerCase() === "website" && (!job.salesRep || job.salesRep === "Unassigned"),
+    uncontacted: isNewStage && (!contact.lastContact || !(contact.updates || []).some((update) => update.jobId === job.id || !update.jobId)),
+    overdue: Boolean(task && !task.completed && localTimestamp(task.dueAt) < now),
+    inactive: inactiveDays >= state.pipelineStaleDays,
+    noDecision: ["Estimate Sent", "Proposal Sent", "Follow-Up/Decision", "Revisions/Decision"].includes(stage) && !(job.decisionDate || job.nextDecisionDate),
+    stuck: stageDays > pipelineStageTargetDays(stage),
+  };
+}
+
+function pipelineFilteredRows() {
+  const now = Date.now();
+  const cutoffDays = number(state.pipelineDateRange);
+  return pipelineOpportunityRows().filter(({ contact, job, ...row }) => {
+    const propertyType = String(job.propertyType || contact.propertyType || "residential").toLowerCase();
+    if (state.pipelinePropertyType !== "all" && propertyType !== state.pipelinePropertyType) return false;
+    if (state.pipelineRep !== "all" && (job.salesRep || contact.salesRep || "Unassigned") !== state.pipelineRep) return false;
+    if (state.pipelineService !== "all" && (job.service || contact.service || "") !== state.pipelineService) return false;
+    if (state.pipelineSource !== "all" && (contact.source || "No source") !== state.pipelineSource) return false;
+    if (state.pipelineUrgency !== "all" && (job.urgency || contact.urgency || "normal") !== state.pipelineUrgency) return false;
+    if (cutoffDays) {
+      const created = localTimestamp(job.createdAt || contact.createdAt);
+      if (!Number.isFinite(created) || created < now - cutoffDays * 86400000) return false;
+    }
+    const attention = pipelineRowAttention({ contact, job, ...row }, now);
+    if (state.pipelineAttention !== "all" && !attention[state.pipelineAttention]) return false;
+    return true;
+  });
+}
+
+function pipelineStageWeight(stage, stages) {
+  const index = stages.indexOf(stage);
+  if (index < 0) return 0;
+  return Math.min(0.95, 0.1 + (index / Math.max(1, stages.length - 1)) * 0.8);
+}
+
+function pipelineConversionRate(rows, stage, nextStage) {
+  if (!nextStage) return "—";
+  const entered = rows.filter(({ job }) => job.salesStage === stage || (job.salesStageHistory || []).some((entry) => entry.stage === stage));
+  if (!entered.length) return "—";
+  const advanced = entered.filter(({ job }) => job.salesStage === nextStage || (job.salesStageHistory || []).some((entry) => entry.stage === nextStage)).length;
+  return `${Math.round((advanced / entered.length) * 100)}%`;
+}
+
+function pipelineOpportunityCard(row, stages) {
+  const { contact, job, key } = row;
+  const days = pipelineDaysInStage(contact, job);
+  const target = pipelineStageTargetDays(job.salesStage);
+  const ageingClass = days > target * 2 ? "is-overdue" : days > target ? "is-ageing" : "";
+  const task = pipelineNextTask(contact, job);
+  const checklist = pipelineChecklist(contact, job);
+  const value = number(job.contractValue ?? job.value ?? contact.value);
+  const draggable = canAction("manageJobs");
+  return `
+    <article class="sales-pipeline-card ${ageingClass}" data-pipeline-card="${escapeHtml(key)}" draggable="${draggable}">
+      <button class="sales-pipeline-card-main" type="button" data-pipeline-open="${escapeHtml(key)}">
+        <span class="sales-pipeline-card-heading"><strong>${escapeHtml(contact.name)}</strong><span>${escapeHtml(job.name)}</span></span>
+        <span class="sales-pipeline-card-service">${escapeHtml(activeServices(job.division).find((service) => service.id === job.service)?.name || job.service || "Service not selected")}</span>
+        <span class="sales-pipeline-card-value">${money.format(value)}</span>
+        <span class="sales-pipeline-card-meta"><span>${escapeHtml(job.salesRep || contact.salesRep || "Unassigned")}</span><span class="pipeline-age ${ageingClass}">${days}d in stage</span></span>
+        <span class="sales-pipeline-next-action">${task ? `Next: ${escapeHtml(task.title)} · ${escapeHtml(formatDateTime(task.dueAt))}` : "No next follow-up scheduled"}</span>
+        <span class="sales-pipeline-badges">
+          ${job.activeLeak || contact.activeLeak ? '<em class="pipeline-badge emergency">Active leak</em>' : ""}
+          ${job.insuranceClaim || contact.insuranceClaim ? '<em class="pipeline-badge insurance">Insurance</em>' : ""}
+          ${["commercial", "hoa"].includes(job.propertyType) ? `<em class="pipeline-badge account">${escapeHtml(job.propertyType.toUpperCase())}</em>` : ""}
+          ${checklist.missing?.length ? `<em class="pipeline-badge missing">${checklist.missing.length} requirement${checklist.missing.length === 1 ? "" : "s"} missing</em>` : ""}
+        </span>
+      </button>
+    </article>`;
+}
+
+function pipelineSidePanel(row, stages) {
+  if (!row) return "";
+  const { contact, job } = row;
+  const task = pipelineNextTask(contact, job);
+  const checklist = pipelineChecklist(contact, job);
+  const estimates = visibleEstimates().filter((estimate) => estimate.contactId === contact.id && (!estimate.jobId || estimate.jobId === job.id));
+  const documents = (contact.documents || []).filter((document) => !document.jobId || document.jobId === job.id);
+  const updates = (contact.updates || []).filter((update) => !update.jobId || update.jobId === job.id).slice(0, 5);
+  const currentIndex = stages.indexOf(job.salesStage);
+  const nextStage = stages[currentIndex + 1] || "";
+  return `
+    <aside class="pipeline-detail-drawer" aria-label="Opportunity details" data-pipeline-drawer>
+      <header>
+        <div><p class="eyebrow">${escapeHtml(job.salesStage)}</p><h2>${escapeHtml(contact.name)}</h2><span>${escapeHtml(job.name)}</span></div>
+        <button class="icon-button" type="button" data-pipeline-close aria-label="Close opportunity details">&times;</button>
+      </header>
+      <div class="pipeline-detail-actions">
+        ${contact.phone ? `<a class="secondary-button" href="tel:${escapeHtml(contact.phone.replace(/\D/g, ""))}"><span data-icon="phone"></span> Call</a>` : ""}
+        ${contact.email ? `<a class="secondary-button" href="mailto:${escapeHtml(contact.email)}"><span data-icon="mail"></span> Email</a>` : ""}
+        <button class="primary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-job-id="${job.id}" data-tab="conversation"><span data-icon="message"></span> Note</button>
+      </div>
+      <section class="pipeline-detail-section"><h3>Next action</h3>${task ? `<strong>${escapeHtml(task.title)}</strong><p>${escapeHtml(formatDateTime(task.dueAt))} · ${escapeHtml(task.rep || job.salesRep || "Unassigned")}</p>` : '<p class="pipeline-detail-empty">No follow-up is scheduled.</p>'}<button class="link-button" type="button" data-view="tasks">Open tasks</button></section>
+      <section class="pipeline-detail-section"><div class="pipeline-detail-section-title"><h3>Stage checklist</h3><span>${checklist.completed}/${checklist.total}</span></div>${checklist.items.length ? checklist.items.map((item) => `<label class="pipeline-check-item ${item.complete ? "complete" : ""}"><input type="checkbox" data-pipeline-checklist data-contact-id="${contact.id}" data-job-id="${job.id}" data-stage="${escapeHtml(checklist.stage)}" data-item-id="${escapeHtml(item.id)}" ${item.complete ? "checked" : ""} ${item.mode === "auto" || !canAction("manageJobs") ? "disabled" : ""}/><span>${escapeHtml(item.label)}</span>${item.mode === "auto" ? "<small>System verified</small>" : ""}</label>`).join("") : '<p class="pipeline-detail-empty">No checklist is configured for this stage.</p>'}</section>
+      <section class="pipeline-detail-section"><h3>Notes and conversations</h3><p>${escapeHtml(job.notes || contact.notes || "No notes saved yet.")}</p><button class="link-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-job-id="${job.id}" data-tab="conversation">Open conversation</button></section>
+      <section class="pipeline-detail-grid"><div><span>Estimate</span><strong>${estimates.length ? `${escapeHtml(estimates[0].status || "Draft")} · ${money.format(totalsFor(estimates[0]).total)}` : "None"}</strong></div><div><span>Documents</span><strong>${documents.length}</strong></div><div><span>Days in stage</span><strong>${pipelineDaysInStage(contact, job)}</strong></div><div><span>Opportunity value</span><strong>${money.format(number(job.contractValue ?? job.value ?? contact.value))}</strong></div></section>
+      <section class="pipeline-detail-section"><h3>Recent activity</h3>${updates.length ? updates.map((update) => `<div class="pipeline-activity-row"><strong>${escapeHtml(update.message || update.status || "Update")}</strong><span>${escapeHtml(formatDateTime(update.createdAt))}</span></div>`).join("") : '<p class="pipeline-detail-empty">No activity recorded yet.</p>'}</section>
+      <footer>
+        <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">Open full lead</button>
+        ${nextStage ? `<button class="primary-button" type="button" data-pipeline-move="${escapeHtml(nextStage)}" data-contact-id="${contact.id}" data-job-id="${job.id}">Move to ${escapeHtml(nextStage)}</button>` : ""}
+      </footer>
+    </aside>`;
+}
+
+function renderPipeline() {
+  if (!els.views.pipeline || !els.pipelineBoard) return;
+  const division = activeDivisions().some((item) => item.id === state.pipelineDivision) ? state.pipelineDivision : "roofing";
+  state.pipelineDivision = division;
+  const accountFilter = state.pipelinePropertyType;
+  const stages = salesPipelineStagesFor(division, accountFilter);
+  const allRows = pipelineOpportunityRows(division).map((row) => ({
+    ...row,
+    job: { ...row.job, salesStage: normalizeSalesStage(row.job, row.contact, division, row.job.propertyType) },
+  }));
+  const rows = pipelineFilteredRows().map((row) => ({
+    ...row,
+    job: { ...row.job, salesStage: normalizeSalesStage(row.job, row.contact, division, row.job.propertyType) },
+  }));
+  const activeRows = rows.filter(({ job }) => !["Lost", stages.at(-1)].includes(job.salesStage));
+  const pipelineValue = activeRows.reduce((sum, { contact, job }) => sum + number(job.contractValue ?? job.value ?? contact.value), 0);
+  const weightedForecast = activeRows.reduce((sum, { contact, job }) => sum + number(job.contractValue ?? job.value ?? contact.value) * pipelineStageWeight(job.salesStage, stages), 0);
+  const cycleRows = rows.filter(({ job }) => job.salesStage === stages.at(-1));
+  const cyclePopulation = cycleRows.length ? cycleRows : activeRows;
+  const averageCycleDays = cyclePopulation.length
+    ? Math.round(cyclePopulation.reduce((sum, { contact, job }) => {
+        const started = localTimestamp(job.createdAt || contact.createdAt) || Date.now();
+        const ended = job.salesStage === stages.at(-1) ? pipelineStageEnteredTimestamp(contact, job) : Date.now();
+        return sum + Math.max(0, (ended - started) / 86400000);
+      }, 0) / cyclePopulation.length)
+    : 0;
+  const reps = [...new Set(allRows.map(({ contact, job }) => job.salesRep || contact.salesRep || "Unassigned"))].sort();
+  const sources = [...new Set(allRows.map(({ contact }) => contact.source || "No source"))].sort();
+  const services = activeServices(division);
+  const attentionRows = allRows.map((row) => ({ row, attention: pipelineRowAttention(row) }));
+  const attentionDefinitions = [
+    ["unassigned", "Unassigned website requests"], ["uncontacted", "New leads not contacted"], ["overdue", "Overdue follow-ups"],
+    ["inactive", `Inactive ${state.pipelineStaleDays}+ days`], ["noDecision", "Estimates without decision date"], ["stuck", "Stuck beyond stage target"],
+  ];
+  const selectedRow = rows.find((row) => row.key === state.pipelineSelectedOpportunity) || allRows.find((row) => row.key === state.pipelineSelectedOpportunity);
+
+  els.pipelineBoard.innerHTML = `
+    <section class="sales-pipeline-shell">
+      <header class="sales-pipeline-header">
+        <div><p class="eyebrow">Live sales command center</p><h2>Sales Pipeline</h2><p>Move qualified opportunities forward without mixing sales work with production delivery.</p></div>
+        <div class="sales-pipeline-division-tabs" role="tablist" aria-label="Pipeline division">${activeDivisions().map((item) => `<button type="button" role="tab" data-pipeline-division-tab="${item.id}" aria-selected="${item.id === division}">${escapeHtml(item.name)}</button>`).join("")}</div>
+      </header>
+      <div class="sales-pipeline-filters">
+        <label>Account type<select data-pipeline-control="pipelinePropertyType"><option value="all">All accounts</option><option value="residential" ${accountFilter === "residential" ? "selected" : ""}>Residential</option><option value="commercial" ${accountFilter === "commercial" ? "selected" : ""}>Commercial</option><option value="hoa" ${accountFilter === "hoa" ? "selected" : ""}>HOA / Association</option></select></label>
+        <label>Sales rep<select data-pipeline-control="pipelineRep">${pipelineOptionMarkup(reps, state.pipelineRep, "All representatives")}</select></label>
+        <label>Service<select data-pipeline-control="pipelineService"><option value="all">All services</option>${services.map((service) => `<option value="${escapeHtml(service.id)}" ${service.id === state.pipelineService ? "selected" : ""}>${escapeHtml(service.name)}</option>`).join("")}</select></label>
+        <label>Source<select data-pipeline-control="pipelineSource">${pipelineOptionMarkup(sources, state.pipelineSource, "All sources")}</select></label>
+        <label>Urgency<select data-pipeline-control="pipelineUrgency"><option value="all">All urgency</option><option value="normal" ${state.pipelineUrgency === "normal" ? "selected" : ""}>Normal</option><option value="urgent" ${state.pipelineUrgency === "urgent" ? "selected" : ""}>Urgent</option><option value="emergency" ${state.pipelineUrgency === "emergency" ? "selected" : ""}>Emergency</option></select></label>
+        <label>Created<select data-pipeline-control="pipelineDateRange"><option value="all">All dates</option><option value="30" ${state.pipelineDateRange === "30" ? "selected" : ""}>Last 30 days</option><option value="90" ${state.pipelineDateRange === "90" ? "selected" : ""}>Last 90 days</option><option value="365" ${state.pipelineDateRange === "365" ? "selected" : ""}>Last year</option></select></label>
+      </div>
+      <div class="sales-pipeline-metrics">
+        <article><span>Active opportunities</span><strong>${activeRows.length}</strong><small>Currently moving toward a decision</small></article>
+        <article><span>Total pipeline value</span><strong>${money.format(pipelineValue)}</strong><small>Open opportunity value</small></article>
+        <article><span>Weighted forecast</span><strong>${money.format(weightedForecast)}</strong><small>Stage-probability forecast</small></article>
+        <article><span>Average sales cycle</span><strong>${averageCycleDays} days</strong><small>Created through current or handoff</small></article>
+      </div>
+      <section class="pipeline-attention-strip" aria-label="Opportunities needing attention">
+        <div class="pipeline-attention-title"><span data-icon="alert-triangle"></span><div><strong>Needs attention</strong><label>Inactive after <input type="number" min="1" max="90" value="${state.pipelineStaleDays}" data-pipeline-stale-days/> days</label></div></div>
+        <div class="pipeline-attention-items"><button type="button" data-pipeline-attention="all" class="${state.pipelineAttention === "all" ? "active" : ""}"><strong>${allRows.length}</strong><span>All opportunities</span></button>${attentionDefinitions.map(([key, label]) => `<button type="button" data-pipeline-attention="${key}" class="${state.pipelineAttention === key ? "active" : ""}"><strong>${attentionRows.filter((item) => item.attention[key]).length}</strong><span>${escapeHtml(label)}</span></button>`).join("")}</div>
+      </section>
+      <section class="sales-pipeline-board-wrap" aria-label="Sales opportunity board">
+        <div class="sales-pipeline-board" style="--pipeline-columns:${stages.length}">${stages.map((stage, index) => {
+          const stageRows = rows.filter(({ job }) => job.salesStage === stage);
+          const stageValue = stageRows.reduce((sum, { contact, job }) => sum + number(job.contractValue ?? job.value ?? contact.value), 0);
+          const guideOpen = state.pipelineGuidanceStage === stage;
+          return `<section class="sales-pipeline-column" data-pipeline-drop-stage="${escapeHtml(stage)}">
+            <header><div><span>Stage ${index + 1}</span><strong>${escapeHtml(stage)}</strong></div><em>${stageRows.length}</em><p>${money.format(stageValue)} · ${pipelineConversionRate(allRows, stage, stages[index + 1])} to next</p><button type="button" data-pipeline-guidance="${escapeHtml(stage)}" aria-expanded="${guideOpen}">${guideOpen ? "Hide" : "Show"} stage guidance</button>${guideOpen ? `<aside><strong>Ready to advance when</strong><p>Required records and checklist items are complete, the next action is scheduled, and the customer knows what happens next.</p></aside>` : ""}</header>
+            <div class="sales-pipeline-column-cards">${stageRows.length ? stageRows.sort((left, right) => pipelineDaysInStage(right.contact, right.job) - pipelineDaysInStage(left.contact, left.job)).map((row) => pipelineOpportunityCard(row, stages)).join("") : '<div class="sales-pipeline-empty">Drop an opportunity here</div>'}</div>
+          </section>`;
+        }).join("")}<section class="sales-pipeline-column is-lost" data-pipeline-drop-stage="Lost"><header><div><span>Closed</span><strong>Lost</strong></div><em>${rows.filter(({ job }) => job.salesStage === "Lost").length}</em><p>Excluded from forecast</p></header><div class="sales-pipeline-column-cards">${rows.filter(({ job }) => job.salesStage === "Lost").map((row) => pipelineOpportunityCard(row, stages)).join("") || '<div class="sales-pipeline-empty">No lost opportunities</div>'}</div></section></div>
+      </section>
+    </section>
+    ${pipelineSidePanel(selectedRow, selectedRow ? salesPipelineStagesFor(division, selectedRow.job.propertyType) : stages)}
+    ${selectedRow ? '<button class="pipeline-drawer-backdrop" type="button" data-pipeline-close aria-label="Close opportunity details"></button>' : ""}`;
+  hydrateIcons(els.pipelineBoard);
+}
+
+async function movePipelineOpportunity(contactId, jobId, targetStage) {
+  if (!requireAction("manageJobs")) return false;
+  const contact = getContact(contactId);
+  const job = contactJobs(contact).find((item) => item.id === jobId);
+  if (!contact || !job) return false;
+  const division = job.division || contact.division || "roofing";
+  const stages = salesPipelineStagesFor(division, job.propertyType || contact.propertyType);
+  const currentStage = normalizeSalesStage(job, contact, division, job.propertyType);
+  if (targetStage === currentStage) return true;
+  const currentIndex = stages.indexOf(currentStage);
+  const targetIndex = stages.indexOf(targetStage);
+  if (targetStage !== "Lost") {
+    if (targetIndex < 0) return false;
+    if (targetIndex < currentIndex && !canManageTeamData()) {
+      showToast("Ask a manager to move this opportunity back to an earlier stage.");
+      return false;
+    }
+    if (targetIndex > currentIndex + 1) {
+      showToast(`Move this opportunity one stage at a time. The next stage is ${stages[currentIndex + 1] || currentStage}.`);
+      return false;
+    }
+  }
+
+  const nextLifecycleStatus = pipelineLifecycleStatusFor(division, targetStage, job.status);
+  if (targetIndex === currentIndex + 1 && nextLifecycleStatus === job.status) {
+    const checklist = pipelineChecklist(contact, job);
+    if (checklist.items.length && !checklist.ready) {
+      state.pipelineSelectedOpportunity = pipelineOpportunityKey(contactId, jobId);
+      saveUiState();
+      renderPipeline();
+      showToast(`Complete before moving to ${targetStage}: ${checklist.missing.map((item) => item.label).join(", ")}.`);
+      return false;
+    }
+  }
+  if (nextLifecycleStatus !== job.status && division === "roofing") {
+    const transition = window.RooflineWorkflowChecklist?.transitionCheck?.(contact, job, nextLifecycleStatus);
+    if (transition && !transition.allowed) {
+      state.pipelineSelectedOpportunity = pipelineOpportunityKey(contactId, jobId);
+      saveUiState();
+      renderPipeline();
+      showToast(transition.reason || "Complete the stage checklist before moving this opportunity.");
+      return false;
+    }
+  }
+
+  const priorContact = JSON.parse(JSON.stringify(contact));
+  const now = new Date().toISOString();
+  const history = [...(job.salesStageHistory || [])];
+  if (history.length && !history.at(-1).exitedAt) history[history.length - 1] = { ...history.at(-1), exitedAt: now };
+  history.push({ stage: targetStage, enteredAt: now, exitedAt: "", actor: state.currentUser.name || currentOwner().name });
+  const updateId = uid("update");
+  updateContact(contactId, (current) => {
+    const nextJobs = contactJobs(current).map((item) => item.id === jobId ? {
+      ...item,
+      status: nextLifecycleStatus,
+      salesStage: targetStage,
+      salesStageEnteredAt: now,
+      salesStageHistory: history,
+      closedDate: targetStage === "Contract & Deposit" ? item.closedDate || todayISO() : item.closedDate,
+      updatedAt: now,
+    } : item);
+    const primary = nextJobs[0];
+    return {
+      ...current,
+      jobs: nextJobs,
+      status: primary?.status || current.status,
+      type: ["Contract & Deposit", "Production Handoff"].includes(targetStage) ? "Customer" : current.type,
+      closedDate: targetStage === "Contract & Deposit" ? current.closedDate || todayISO() : current.closedDate,
+      updates: [{ id: updateId, author: state.currentUser.name || currentOwner().name, status: nextLifecycleStatus, jobId, message: `Sales pipeline moved from ${currentStage} to ${targetStage}.`, createdAt: now }, ...(current.updates || [])],
+    };
+  });
+  state.pipelineSelectedOpportunity = pipelineOpportunityKey(contactId, jobId);
+  saveState({ localOnly: true });
+  renderPipeline();
+
+  if (!canUseCloudSync()) {
+    showToast(`Moved to ${targetStage}.`);
+    return true;
+  }
+  let saved = false;
+  try {
+    saved = await persistLeadJobRecord(jobId, updateId);
+  } catch (error) {
+    console.warn("Pipeline stage could not be saved", error);
+  }
+  if (!saved) {
+    state.contacts = state.contacts.map((item) => item.id === contactId ? normalizeContact(priorContact, state.company.documentCategories) : item);
+    saveState({ localOnly: true });
+    renderPipeline();
+    showToast("The stage change was not confirmed and has been restored. Try again.");
+    return false;
+  }
+  queueCloudSave();
+  showToast(`Moved to ${targetStage}.`);
+  return true;
 }
 
 function renderLeadCard(contact) {
@@ -14692,6 +15164,55 @@ function bindEvents() {
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".global-search")) hideLiveSearchResults();
 
+    const pipelineDivisionTab = event.target.closest("[data-pipeline-division-tab]");
+    if (pipelineDivisionTab) {
+      state.pipelineDivision = pipelineDivisionTab.dataset.pipelineDivisionTab;
+      state.pipelineService = "all";
+      state.pipelineAttention = "all";
+      state.pipelineSelectedOpportunity = "";
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+
+    const pipelineAttention = event.target.closest("[data-pipeline-attention]");
+    if (pipelineAttention) {
+      state.pipelineAttention = pipelineAttention.dataset.pipelineAttention || "all";
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+
+    const pipelineGuidance = event.target.closest("[data-pipeline-guidance]");
+    if (pipelineGuidance) {
+      const stage = pipelineGuidance.dataset.pipelineGuidance;
+      state.pipelineGuidanceStage = state.pipelineGuidanceStage === stage ? "" : stage;
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+
+    const pipelineOpen = event.target.closest("[data-pipeline-open]");
+    if (pipelineOpen) {
+      state.pipelineSelectedOpportunity = pipelineOpen.dataset.pipelineOpen;
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+
+    if (event.target.closest("[data-pipeline-close]")) {
+      state.pipelineSelectedOpportunity = "";
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+
+    const pipelineMove = event.target.closest("[data-pipeline-move]");
+    if (pipelineMove) {
+      await movePipelineOpportunity(pipelineMove.dataset.contactId, pipelineMove.dataset.jobId, pipelineMove.dataset.pipelineMove);
+      return;
+    }
+
     const reminderFilter = event.target.closest("[data-reminder-filter]");
     if (reminderFilter) {
       state.reminderFilter = reminderFilter.dataset.reminderFilter;
@@ -15330,10 +15851,73 @@ function bindEvents() {
     renderLeadsView();
   });
   document.addEventListener("change", (event) => {
-    if (!event.target.matches("[data-pipeline-division]")) return;
-    state.pipelineDivision = event.target.value;
-    saveUiState();
-    renderPipeline();
+    if (event.target.matches("[data-pipeline-division]")) {
+      state.pipelineDivision = event.target.value;
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+    if (event.target.matches("[data-pipeline-control]")) {
+      const key = event.target.dataset.pipelineControl;
+      if (["pipelinePropertyType", "pipelineRep", "pipelineService", "pipelineSource", "pipelineUrgency", "pipelineDateRange"].includes(key)) {
+        state[key] = event.target.value || "all";
+        state.pipelineSelectedOpportunity = "";
+        saveUiState();
+        renderPipeline();
+      }
+      return;
+    }
+    if (event.target.matches("[data-pipeline-stale-days]")) {
+      state.pipelineStaleDays = Math.min(90, Math.max(1, Math.round(number(event.target.value) || 7)));
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+    if (event.target.matches("[data-pipeline-checklist]")) {
+      window.RooflineWorkflowChecklist?.updateChecklistItem?.(
+        event.target.dataset.contactId,
+        event.target.dataset.jobId,
+        event.target.dataset.stage,
+        event.target.dataset.itemId,
+        event.target.checked,
+      );
+      window.setTimeout(renderPipeline, 0);
+    }
+  });
+
+  let pipelineDraggedOpportunity = "";
+  document.addEventListener("dragstart", (event) => {
+    const card = event.target.closest("[data-pipeline-card]");
+    if (!card) return;
+    pipelineDraggedOpportunity = card.dataset.pipelineCard;
+    card.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", pipelineDraggedOpportunity);
+  });
+  document.addEventListener("dragover", (event) => {
+    const column = event.target.closest("[data-pipeline-drop-stage]");
+    if (!column || !pipelineDraggedOpportunity) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    column.classList.add("is-drag-over");
+  });
+  document.addEventListener("dragleave", (event) => {
+    const column = event.target.closest("[data-pipeline-drop-stage]");
+    if (column && !column.contains(event.relatedTarget)) column.classList.remove("is-drag-over");
+  });
+  document.addEventListener("drop", async (event) => {
+    const column = event.target.closest("[data-pipeline-drop-stage]");
+    if (!column) return;
+    event.preventDefault();
+    document.querySelectorAll(".sales-pipeline-column.is-drag-over").forEach((item) => item.classList.remove("is-drag-over"));
+    const key = pipelineDraggedOpportunity || event.dataTransfer.getData("text/plain");
+    pipelineDraggedOpportunity = "";
+    const [contactId, jobId] = key.split(":");
+    if (contactId && jobId) await movePipelineOpportunity(contactId, jobId, column.dataset.pipelineDropStage);
+  });
+  document.addEventListener("dragend", () => {
+    pipelineDraggedOpportunity = "";
+    document.querySelectorAll(".sales-pipeline-card.is-dragging,.sales-pipeline-column.is-drag-over").forEach((item) => item.classList.remove("is-dragging", "is-drag-over"));
   });
   els.leadTagFilter?.addEventListener("change",(event)=>{state.leadTagFilter=event.target.value||"";state.savedLeadFilterId="";saveUiState();renderLeadsView();});
   els.savedLeadFilter?.addEventListener("change",(event)=>applySavedLeadFilter(event.target.value));
