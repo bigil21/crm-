@@ -1047,6 +1047,7 @@ const els = {
   salesRepOptions: document.querySelector("#salesRepOptions"),
   calendarTaskContact: document.querySelector("#calendarTaskContact"),
   calendarTaskJob: document.querySelector("#calendarTaskJob"),
+  calendarGoogleDestination: document.querySelector("#calendarGoogleDestination"),
   calendarTasksList: document.querySelector("#calendarTasksList"),
   calMonthGrid: document.querySelector("#calMonthGrid"),
   calMonthTitle: document.querySelector("#calMonthTitle"),
@@ -10882,6 +10883,7 @@ let calendarMonthOffset = 0;
 let calendarAnchorDate = new Date();
 let calendarViewMode = window.matchMedia?.("(max-width: 760px)").matches ? "schedule" : "week";
 let calendarVisibleReps = new Set();
+let calendarVisibilityOwnerId = "";
 const CALENDAR_START_HOUR = 6;
 const CALENDAR_END_HOUR = 21;
 const CALENDAR_SLOT_HEIGHT = 56;
@@ -10905,6 +10907,12 @@ function calendarAddDays(value, amount) {
 }
 
 function calendarRepKey(task) {
+  const signedIn = currentOwner();
+  const taskOwnerEmail = String(task.ownerEmail || "").trim().toLowerCase();
+  if ((task.ownerUserId && task.ownerUserId === signedIn.userId) ||
+      (taskOwnerEmail && taskOwnerEmail === String(signedIn.email || "").trim().toLowerCase())) {
+    return signedInCalendarKey();
+  }
   return String(task.ownerEmail || task.rep || task.ownerName || "Unassigned").trim().toLowerCase() || "unassigned";
 }
 
@@ -10919,6 +10927,19 @@ function calendarRepColor(key) {
   return colors[Math.abs(hash) % colors.length];
 }
 
+function signedInCalendarKey() {
+  const owner = currentOwner();
+  return String(owner.email || owner.name || "").trim().toLowerCase();
+}
+
+function initializeCalendarVisibility() {
+  const owner = currentOwner();
+  const ownerIdentity = owner.userId || signedInCalendarKey();
+  if (!ownerIdentity || calendarVisibilityOwnerId === ownerIdentity) return;
+  calendarVisibilityOwnerId = ownerIdentity;
+  calendarVisibleReps = new Set([signedInCalendarKey()].filter(Boolean));
+}
+
 function calendarTaskType(task) {
   const contact = getContact(task.contactId);
   const job = contact ? contactJobs(contact).find((item) => item.id === task.jobId) : null;
@@ -10931,9 +10952,8 @@ function calendarTaskType(task) {
 }
 
 function calendarFilteredTasks() {
+  initializeCalendarVisibility();
   const tasks = visibleCalendarTasks();
-  const repKeys = [...new Set(tasks.map(calendarRepKey))];
-  if (!calendarVisibleReps.size) repKeys.forEach((key) => calendarVisibleReps.add(key));
   return tasks.filter((task) => calendarVisibleReps.has(calendarRepKey(task)));
 }
 
@@ -10953,12 +10973,12 @@ function calendarEventMarkup(task, options = {}) {
 
 function renderCalendarRepFilters(tasks) {
   if (!els.calendarRepFilters) return;
+  initializeCalendarVisibility();
   const reps = new Map();
   tasks.forEach((task) => reps.set(calendarRepKey(task), calendarRepLabel(task)));
-  if (!reps.size) reps.set(calendarRepKey(currentOwner()), canonicalRepresentativeName(currentOwner().name, currentOwner()) || "My calendar");
-  reps.forEach((label, key) => {
-    if (!calendarVisibleReps.size) calendarVisibleReps.add(key);
-  });
+  const owner = currentOwner();
+  const signedInKey = signedInCalendarKey();
+  if (signedInKey) reps.set(signedInKey, `${canonicalRepresentativeName(owner.name, owner) || "My calendar"} (me)`);
   els.calendarRepFilters.innerHTML = [...reps.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([key, label]) => `
     <label class="calendar-rep-filter">
       <input type="checkbox" data-calendar-rep="${escapeHtml(key)}" ${calendarVisibleReps.has(key) ? "checked" : ""} />
@@ -11290,8 +11310,24 @@ function renderCalendarFormOptions() {
   const repField = els.calendarTaskForm?.elements?.rep;
   const taskIdField = els.calendarTaskForm?.elements?.taskId;
   if (repField && !taskIdField?.value && !repField.value.trim()) {
-    repField.value = canonicalRepresentativeName(currentOwner().name, currentOwner());
+    const owner = currentOwner();
+    repField.value = canonicalRepresentativeName(owner.name, owner);
   }
+  renderCalendarGoogleDestination();
+}
+
+function renderCalendarGoogleDestination() {
+  if (!els.calendarGoogleDestination || !els.calendarTaskForm) return;
+  const rep = String(els.calendarTaskForm.elements.rep?.value || "").trim();
+  const repKey = normalizePersonName(rep).toLowerCase();
+  const owner = [...cloudKnownOwners.values(), currentOwner()].find((candidate) =>
+    normalizePersonName(candidate.name).toLowerCase() === repKey || String(candidate.email || "").toLowerCase() === rep.toLowerCase()
+  );
+  const email = owner?.email || "";
+  const mine = Boolean(email && email === String(currentOwner().email || "").toLowerCase());
+  els.calendarGoogleDestination.textContent = email
+    ? `Google destination: ${email}${mine ? " (your signed-in account)" : ""}`
+    : "Choose a connected representative to sync this event to Google Calendar.";
 }
 
 function renderCalendarTaskJobOptions(contactId = "", selectedJobId = "") {
@@ -15761,6 +15797,8 @@ function bindEvents() {
   });
   els.removeCompanyLogoButton.addEventListener("click", removeCompanyLogo);
   els.calendarTaskForm.addEventListener("submit", saveCalendarTask);
+  els.calendarTaskForm.elements.rep?.addEventListener("input", renderCalendarGoogleDestination);
+  els.calendarTaskForm.elements.rep?.addEventListener("change", renderCalendarGoogleDestination);
   els.calendarTaskContact?.addEventListener("change", (event) => renderCalendarTaskJobOptions(event.target.value, ""));
   bindCalendarCanvasEvents();
   els.connectGoogleWorkspaceButton?.addEventListener("click", connectGoogleWorkspace);

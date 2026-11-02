@@ -6827,6 +6827,7 @@ textarea:focus {
 .calendar-editor-header h2 { margin: 3px 0 0; font-size: 18px; }
 .calendar-task-form { display: grid; gap: 12px; }
 .calendar-form-grid { grid-template-columns: 1fr 1fr; }
+.calendar-task-form .field-help { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; font-weight: 600; line-height: 1.35; }
 .calendar-form-grid label:nth-child(2), .calendar-form-grid label:nth-child(3), .calendar-form-grid label:nth-child(4), .calendar-form-grid label:nth-child(12) { grid-column: 1 / -1; }
 .calendar-event-context { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .calendar-context-link { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); color: var(--ink); text-align: left; cursor: pointer; }

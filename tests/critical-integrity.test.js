@@ -87,7 +87,7 @@ test('high-frequency stage and navigation actions avoid full-state cloud saves',
   assert.match(app, /function setView\([^]*?saveUiState\(\)/);
   assert.match(app, /data-leaderboard-range[^]*?saveUiState\(\)/);
   assert.match(app, /action === "advance-contact"[^]*?saveState\(\{ localOnly: true \}\)[^]*?persistLeadJobRecord/);
-  assert.match(app, /function renderCalendarFormOptions\([^]*?currentOwner\(\)\.name/);
+  assert.match(app, /function renderCalendarFormOptions\([^]*?const owner = currentOwner\(\)[^]*?canonicalRepresentativeName\(owner\.name, owner\)/);
 });
 
 test('job buttons carry and select the exact project identity', () => {

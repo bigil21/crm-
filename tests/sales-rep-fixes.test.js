@@ -122,6 +122,15 @@ test('reps are not offered Settings, and can connect Google Calendar from the Ca
   assert.match(app, /calendarGoogleConnectButton\?\.addEventListener\("click", connectGoogleWorkspace\)/);
 });
 
+test('calendar defaults to the signed-in user and clearly identifies the Google destination', () => {
+  assert.match(source(app, 'initializeCalendarVisibility'), /calendarVisibleReps = new Set\(\[signedInCalendarKey\(\)\]/);
+  assert.match(source(app, 'renderCalendarRepFilters'), /\(me\)/);
+  assert.match(source(app, 'renderCalendarFormOptions'), /canonicalRepresentativeName\(owner\.name, owner\)/);
+  assert.match(source(app, 'renderCalendarGoogleDestination'), /Google destination:/);
+  assert.match(index, /id="calendarGoogleDestination"/);
+  assert.match(index, /Save to representative's calendar/);
+});
+
 test('company file change controls follow upload ownership', () => {
   const row = source(app, 'renderCompanyDocumentRow');
   assert.match(row, /const changeable = canChangeCompanyDocument\(document\);/);
