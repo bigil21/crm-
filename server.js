@@ -57,11 +57,12 @@ const publicAssets = new Set([
   "/index.html", "/login.html", "/logout.html", "/reset-session.html", "/portal.html", "/portal.js",
   "/styles.css", "/app.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/sw.js",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js", "/team-onboarding.js",
-  "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/coastal-crest-mark.png",
+  "/vendor/jspdf.umd.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs", "/vendor/tus.min.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/coastal-crest-mark.png",
 ]);
 const publicAssetFiles = new Map([
   ["/vendor/pdf.min.mjs", path.join(root, "node_modules", "pdfjs-dist", "build", "pdf.min.mjs")],
   ["/vendor/pdf.worker.min.mjs", path.join(root, "node_modules", "pdfjs-dist", "build", "pdf.worker.min.mjs")],
+  ["/vendor/tus.min.js", path.join(root, "node_modules", "tus-js-client", "dist", "tus.min.js")],
 ]);
 
 function authenticationRequired() {
@@ -1267,7 +1268,7 @@ async function attachGoogleDriveDocument(store, user, record, driveFile, folders
 async function handleGoogleDriveStatus(req, res) {
   const config = googleDriveConfig();
   const store = integrationStoreConfig();
-  sendJson(res, 200, { configured: Boolean(config && store && !store.local), companyOwned: true, automaticCopies: true });
+  sendJson(res, 200, { configured: Boolean(config && store && !store.local), companyOwned: true, automaticCopies: false });
 }
 
 async function handleGoogleDriveDocument(req, res, user) {
@@ -2287,7 +2288,7 @@ const handleRequest = (req, res) => {
     return;
   }
   const filePath = publicAssetFiles.get(requested) || path.normalize(path.join(root, requested));
-  const containmentRoot = publicAssetFiles.has(requested) ? path.join(root, "node_modules", "pdfjs-dist", "build") : root;
+  const containmentRoot = publicAssetFiles.has(requested) ? path.join(root, "node_modules") : root;
   const relativePath = path.relative(containmentRoot, filePath);
 
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {

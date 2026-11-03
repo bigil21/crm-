@@ -57,7 +57,7 @@ for (const url of ['/server.js', '/.env', '/.git/config', '/square-payments.json
     assert.equal((await backend().request(url)).status, 404);
   });
 }
-for (const url of ['/', '/login', '/logout', '/app.js?v=999', '/record-writes.js', '/company-settings-writes.js', '/draft-recovery.js', '/session-guard.js', '/sw.js', '/vendor/jspdf.umd.min.js', '/vendor/pdf.min.mjs', '/vendor/pdf.worker.min.mjs']) {
+for (const url of ['/', '/login', '/logout', '/app.js?v=999', '/record-writes.js', '/company-settings-writes.js', '/draft-recovery.js', '/session-guard.js', '/sw.js', '/vendor/jspdf.umd.min.js', '/vendor/pdf.min.mjs', '/vendor/pdf.worker.min.mjs', '/vendor/tus.min.js']) {
   test(`public asset remains available: ${url}`, async () => {
     assert.equal((await backend().request(url)).status, 200);
   });
@@ -476,6 +476,7 @@ test('storage paths sanitize every legacy display-name segment', async () => {
   const c = functions('app.js', ['safeStorageFileName', 'safeStoragePathSegment', 'storeDocumentFile'], {
     cloudReady: true, authSession: { user: { id: 'user' } }, canUseCloudSync: () => true,
     supabaseStateId: () => 'company id', uid: () => 'version id', SUPABASE_DOCUMENT_BUCKET: 'crm-documents',
+    RESUMABLE_UPLOAD_THRESHOLD: 6 * 1024 * 1024,
     cloudClient: { storage: { from: () => ({ upload: async pathValue => { storedPath = pathValue; return {}; } }) } },
   });
   await c.storeDocumentFile({ name: 'File name.pdf', type: 'application/pdf' }, {
@@ -486,17 +487,30 @@ test('storage paths sanitize every legacy display-name segment', async () => {
 
 test('upload batch retains successes when one file fails and bounds concurrency', async () => {
   let active=0,peak=0;
-  const c=functions('app.js',['uploadDocumentBatch']);
+  const c=functions('app.js',['uploadDocumentBatch'],{RESUMABLE_UPLOAD_THRESHOLD:6*1024*1024});
   const result=await c.uploadDocumentBatch(Array.from({length:8},(_,id)=>({name:`file${id}`,id})),async file=>{
     active++; peak=Math.max(peak,active);
     await new Promise(resolve=>setTimeout(resolve,1)); active--;
     if(file.id===2)throw Error('interrupted');
     return {id:file.id};
   });
-  assert.equal(result.documents.length,7); assert.equal(result.failures[0].name,'file2'); assert.equal(peak,3);
+  assert.equal(result.documents.length,7); assert.equal(result.failures[0].name,'file2'); assert.equal(peak,2);
+});
+test('large cloud files use resumable six-megabyte chunks without passing through Render', async()=>{
+  let options; let started=0;
+  class Upload { constructor(_file,value){options=value;} async findPreviousUploads(){return [];} start(){started++; options.onSuccess();} }
+  const c=functions('app.js',['uploadDocumentFileResumable'],{
+    window:{tus:{Upload}},cloudClient:{auth:{getSession:async()=>({data:{session:{access_token:'token'}}})}},
+    authSession:null,SUPABASE_DOCUMENT_BUCKET:'crm-documents',RESUMABLE_UPLOAD_CHUNK_SIZE:6*1024*1024,
+    supabaseConfig:()=>({url:'https://project.supabase.co'}),
+  });
+  await c.uploadDocumentFileResumable({name:'large.pdf',type:'application/pdf'},'company/lead/doc/large.pdf');
+  assert.equal(started,1); assert.equal(options.endpoint,'https://project.supabase.co/storage/v1/upload/resumable');
+  assert.equal(options.chunkSize,6*1024*1024); assert.equal(options.metadata.objectName,'company/lead/doc/large.pdf');
+  assert.equal(options.headers.authorization,'Bearer token'); assert.equal(options.uploadDataDuringCreation,true);
 });
 test('upload batch fails explicitly if no file is stored',async()=>{
-  const c=functions('app.js',['uploadDocumentBatch']);
+  const c=functions('app.js',['uploadDocumentBatch'],{RESUMABLE_UPLOAD_THRESHOLD:6*1024*1024});
   await assert.rejects(c.uploadDocumentBatch([{name:'file'}],async()=>{throw Error('offline');}),/offline/);
 });
 test('cloud file revisions use distinct immutable paths',async()=>{
@@ -504,6 +518,7 @@ test('cloud file revisions use distinct immutable paths',async()=>{
   const c=functions('app.js',['safeStorageFileName','safeStoragePathSegment','storeDocumentFile'],{
     cloudReady:true,authSession:{user:{id:'user'}},supabaseStateId:()=> 'company',
     SUPABASE_DOCUMENT_BUCKET:'crm-documents',uid:()=>`v${++next}`,safeStorageFileName:x=>x,
+    RESUMABLE_UPLOAD_THRESHOLD:6*1024*1024,
     cloudClient:{storage:{from(){return{async upload(...args){uploads.push(args);return{};}};}}},
   });
   const args={documentId:'doc',leadId:'lead',jobId:'job',categoryId:'estimates'};

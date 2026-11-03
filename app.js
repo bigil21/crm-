@@ -9,6 +9,10 @@ const COMPANY_STATE_SUFFIX = "company";
 const COMPANY_DOCUMENT_LEAD_ID = "company";
 const JOB_PHOTO_CATEGORY_ID = "job_photos";
 const MAX_DOCUMENT_FILE_SIZE = 250 * 1024 * 1024;
+const RESUMABLE_UPLOAD_THRESHOLD = 6 * 1024 * 1024;
+const RESUMABLE_UPLOAD_CHUNK_SIZE = 6 * 1024 * 1024;
+const PHOTO_PAGE_SIZE = 30;
+const DOCUMENT_PAGE_SIZE = 50;
 const SAFE_RECORD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/;
 
 const isSafeRecordId = (value) => SAFE_RECORD_ID_PATTERN.test(String(value || ""));
@@ -772,6 +776,9 @@ const recentLocalDurableWrites = new Map();
 let estimateVisualRefreshTimer = null;
 let pendingDurableRender = false;
 const photoPreviewCache = new Map();
+const photoDisplayLimits = new Map();
+const leadDocumentDisplayLimits = new Map();
+const companyDocumentDisplayLimits = new Map();
 let googleIntegrationState = {
   loaded: false, loading: false, configured: false, connected: false, email: "", providerEmail: "",
   calendar: false, gmailSend: false, gmailRead: false, tasks: false, contacts: false,
@@ -8788,8 +8795,8 @@ async function refreshGoogleDriveStatus(force = false) {
   }
   if (els.googleDriveIntegrationStatus) {
     els.googleDriveIntegrationStatus.textContent = googleDriveState.configured
-      ? "Company Shared Drive is ready. Saved documents and photos are copied into lead, project, and category folders."
-      : "Company Shared Drive setup is required before automatic document copies begin.";
+      ? "Company Shared Drive is ready. Use Copy to Drive on the files that need a Drive copy; JobCrest remains the primary file library."
+      : "Company Shared Drive setup is required before files can be copied on demand.";
   }
   return googleDriveState;
 }
@@ -8889,6 +8896,9 @@ function renderLeadDocuments(contact) {
                 document.categoryId === category.id,
             )
             .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+          const displayKey = `${contact.id}:${selectedJob?.id || "none"}:${category.id}`;
+          const displayLimit = leadDocumentDisplayLimits.get(displayKey) || DOCUMENT_PAGE_SIZE;
+          const visibleDocuments = documents.slice(0, displayLimit);
           return `
             <section class="document-folder ${category.active ? "" : "is-inactive"}" style="--category-color:${escapeHtml(category.color)}">
               <div class="document-folder-header">
@@ -8908,7 +8918,7 @@ function renderLeadDocuments(contact) {
               <div class="document-folder-files">
                 ${
                   documents.length
-                    ? documents
+                    ? visibleDocuments
                         .map(
                           (document) => `
                             <article class="document-card">
@@ -8931,7 +8941,9 @@ function renderLeadDocuments(contact) {
                               </div>
                             </article>`,
                         )
-                        .join("")
+                        .join("") + (documents.length > visibleDocuments.length
+                          ? `<button class="secondary-button" type="button" data-action="show-more-lead-documents" data-display-key="${escapeHtml(displayKey)}">Show ${Math.min(DOCUMENT_PAGE_SIZE, documents.length - visibleDocuments.length)} more documents</button>`
+                          : "")
                     : '<div class="document-folder-empty">No documents in this category</div>'
                 }
               </div>
@@ -8964,12 +8976,13 @@ async function managedPhotoPreviewUrl(photo) {
   return url;
 }
 
-async function hydrateLeadPhotoPreviews(contactId, jobId) {
+async function hydrateLeadPhotoPreviews(contactId, jobId, displayLimit = PHOTO_PAGE_SIZE) {
   const contact = getContact(contactId);
   if (!contact || state.selectedContactId !== contactId || state.selectedLeadJobId !== jobId) return;
-  const photos = photosForJob(contact, jobId);
-  await Promise.all(
-    photos.map(async (photo) => {
+  const photos = photosForJob(contact, jobId).slice(0, displayLimit);
+  for (let offset = 0; offset < photos.length; offset += 6) {
+    await Promise.all(
+      photos.slice(offset, offset + 6).map(async (photo) => {
       try {
         const url = await managedPhotoPreviewUrl(photo);
         if (!url || state.selectedContactId !== contactId || state.selectedLeadJobId !== jobId) return;
@@ -8998,8 +9011,9 @@ async function hydrateLeadPhotoPreviews(contactId, jobId) {
       } catch (error) {
         console.warn(`Photo ${photo.id} preview could not be loaded`, error);
       }
-    }),
-  );
+      }),
+    );
+  }
 }
 
 function renderLeadPhotos(contact) {
@@ -9011,6 +9025,8 @@ function renderLeadPhotos(contact) {
   }
   const selectedJob = jobs.find((job) => job.id === state.selectedLeadJobId) || jobs[0];
   const photos = selectedJob ? photosForJob(contact, selectedJob.id) : [];
+  const displayLimit = selectedJob ? (photoDisplayLimits.get(selectedJob.id) || PHOTO_PAGE_SIZE) : PHOTO_PAGE_SIZE;
+  const visiblePhotos = photos.slice(0, displayLimit);
 
   els.leadPhotoJobSelect.innerHTML = jobs
     .map(
@@ -9026,12 +9042,12 @@ function renderLeadPhotos(contact) {
 
   els.leadPhotosGrid.innerHTML = selectedJob
     ? photos.length
-      ? photos
+      ? visiblePhotos
           .map(
             (photo) => `
               <article class="job-photo-card">
                 <button class="job-photo-preview" type="button" data-action="download-document" data-document-id="${escapeHtml(photo.id)}" aria-label="Open ${escapeHtml(photo.name)}">
-                  <img class="hidden" data-photo-preview="${escapeHtml(photo.id)}" alt="${escapeHtml(photo.name)}" />
+                  <img class="hidden" data-photo-preview="${escapeHtml(photo.id)}" alt="${escapeHtml(photo.name)}" loading="lazy" decoding="async" />
                   <span class="job-photo-placeholder" data-photo-placeholder>
                     <span aria-hidden="true" data-icon="image"></span>
                     <strong>Open photo</strong>
@@ -9052,13 +9068,15 @@ function renderLeadPhotos(contact) {
                 </div>
               </article>`,
           )
-          .join("")
+          .join("") + (photos.length > visiblePhotos.length
+            ? `<button class="secondary-button" type="button" data-action="show-more-job-photos" data-job-id="${escapeHtml(selectedJob.id)}">Show ${Math.min(PHOTO_PAGE_SIZE, photos.length - visiblePhotos.length)} more photos</button>`
+            : "")
       : `<div class="job-photo-empty"><span aria-hidden="true" data-icon="image"></span><strong>No photos for ${escapeHtml(
           selectedJob.name,
         )} yet</strong><span>Upload inspection, damage, progress, and completion photos here.</span></div>`
     : '<div class="empty-state">Add a job before uploading photos.</div>';
   hydrateIcons(els.leadPhotosGrid);
-  if (selectedJob) void hydrateLeadPhotoPreviews(contact.id, selectedJob.id);
+  if (selectedJob) void hydrateLeadPhotoPreviews(contact.id, selectedJob.id, displayLimit);
 }
 
 function renderLeadConversation(contact) {
@@ -9203,6 +9221,44 @@ function documentUploadErrorMessage(error) {
   return `Upload failed: ${message}`;
 }
 
+async function uploadDocumentFileResumable(file, storagePath) {
+  const config = supabaseConfig();
+  const TusUpload = window.tus?.Upload;
+  if (!TusUpload || !config.url) throw new Error("Resumable file upload is not available. Reload JobCrest and try again.");
+  const { data, error } = await cloudClient.auth.getSession();
+  if (error) throw error;
+  const accessToken = data?.session?.access_token || authSession?.access_token || "";
+  if (!accessToken) throw new Error("Your session expired. Sign in again before uploading files.");
+  const endpoint = `${String(config.url).replace(/\/$/, "")}/storage/v1/upload/resumable`;
+  return new Promise((resolve, reject) => {
+    const upload = new TusUpload(file, {
+      endpoint,
+      chunkSize: RESUMABLE_UPLOAD_CHUNK_SIZE,
+      retryDelays: [0, 3000, 5000, 10000, 20000],
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      headers: { authorization: `Bearer ${accessToken}`, "x-upsert": "false" },
+      metadata: {
+        bucketName: SUPABASE_DOCUMENT_BUCKET,
+        objectName: storagePath,
+        contentType: file.type || "application/octet-stream",
+        cacheControl: "3600",
+      },
+      // A file with the same name can legitimately belong to different jobs.
+      // Scope the resume fingerprint to the immutable JobCrest storage path.
+      fingerprint: () => Promise.resolve(`jobcrest-upload-${storagePath}`),
+      onError: reject,
+      onSuccess: () => resolve({ path: storagePath }),
+    });
+    upload.findPreviousUploads()
+      .then((previousUploads) => {
+        if (previousUploads.length) upload.resumeFromPreviousUpload(previousUploads[0]);
+        upload.start();
+      })
+      .catch(reject);
+  });
+}
+
 async function storeDocumentFile(file, { documentId, leadId = "company", jobId = "", categoryId = "other" } = {}) {
   if (!documentId || !leadId || !categoryId) throw new Error("Document, lead and category identifiers are required");
   if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) {
@@ -9219,6 +9275,10 @@ async function storeDocumentFile(file, { documentId, leadId = "company", jobId =
   const recordScope = jobId ? `${leadSegment}/jobs/${jobSegment}` : leadSegment;
   const storagePath = `${companySegment}/${recordScope}/${categorySegment}/${documentSegment}/${versionSegment}/${safeStorageFileName(file.name)}`;
   const uploadFileSize = Number.isFinite(Number(file.size)) ? Number(file.size) : 0;
+  if (uploadFileSize >= RESUMABLE_UPLOAD_THRESHOLD) {
+    await uploadDocumentFileResumable(file, storagePath);
+    return { dataUrl: "", storagePath };
+  }
   const uploadTimeoutMs = Math.max(45000, Math.min(180000, 45000 + Math.ceil(uploadFileSize / (5 * 1024 * 1024)) * 5000));
   let uploadTimeout;
   const upload = cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET).upload(storagePath, file, {
@@ -9240,9 +9300,11 @@ async function storeDocumentFile(file, { documentId, leadId = "company", jobId =
 async function uploadDocumentBatch(files, uploadOne) {
   const documents = [];
   const failures = [];
-  // Bound parallel reads/uploads so multiple large files do not exhaust memory.
-  for (let offset = 0; offset < files.length; offset += 3) {
-    const batch = files.slice(offset, offset + 3);
+  // Keep small files responsive while ensuring large photo/document batches do
+  // not saturate the browser, connection, or storage service.
+  const concurrency = files.some((file) => Number(file?.size || 0) >= RESUMABLE_UPLOAD_THRESHOLD) ? 1 : 2;
+  for (let offset = 0; offset < files.length; offset += concurrency) {
+    const batch = files.slice(offset, offset + concurrency);
     const results = await Promise.allSettled(batch.map(uploadOne));
     results.forEach((result, index) => {
       if (result.status === "fulfilled") documents.push(result.value);
@@ -9525,7 +9587,6 @@ async function uploadLeadDocuments(files) {
       return false;
     }
     queueCloudSave();
-    void syncDocumentsToGoogleDrive(documents.map((document) => document.id), { statusElement: els.leadDocumentUploadStatus });
     setSaveState(
       els.leadDocumentUploadStatus,
       canUseCloudSync()
@@ -9634,7 +9695,6 @@ async function uploadLeadPhotos(files) {
     }
 
     queueCloudSave();
-    void syncDocumentsToGoogleDrive(photos.map((photo) => photo.id), { statusElement: els.leadPhotoUploadStatus });
     setSaveState(
       els.leadPhotoUploadStatus,
       `${photos.length} photo${photos.length === 1 ? "" : "s"} saved only to ${job.name}.`,
@@ -9809,12 +9869,15 @@ function renderCompanyDocuments() {
     }).join("") || '<div class="empty-state">Create a folder to organize company documents.</div>'}`;
   } else {
     const folderDocuments = documents.filter((document) => companyDocumentFolderFor(document, folders)?.id === activeFolder.id);
+    const displayLimit = companyDocumentDisplayLimits.get(activeFolder.id) || DOCUMENT_PAGE_SIZE;
+    const visibleDocuments = folderDocuments.slice(0, displayLimit);
     if (els.companyDocumentCategory) els.companyDocumentCategory.value = activeFolder.id;
     els.companyDocumentsList.innerHTML = `<div class="company-document-folder-toolbar">
       <button class="ghost-button" type="button" data-action="close-company-document-folder"><span aria-hidden="true" data-icon="arrow-left"></span>All folders</button>
       <div><span class="company-folder-icon" aria-hidden="true" data-icon="folder"></span><div><strong>${escapeHtml(activeFolder.name)}</strong><span>${folderDocuments.length} document${folderDocuments.length === 1 ? "" : "s"}</span></div></div>
     </div><div class="company-document-list-header"><span>Document</span><span>Uploaded</span><span>Size</span><span>Actions</span></div>
-    <div class="company-document-file-list">${folderDocuments.map((document) => renderCompanyDocumentRow(document, folders)).join("") || '<div class="empty-state">This folder is empty. Choose it above and upload documents.</div>'}</div>`;
+    <div class="company-document-file-list">${visibleDocuments.map((document) => renderCompanyDocumentRow(document, folders)).join("") || '<div class="empty-state">This folder is empty. Choose it above and upload documents.</div>'}</div>
+    ${folderDocuments.length > visibleDocuments.length ? `<button class="secondary-button" type="button" data-action="show-more-company-documents" data-folder-id="${escapeHtml(activeFolder.id)}">Show ${Math.min(DOCUMENT_PAGE_SIZE, folderDocuments.length - visibleDocuments.length)} more documents</button>` : ""}`;
   }
   hydrateIcons(els.companyDocumentsList);
 }
@@ -9922,7 +9985,6 @@ async function uploadCompanyDocuments(files) {
     }
 
     queueCloudSave();
-    void syncDocumentsToGoogleDrive(documents.map((document) => document.id), { statusElement: els.companyDocumentUploadStatus });
     setSaveState(
       els.companyDocumentUploadStatus,
       canUseCloudSync()
@@ -15332,6 +15394,26 @@ function bindEvents() {
     const { action, contactId, nextStatus, lineIndex } = actionButton.dataset;
     const permission = actionPermissions[action];
     if (permission && !requireAction(permission)) return;
+    if (action === "show-more-job-photos") {
+      const jobId = actionButton.dataset.jobId || "";
+      photoDisplayLimits.set(jobId, (photoDisplayLimits.get(jobId) || PHOTO_PAGE_SIZE) + PHOTO_PAGE_SIZE);
+      const contact = getSelectedContact();
+      if (contact) renderLeadPhotos(contact);
+      return;
+    }
+    if (action === "show-more-lead-documents") {
+      const displayKey = actionButton.dataset.displayKey || "";
+      leadDocumentDisplayLimits.set(displayKey, (leadDocumentDisplayLimits.get(displayKey) || DOCUMENT_PAGE_SIZE) + DOCUMENT_PAGE_SIZE);
+      const contact = getSelectedContact();
+      if (contact) renderLeadDocuments(contact);
+      return;
+    }
+    if (action === "show-more-company-documents") {
+      const folderId = actionButton.dataset.folderId || "";
+      companyDocumentDisplayLimits.set(folderId, (companyDocumentDisplayLimits.get(folderId) || DOCUMENT_PAGE_SIZE) + DOCUMENT_PAGE_SIZE);
+      renderCompanyDocuments();
+      return;
+    }
     if (action === "review-follow-up-estimate") {
       const estimate = visibleEstimates().find((item) => item.id === actionButton.dataset.estimateId);
       if (estimate && canView("estimates")) {
