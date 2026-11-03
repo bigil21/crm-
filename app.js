@@ -756,6 +756,8 @@ let durableReloadTimer = null;
 let durableReloadInFlight = false;
 let durableReloadQueued = false;
 let durableRecordFingerprints = new Map();
+let durableProjectionRevision = -1;
+let durableProjection = null;
 let durableCommitWriter = null;
 let durableWriteBlocked = false;
 let durableRejectionReloadPending = false;
@@ -763,6 +765,8 @@ const durableFinancialBaseline = new Map();
 const protectedPaymentFields = ["manualPayments", "paidAmount", "squarePaidAmount", "square_paid_amount", "squareInvoiceId", "squareOrderId", "paidAt", "lastPaymentAt", "squareLastPaymentAt", "square_last_payment_at", "squareStatus", "paymentRequests", "paymentUpdatedAt"];
 let durableAuditIds = new Set();
 let durableRecordsSubscription = null;
+const durableHeavyLeadLoads = new Map();
+let durableCompanyDocumentsLoad = null;
 let criticalSaveInFlight = false;
 let durableBusinessStateAuthoritative = false;
 let durableWritesEnabled = false;
@@ -1201,8 +1205,17 @@ function saveUiState() {
   }
 }
 
-function loadState(storageKey = activeStorageKey()) {
+function loadState(storageKey = activeStorageKey(), cachedState = null) {
   try {
+    if (cachedState && typeof cachedState === "object" && !Array.isArray(cachedState)) {
+      return normalizeState({
+        ...(authSession?.user?.id ? createEmptyState() : createInitialState()),
+        ...cachedState,
+        ...loadUiState(),
+        company: normalizeCompany(cachedState.company),
+        currentUser: { ...defaultCurrentUser, ...(cachedState.currentUser || {}) },
+      });
+    }
     const raw = localStorage.getItem(storageKey);
     if (!raw && authSession?.user?.id && canManageTeamData()) {
       const legacyRaw = localStorage.getItem(STORAGE_KEY);
@@ -2102,6 +2115,7 @@ function normalizeLineItem(item) {
 }
 
 let draftRecoveryStore = null;
+let recoveryCache = null;
 const DISMISSED_NOTICE_PREFIX = "jobcrest.crm.dismissed-notice:";
 
 function noticeWasDismissed(key, storage = localStorage) {
@@ -2143,8 +2157,12 @@ function checkpointPendingDraft(serializedState) {
   if (!draftRecoveryStore || !durableRecordsReady || applyingCloudState) return;
   if (durableWriteBlocked || hasPendingDurableChanges() || hasPendingCompanyChanges()) {
     const stored = typeof serializedState === "string" ? draftRecoveryStore.captureSerialized(serializedState) : draftRecoveryStore.capture(state);
-    if (!stored) showDraftStorageWarning();
-  } else if (!durableSaveInFlight && !cloudSaveInFlight) draftRecoveryStore.settle();
+    if (stored?.then) stored.then((available) => { if (!available) showDraftStorageWarning(); });
+    else if (!stored) showDraftStorageWarning();
+  } else if (!durableSaveInFlight && !cloudSaveInFlight) {
+    const settled = draftRecoveryStore.settle();
+    if (settled?.catch) settled.catch(() => showDraftStorageWarning());
+  }
 }
 
 function showDraftStorageWarning() {
@@ -2202,6 +2220,11 @@ function showPreviousDraftRecovery(entries) {
 }
 
 function writeStateToLocalStorage() {
+  if (typeof recoveryCache !== "undefined" && recoveryCache) {
+    checkpointPendingDraft();
+    recoveryCache.put(activeStorageKey(), state).catch(() => showDraftStorageWarning());
+    return true;
+  }
   try {
     const serializedState = JSON.stringify(state);
     checkpointPendingDraft(serializedState);
@@ -2221,12 +2244,17 @@ function flushQueuedLocalStateSave() {
 
 function queueLocalStateSave(delay = 200) {
   localEditRevision += 1;
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
   window.clearTimeout(localStateSaveTimer);
   localStateSaveTimer = window.setTimeout(flushQueuedLocalStateSave, delay);
 }
 
 function saveState(options = {}) {
   if (!options.localOnly && !applyingCloudState) localEditRevision += 1;
+  // localOnly saves commonly follow an in-place edit. Never reuse a projection
+  // captured before that edit, even when this cache-only write does not advance
+  // the edit revision.
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
   window.clearTimeout(localStateSaveTimer);
   localStateSaveTimer = null;
   const localSaved = writeStateToLocalStorage();
@@ -2810,6 +2838,38 @@ function durableAuditRowsFromState() {
   })));
 }
 
+function invalidateDurableProjection() {
+  durableProjection = null;
+  durableProjectionRevision = -1;
+}
+
+function durableStateProjection() {
+  if (durableProjection && durableProjectionRevision === localEditRevision) return durableProjection;
+  const rows = durableRowsFromState();
+  const auditRows = durableAuditRowsFromState();
+  const rowsByKey = new Map(rows.map((row) => [durableRecordKey(row), row]));
+  const fingerprints = new Map(rows.map((row) => [durableRecordKey(row), durableFingerprint(row)]));
+  const auditRowsById = new Map(auditRows.map((row) => [row.id, row]));
+  durableProjection = {
+    rows,
+    auditRows,
+    rowsByKey,
+    fingerprints,
+    auditRowsById,
+    currentKeys: new Set(rowsByKey.keys()),
+  };
+  durableProjectionRevision = localEditRevision;
+  return durableProjection;
+}
+
+function durableProjectedRow(recordType, recordId) {
+  return durableStateProjection().rowsByKey.get(`${recordType}:${recordId}`) || null;
+}
+
+function durableProjectedAuditRow(updateId) {
+  return durableStateProjection().auditRowsById.get(updateId) || null;
+}
+
 function durableFingerprint(row) {
   return JSON.stringify({
     lead_id: row.lead_id || null,
@@ -2851,13 +2911,21 @@ function consumeRecentLocalDurableEcho(row) {
 
 function hasPendingDurableChanges() {
   if (!durableRecordsReady) return false;
-  const rows = durableRowsFromState();
-  const currentKeys = new Set(rows.map(durableRecordKey));
-  if (rows.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row))) {
+  const projection = typeof durableStateProjection === "function" ? durableStateProjection() : (() => {
+    const rows = durableRowsFromState();
+    const auditRows = durableAuditRowsFromState();
+    return {
+      rows,
+      auditRows,
+      currentKeys: new Set(rows.map(durableRecordKey)),
+      fingerprints: new Map(rows.map((row) => [durableRecordKey(row), durableFingerprint(row)])),
+    };
+  })();
+  if (projection.rows.some((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== projection.fingerprints.get(durableRecordKey(row)))) {
     return true;
   }
-  if ([...durableRecordFingerprints.keys()].some((key) => !currentKeys.has(key))) return true;
-  return durableAuditRowsFromState().some((row) => !durableAuditIds.has(row.id));
+  if ([...durableRecordFingerprints.keys()].some((key) => !projection.currentKeys.has(key))) return true;
+  return projection.auditRows.some((row) => !durableAuditIds.has(row.id));
 }
 
 function rememberDurableRows(rows = [], auditRows = []) {
@@ -2867,6 +2935,7 @@ function rememberDurableRows(rows = [], auditRows = []) {
   // a newly introduced optional property can make every unchanged record look
   // edited and cause an unnecessary versioned write immediately after loading.
   rows.forEach(row => durableFinancialBaseline.set(durableRecordKey(row), row.data));
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
   const normalizedRows = new Map(durableRowsFromState().map((row) => [durableRecordKey(row), row]));
   durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => {
     const normalized = normalizedRows.get(durableRecordKey(row));
@@ -2893,6 +2962,7 @@ function getDurableCommitWriter() {
         else durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(row));
       });
       auditIds.forEach(id => durableAuditIds.add(id));
+      if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
     },
     isExpectedRejection: (error) => Boolean(durableBusinessRuleRejection(error)),
     onRejected: (value) => handleRejectedDurableWrite(value),
@@ -2950,8 +3020,12 @@ function preserveBlockedDurableWrite({ error, payload }) {
   window.clearTimeout(durableSaveTimer);
   window.clearTimeout(cloudSaveTimer);
   const recoveryKey = `jobcrest-unsaved-recovery:${authSession?.user?.id || "local"}:${payload.p_request_id}`;
-  const recovery = { createdAt: new Date().toISOString(), request: payload, state: JSON.parse(JSON.stringify(state)) };
-  try { localStorage.setItem(recoveryKey, JSON.stringify(recovery)); } catch { /* Keep the in-memory download available. */ }
+  const recovery = { createdAt: new Date().toISOString(), request: payload, state };
+  if (typeof recoveryCache !== "undefined" && recoveryCache) {
+    recoveryCache.put(recoveryKey, recovery).catch(() => showDraftStorageWarning());
+  } else {
+    try { localStorage.setItem(recoveryKey, JSON.stringify(recovery)); } catch { /* Keep the in-memory download available. */ }
+  }
   const rejection = durableRejectionReason(error);
   showToast(error?.code === "40001"
     ? "A newer shared version exists. Reload the page before editing this record again."
@@ -3054,12 +3128,96 @@ function showUnmappedRecordNotice(count) {
 
 async function fetchDurableRows() {
   const [rows, auditRows] = await Promise.all([
-    fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"]),
-    fetchAllCompanyRows(SUPABASE_AUDIT_TABLE, ["created_at", "id"], {
-      configure(query) { return query.neq("event_type", "record_commit"); },
+    fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"], {
+      configure(query) { return query.in("record_type", ["contact", "job", "estimate", "task"]); },
     }),
+    fetchRecentCompanyRows(SUPABASE_AUDIT_TABLE, 500, (query) => query.neq("event_type", "record_commit")),
   ]);
   return { rows, auditRows };
+}
+
+async function fetchRecentCompanyRows(table, limit = 500, configure = (query) => query) {
+  let query = cloudClient.from(table).select("*").eq("company_state_id", supabaseStateId());
+  query = configure(query) || query;
+  const { data, error } = await query.order("created_at", { ascending: false }).order("id", { ascending: true }).range(0, Math.max(0, limit - 1));
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new Error("Incomplete CRM response; existing data was preserved.");
+  return data;
+}
+
+function rememberAdditionalDurableRows(rows = [], auditRows = []) {
+  rows.forEach((row) => durableFinancialBaseline.set(durableRecordKey(row), row.data || {}));
+  invalidateDurableProjection();
+  const projection = durableStateProjection();
+  rows.forEach((row) => {
+    const normalized = projection.rowsByKey.get(durableRecordKey(row));
+    if (normalized) durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(normalized));
+  });
+  auditRows.forEach((row) => durableAuditIds.add(row.id));
+  getDurableCommitWriter().remember(rows);
+}
+
+async function loadDurableLeadHeavyRecords(contactId) {
+  if (!canUseCloudSync() || !durableRecordsReady || !contactId) return true;
+  if (durableHeavyLeadLoads.has(contactId)) return durableHeavyLeadLoads.get(contactId);
+  const request = (async () => {
+    try {
+      const [documentRows, auditRows] = await Promise.all([
+        fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"], {
+          configure(query) { return query.eq("record_type", "document").eq("lead_id", contactId); },
+        }),
+        fetchAllCompanyRows(SUPABASE_AUDIT_TABLE, ["created_at", "id"], {
+          configure(query) { return query.eq("lead_id", contactId).neq("event_type", "record_commit"); },
+        }),
+      ]);
+      const contact = state.contacts.find((item) => item.id === contactId);
+      if (!contact) return false;
+      contact.documents = documentRows.map((row) => normalizeDocument(
+        { ...row.data, id: row.id, jobId: row.job_id || row.data?.jobId || "" },
+        { leadId: contactId, categoryId: row.data?.categoryId || "", categories: state.company.documentCategories },
+      ));
+      contact.updates = auditRows.map((row) => ({
+        id: row.id,
+        author: row.actor_name,
+        message: row.message,
+        status: row.status,
+        createdAt: row.created_at,
+        jobId: row.job_id || "",
+      })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      rememberAdditionalDurableRows(documentRows, auditRows);
+      saveState({ localOnly: true });
+      if (state.selectedContactId === contactId) renderLeadDetail();
+      return true;
+    } catch (error) {
+      durableHeavyLeadLoads.delete(contactId);
+      console.warn("Lead documents and activity could not be loaded", error);
+      return false;
+    }
+  })();
+  durableHeavyLeadLoads.set(contactId, request);
+  return request;
+}
+
+async function loadDurableCompanyDocuments() {
+  if (!canUseCloudSync() || !durableRecordsReady) return true;
+  if (durableCompanyDocumentsLoad) return durableCompanyDocumentsLoad;
+  durableCompanyDocumentsLoad = (async () => {
+    try {
+      const rows = await fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"], {
+        configure(query) { return query.eq("record_type", "document").eq("lead_id", COMPANY_DOCUMENT_LEAD_ID); },
+      });
+      state.companyDocuments = rows.map((row) => normalizeDocument({ ...row.data, id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "" }));
+      rememberAdditionalDurableRows(rows);
+      saveState({ localOnly: true });
+      if (state.view === "companyDocuments") renderCompanyDocuments();
+      return true;
+    } catch (error) {
+      durableCompanyDocumentsLoad = null;
+      console.warn("Company documents could not be loaded", error);
+      return false;
+    }
+  })();
+  return durableCompanyDocumentsLoad;
 }
 
 async function fetchAllCompanyRows(table, orderColumns = ["id"], { configure = (query) => query } = {}) {
@@ -3097,6 +3255,8 @@ async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = f
       return null;
     }
     applyingCloudState = true;
+    if (typeof durableHeavyLeadLoads !== "undefined") durableHeavyLeadLoads.clear();
+    if (typeof durableCompanyDocumentsLoad !== "undefined") durableCompanyDocumentsLoad = null;
     applyDurableRows(rows, auditRows);
     rememberDurableRows(rows, auditRows);
     applyingCloudState = false;
@@ -3170,9 +3330,19 @@ function renderDurableUpdateWhenIdle() {
 async function flushDurableRecordsSave() {
   if (durableWriteBlocked) return false;
   if (!durableRecordsReady || durableSaveInFlight || !authSession?.user?.id) return false;
-  const rows = durableRowsFromState();
-  const currentKeys = new Set(rows.map(durableRecordKey));
-  const changedRows = rows.filter((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== durableFingerprint(row));
+  const projection = typeof durableStateProjection === "function" ? durableStateProjection() : (() => {
+    const rows = durableRowsFromState();
+    const auditRows = durableAuditRowsFromState();
+    return {
+      rows,
+      auditRows,
+      currentKeys: new Set(rows.map(durableRecordKey)),
+      fingerprints: new Map(rows.map((row) => [durableRecordKey(row), durableFingerprint(row)])),
+    };
+  })();
+  const rows = projection.rows;
+  const currentKeys = projection.currentKeys;
+  const changedRows = rows.filter((row) => durableRecordFingerprints.get(durableRecordKey(row)) !== projection.fingerprints.get(durableRecordKey(row)));
   const removedByType = new Map();
   durableRecordFingerprints.forEach((_value, key) => {
     if (currentKeys.has(key)) return;
@@ -3182,7 +3352,7 @@ async function flushDurableRecordsSave() {
     if (!removedByType.has(type)) removedByType.set(type, []);
     removedByType.get(type).push(id);
   });
-  const auditRows = durableAuditRowsFromState();
+  const auditRows = projection.auditRows;
   const newAuditRows = auditRows.filter((row) => !durableAuditIds.has(row.id));
   if (!changedRows.length && !removedByType.size && !newAuditRows.length) return true;
 
@@ -3274,8 +3444,9 @@ async function persistCriticalLeadChange({ statusElement, button, successMessage
 async function persistProfitCostRecord(jobId, costId, updateId) {
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
-  const jobRow = durableRowsFromState().find((row) => row.record_type === "job" && row.id === jobId);
-  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const jobRow = typeof durableProjectedRow === "function" ? durableProjectedRow("job", jobId) : durableRowsFromState().find((row) => row.record_type === "job" && row.id === jobId);
+  const auditRow = typeof durableProjectedAuditRow === "function" ? durableProjectedAuditRow(updateId) : durableAuditRowsFromState().find((row) => row.id === updateId);
   if (!jobRow) return false;
 
   const { data: commitResult, error: writeError } = await commitDurableChanges([jobRow], auditRow ? [auditRow] : []);
@@ -3291,8 +3462,9 @@ async function persistManualPaymentRecord(jobId, paymentId, shouldExist, updateI
   if (!canUseCloudSync()) return true;
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
-  const jobRow = durableRowsFromState().find((row) => row.record_type === "job" && row.id === jobId);
-  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const jobRow = typeof durableProjectedRow === "function" ? durableProjectedRow("job", jobId) : durableRowsFromState().find((row) => row.record_type === "job" && row.id === jobId);
+  const auditRow = typeof durableProjectedAuditRow === "function" ? durableProjectedAuditRow(updateId) : durableAuditRowsFromState().find((row) => row.id === updateId);
   if (!jobRow) return false;
 
   const expectedData = JSON.parse(JSON.stringify(jobRow.data));
@@ -3316,13 +3488,16 @@ async function persistManualPaymentRecord(jobId, paymentId, shouldExist, updateI
 async function persistLeadJobRecord(jobId, updateId, { skipContact = false } = {}) {
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
-  const durableRows = durableRowsFromState();
-  const jobRow = durableRows.find((row) => row.record_type === "job" && row.id === jobId);
-  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const durableRows = typeof durableStateProjection === "function" ? durableStateProjection().rows : durableRowsFromState();
+  const projection = {
+    rowsByKey: new Map(durableRows.map((row) => [`${row.record_type}:${row.id}`, row])),
+    auditRowsById: new Map(durableAuditRowsFromState().map((row) => [row.id, row])),
+  };
+  const jobRow = projection.rowsByKey.get(`job:${jobId}`);
+  const auditRow = projection.auditRowsById.get(updateId);
   if (!jobRow) return false;
-  const contactRow = durableRows.find(
-    (row) => row.record_type === "contact" && row.id === jobRow.lead_id,
-  );
+  const contactRow = projection.rowsByKey.get(`contact:${jobRow.lead_id}`);
   const rowsToWrite = contactRow && !skipContact ? [contactRow, jobRow] : [jobRow];
 
   durableSaveInFlight = true;
@@ -3367,9 +3542,8 @@ async function persistDurableRecordNow(recordType, recordId, verify, { syncLegac
 
   window.clearTimeout(durableSaveTimer);
   if (!(await waitForDurableSaveSlot())) return false;
-  const row = durableRowsFromState().find(
-    (candidate) => candidate.record_type === recordType && candidate.id === recordId,
-  );
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const row = typeof durableProjectedRow === "function" ? durableProjectedRow(recordType, recordId) : durableRowsFromState().find((candidate) => candidate.record_type === recordType && candidate.id === recordId);
   if (!row) return false;
 
   const expectedData = JSON.parse(JSON.stringify(row.data));
@@ -3424,10 +3598,14 @@ async function persistLeadDocumentRecords(documentIds, updateId) {
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
   const wantedIds = new Set(documentIds);
-  const documentRows = durableRowsFromState().filter(
-    (row) => row.record_type === "document" && wantedIds.has(row.id),
-  );
-  const auditRow = durableAuditRowsFromState().find((row) => row.id === updateId);
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const durableRows = typeof durableStateProjection === "function" ? durableStateProjection().rows : durableRowsFromState();
+  const projection = {
+    rowsByKey: new Map(durableRows.map((row) => [`${row.record_type}:${row.id}`, row])),
+    auditRowsById: new Map(durableAuditRowsFromState().map((row) => [row.id, row])),
+  };
+  const documentRows = [...wantedIds].map((id) => projection.rowsByKey.get(`document:${id}`)).filter(Boolean);
+  const auditRow = projection.auditRowsById.get(updateId);
   if (documentRows.length !== wantedIds.size) return false;
 
   durableSaveInFlight = true;
@@ -3453,9 +3631,12 @@ async function persistCompanyDocumentRecords(documentIds) {
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
   if (!(await waitForDurableSaveSlot())) return false;
   const wantedIds = new Set(documentIds);
-  const documentRows = durableRowsFromState().filter(
-    (row) => row.record_type === "document" && row.lead_id === COMPANY_DOCUMENT_LEAD_ID && wantedIds.has(row.id),
-  );
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const durableRows = typeof durableStateProjection === "function" ? durableStateProjection().rows : durableRowsFromState();
+  const projection = { rowsByKey: new Map(durableRows.map((row) => [`${row.record_type}:${row.id}`, row])) };
+  const documentRows = [...wantedIds]
+    .map((id) => projection.rowsByKey.get(`document:${id}`))
+    .filter((row) => row?.lead_id === COMPANY_DOCUMENT_LEAD_ID);
   if (documentRows.length !== wantedIds.size) return false;
 
   window.clearTimeout(durableSaveTimer);
@@ -3475,6 +3656,120 @@ async function persistCompanyDocumentRecords(documentIds) {
     durableSaveInFlight = false;
     queueDurableRecordsSave();
   }
+}
+
+function applyDurableRealtimeRecord(row, eventType = "UPDATE") {
+  if (!row?.record_type || !row?.id || durableUnmappedRows.length) return false;
+  const deleted = eventType === "DELETE" || Boolean(row.deleted_at);
+  const type = row.record_type;
+  if (type === "contact") {
+    const index = state.contacts.findIndex((item) => item.id === row.id);
+    if (deleted) {
+      if (index >= 0) state.contacts.splice(index, 1);
+    } else {
+      const current = index >= 0 ? state.contacts[index] : null;
+      const normalized = normalizeContact({
+        ...(current || {}),
+        ...row.data,
+        id: row.id,
+        ownerUserId: row.owner_id || row.data?.ownerUserId || current?.ownerUserId || "",
+        jobs: current?.jobs || row.data?.jobs || [],
+        documents: current?.documents || row.data?.documents || [],
+        updates: current?.updates || row.data?.updates || [],
+      });
+      if (index >= 0) state.contacts[index] = normalized;
+      else state.contacts.push(normalized);
+    }
+  } else if (type === "job") {
+    const contact = state.contacts.find((item) => item.id === row.lead_id);
+    if (!contact) return false;
+    contact.jobs = contactJobs(contact);
+    const index = contact.jobs.findIndex((item) => item.id === row.id);
+    if (deleted) {
+      if (index >= 0) contact.jobs.splice(index, 1);
+    } else {
+      const normalized = normalizeJob({ ...row.data, id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "" }, contact);
+      if (index >= 0) contact.jobs[index] = normalized;
+      else contact.jobs.push(normalized);
+    }
+  } else if (type === "document") {
+    const collection = row.lead_id === COMPANY_DOCUMENT_LEAD_ID
+      ? state.companyDocuments
+      : state.contacts.find((item) => item.id === row.lead_id)?.documents;
+    if (!collection) return false;
+    const index = collection.findIndex((item) => item.id === row.id);
+    if (deleted) {
+      if (index >= 0) collection.splice(index, 1);
+    } else {
+      const normalized = normalizeDocument(
+        { ...row.data, id: row.id, jobId: row.job_id || row.data?.jobId || null },
+        { leadId: row.lead_id, categoryId: row.data?.categoryId || "", categories: state.company.documentCategories },
+      );
+      if (index >= 0) collection[index] = normalized;
+      else collection.push(normalized);
+    }
+  } else if (type === "estimate") {
+    const index = state.estimates.findIndex((item) => item.id === row.id);
+    if (deleted) {
+      if (index >= 0) state.estimates.splice(index, 1);
+    } else {
+      const normalized = normalizeEstimate({ ...row.data, id: row.id, contactId: row.lead_id, jobId: row.job_id || null }, state.contacts);
+      if (index >= 0) state.estimates[index] = normalized;
+      else state.estimates.push(normalized);
+    }
+  } else if (type === "task") {
+    const index = state.calendarTasks.findIndex((item) => item.id === row.id);
+    if (deleted) {
+      if (index >= 0) state.calendarTasks.splice(index, 1);
+    } else {
+      const normalized = normalizeCalendarTask({ ...row.data, id: row.id, contactId: row.lead_id || row.data?.contactId || "" });
+      if (index >= 0) state.calendarTasks[index] = normalized;
+      else state.calendarTasks.push(normalized);
+    }
+  } else {
+    return false;
+  }
+
+  if (deleted) {
+    durableRecordFingerprints.delete(durableRecordKey(row));
+    durableFinancialBaseline.delete(durableRecordKey(row));
+  } else {
+    durableFinancialBaseline.set(durableRecordKey(row), row.data || {});
+  }
+  invalidateDurableProjection();
+  if (!deleted) {
+    const normalizedRow = durableProjectedRow(type, row.id);
+    if (!normalizedRow) return false;
+    durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(normalizedRow));
+  }
+  getDurableCommitWriter().remember([row]);
+  saveState({ localOnly: true });
+  renderDurableUpdateWhenIdle();
+  return true;
+}
+
+function applyDurableRealtimeAudit(row, eventType = "INSERT") {
+  if (!row?.id || row.event_type === "record_commit") return true;
+  if (eventType === "DELETE") return false;
+  const contact = state.contacts.find((item) => item.id === row.lead_id);
+  if (!contact) return false;
+  contact.updates ||= [];
+  const update = {
+    id: row.id,
+    jobId: row.job_id || null,
+    author: row.actor_name || "CRM User",
+    message: row.message || "",
+    status: row.status || "",
+    createdAt: row.created_at || new Date().toISOString(),
+  };
+  const index = contact.updates.findIndex((item) => item.id === row.id);
+  if (index >= 0) contact.updates[index] = update;
+  else contact.updates.push(update);
+  durableAuditIds.add(row.id);
+  invalidateDurableProjection();
+  saveState({ localOnly: true });
+  renderDurableUpdateWhenIdle();
+  return true;
 }
 
 async function initializeDurableRecords() {
@@ -3501,7 +3796,7 @@ async function initializeDurableRecords() {
         queueDurableRecordsSave();
         return;
       }
-      queueDurableRecordsReload();
+      if (!applyDurableRealtimeRecord(row, payload.eventType)) queueDurableRecordsReload();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
@@ -3516,7 +3811,7 @@ async function initializeDurableRecords() {
         queueDurableRecordsSave();
         return;
       }
-      queueDurableRecordsReload();
+      if (!applyDurableRealtimeAudit(row, payload.eventType)) queueDurableRecordsReload();
     })
     .subscribe();
 }
@@ -6868,6 +7163,10 @@ function renderLeadDetail() {
     return;
   }
 
+  if (["documents", "photos", "conversation", "activity"].includes(state.leadDetailTab) && !durableHeavyLeadLoads.has(contact.id)) {
+    void loadDurableLeadHeavyRecords(contact.id);
+  }
+
   els.leadDetailTitle.textContent = contact.name;
   els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${contact.status}`;
 
@@ -9332,7 +9631,8 @@ async function archiveDocumentRecord(record) {
     } catch { showToast("Document was not removed: a recovery copy could not be saved."); return false; }
   }
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id || !(await waitForDurableSaveSlot())) return false;
-  const row = durableRowsFromState().find(item => item.record_type === "document" && item.id === record.id);
+  if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+  const row = typeof durableProjectedRow === "function" ? durableProjectedRow("document", record.id) : durableRowsFromState().find((item) => item.record_type === "document" && item.id === record.id);
   if (!row) return false;
   // Archive metadata first. Keep the immutable current and prior file bytes so
   // a rejected/uncertain save can never destroy a still-visible document.
@@ -9478,6 +9778,39 @@ async function migrateInlineDocumentsToStorage() {
 }
 
 function rasterizeLogoDataUrl(dataUrl) {
+  if (window.Worker && window.OffscreenCanvas && window.createImageBitmap) {
+    return fetch(dataUrl)
+      .then((response) => response.blob())
+      .then((blob) => new Promise((resolve, reject) => {
+        const worker = new window.Worker("/image-worker.js?v=1");
+        const id = crypto.randomUUID();
+        const timeout = window.setTimeout(() => {
+          worker.terminate();
+          reject(new Error("Image processing timed out"));
+        }, 15000);
+        worker.onmessage = (event) => {
+          if (event.data?.id !== id) return;
+          window.clearTimeout(timeout);
+          worker.terminate();
+          if (event.data.error) return reject(new Error(event.data.error));
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error || new Error("Processed image could not be read"));
+          reader.readAsDataURL(new Blob([event.data.buffer], { type: event.data.type || "image/png" }));
+        };
+        worker.onerror = (event) => {
+          window.clearTimeout(timeout);
+          worker.terminate();
+          reject(event.error || new Error("Image worker failed"));
+        };
+        worker.postMessage({ id, blob, maxWidth: 640, maxHeight: 320, type: "image/png" });
+      }))
+      .catch(() => rasterizeLogoDataUrlOnMainThread(dataUrl));
+  }
+  return rasterizeLogoDataUrlOnMainThread(dataUrl);
+}
+
+function rasterizeLogoDataUrlOnMainThread(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => {
@@ -9849,6 +10182,7 @@ function renderCompanyDocumentRow(document, folders = companyDocumentFolders()) 
 
 function renderCompanyDocuments() {
   if (!els.companyDocumentsList) return;
+  if (canUseCloudSync() && durableRecordsReady && !durableCompanyDocumentsLoad) void loadDurableCompanyDocuments();
   if (canUseCloudSync() && !googleDriveState.loaded && !googleDriveState.loading) void refreshGoogleDriveStatus().then(renderCompanyDocuments);
   const folders = companyDocumentFolders();
   state.company.companyDocumentFolders = folders;
@@ -14624,6 +14958,24 @@ function pdfDrawEstimateTableHeader(doc, cursor, left, right, options = {}) {
   cursor.y += 22;
 }
 
+let estimatePdfGeneratorPromise = null;
+function loadEstimatePdfGenerator() {
+  if (window.jspdf?.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+  if (estimatePdfGeneratorPromise) return estimatePdfGeneratorPromise;
+  estimatePdfGeneratorPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/jspdf.umd.min.js?v=23";
+    script.async = true;
+    script.onload = () => window.jspdf?.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error("PDF generator did not initialize"));
+    script.onerror = () => reject(new Error("PDF generator could not be loaded"));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    estimatePdfGeneratorPromise = null;
+    throw error;
+  });
+  return estimatePdfGeneratorPromise;
+}
+
 async function downloadEstimatePdf(options = {}) {
   // An explicit save owns its estimate even if the user opens another one
   // while the shared save finishes. Keep PDF input detached from later edits.
@@ -14636,9 +14988,12 @@ async function downloadEstimatePdf(options = {}) {
     return false;
   }
 
-  const JsPdf = window.jspdf?.jsPDF;
-  if (!JsPdf) {
-    showToast("PDF generator is loading. Opening print instead.");
+  let JsPdf;
+  try {
+    JsPdf = window.jspdf?.jsPDF || (typeof loadEstimatePdfGenerator === "function" ? await loadEstimatePdfGenerator() : null);
+    if (!JsPdf) throw new Error("PDF generator is unavailable");
+  } catch {
+    showToast("PDF generator could not be loaded. Opening print instead.");
     window.print();
     return false;
   }
@@ -16439,16 +16794,26 @@ async function startApp() {
 
   // Discover earlier drafts BEFORE replacing the disposable business cache.
   // Each page owns a separate slot so simultaneous tabs cannot erase drafts.
+  let cachedRecoveryState = null;
   if (canUseCloudSync() && authSession?.user?.id) {
-    let recoveryStorage;
-    try { recoveryStorage = localStorage; } catch { /* Browser may deny storage. */ }
-    draftRecoveryStore = window.CrmDraftRecovery.create({ storage: recoveryStorage, companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
-    const earlier = draftRecoveryStore.list();
-    // Recovery copies remain available on this device, but stale copies no
-    // longer cover the CRM with a recurring banner every time someone signs in.
-    if (!earlier.available) showDraftStorageWarning();
+    try {
+      recoveryCache = window.CrmRecoveryCache?.create();
+      if (!recoveryCache) throw new Error("Asynchronous recovery cache is unavailable");
+      await recoveryCache.ready;
+      cachedRecoveryState = await recoveryCache.get(activeStorageKey());
+      draftRecoveryStore = recoveryCache.createDraftStore({ companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
+      const earlier = await draftRecoveryStore.list();
+      if (!earlier.available) showDraftStorageWarning();
+    } catch {
+      recoveryCache = null;
+      let recoveryStorage;
+      try { recoveryStorage = localStorage; } catch { /* Browser may deny storage. */ }
+      draftRecoveryStore = window.CrmDraftRecovery.create({ storage: recoveryStorage, companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
+      const earlier = draftRecoveryStore.list();
+      if (!earlier.available) showDraftStorageWarning();
+    }
   }
-  state = loadState(activeStorageKey());
+  state = loadState(activeStorageKey(), cachedRecoveryState);
   state.currentUser = currentUserFromAuthSession(authSession);
   if (canUseCloudSync() && authSession?.user?.id) {
     // Local storage is only an offline cache. Starting an authenticated cloud
