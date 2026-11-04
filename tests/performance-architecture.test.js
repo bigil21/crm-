@@ -92,7 +92,9 @@ test('heavy PDF libraries load only when a PDF is requested', () => {
 
 test('startup excludes document payloads and bounds the initial activity query', () => {
   const fetchRows = functionSource('fetchDurableRows');
-  assert.match(fetchRows, /\["contact", "job", "estimate", "task"\]/);
+  assert.match(fetchRows, /\["estimate", "task"\]/);
+  assert.match(fetchRows, /recordPageClient\.leads\(\{ limit: 100 \}\)/);
+  assert.match(fetchRows, /recordPageClient\.jobs\(\{ limit: 100 \}\)/);
   assert.doesNotMatch(fetchRows, /"document"/);
   assert.match(fetchRows, /fetchRecentCompanyRows\(SUPABASE_AUDIT_TABLE, 500/);
   assert.match(functionSource('loadDurableLeadHeavyRecords'), /eq\("record_type", "document"\).*eq\("lead_id", contactId\)/s);

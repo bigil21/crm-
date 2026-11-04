@@ -736,6 +736,17 @@ let authSession = null;
 let cloudClient = null;
 let assignableTeam = [];
 let cloudReady = false;
+let recordPageClient = null;
+let dashboardAggregateTotals = null;
+let recordPageRequestSequence = 0;
+let completeCoreRecordsLoaded = false;
+let completeCoreRecordsLoad = null;
+let serverSearchTimer = null;
+let serverSearchSequence = 0;
+const serverRecordPages = {
+  leads: { items: [], totalCount: 0, hasMore: false, nextCursor: null, queryKey: "", loading: false, error: "" },
+  jobs: { items: [], totalCount: 0, hasMore: false, nextCursor: null, queryKey: "", loading: false, error: "" },
+};
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
 let companySettingsWriter = null;
@@ -3126,7 +3137,7 @@ function showUnmappedRecordNotice(count) {
   document.body.prepend(notice);
 }
 
-async function fetchDurableRows() {
+async function fetchCompleteDurableSnapshot() {
   const [rows, auditRows] = await Promise.all([
     fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"], {
       configure(query) { return query.in("record_type", ["contact", "job", "estimate", "task"]); },
@@ -3134,6 +3145,185 @@ async function fetchDurableRows() {
     fetchRecentCompanyRows(SUPABASE_AUDIT_TABLE, 500, (query) => query.neq("event_type", "record_commit")),
   ]);
   return { rows, auditRows };
+}
+
+async function fetchDurableRows() {
+  if (completeCoreRecordsLoaded) return fetchCompleteDurableSnapshot();
+  if (recordPageClient && window.JobCrestRecordPages) {
+    try {
+      const [supportRows, leadPage, jobPage, auditRows] = await Promise.all([
+        fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"], {
+          configure(query) { return query.in("record_type", ["estimate", "task"]); },
+        }),
+        recordPageClient.leads({ limit: 100 }),
+        recordPageClient.jobs({ limit: 100 }),
+        fetchRecentCompanyRows(SUPABASE_AUDIT_TABLE, 500, (query) => query.neq("event_type", "record_commit")),
+      ]);
+      serverRecordPages.leads = { ...serverRecordPages.leads, ...leadPage, queryKey: JSON.stringify(["", ""]), error: "" };
+      serverRecordPages.jobs = { ...serverRecordPages.jobs, ...jobPage, queryKey: JSON.stringify(["", ""]), error: "" };
+      completeCoreRecordsLoaded = false;
+      return {
+        rows: window.JobCrestRecordPages.uniqueRows([
+          ...supportRows,
+          ...window.JobCrestRecordPages.rowsFromLeadItems(leadPage.items),
+          ...window.JobCrestRecordPages.rowsFromJobItems(jobPage.items),
+        ]),
+        auditRows,
+      };
+    } catch (error) {
+      // Keep a migration-order-safe fallback for local review and staged
+      // rollouts. Once the RPC migration is present, startup never takes this
+      // full-record path.
+      console.warn("Server pagination is not installed yet; using the compatibility loader", error);
+    }
+  }
+  const { rows, auditRows } = await fetchCompleteDurableSnapshot();
+  completeCoreRecordsLoaded = true;
+  return { rows, auditRows };
+}
+
+function configureRecordPages() {
+  if (recordPageClient || !canUseCloudSync() || !cloudClient || !window.JobCrestRecordPages?.create) return Boolean(recordPageClient);
+  recordPageClient = window.JobCrestRecordPages.create(cloudClient);
+  return true;
+}
+
+function serverPageQuery(kind) {
+  return { search: state.search || "", status: kind === "leads" ? state.leadStageFilter || "" : "" };
+}
+
+function serverPageQueryKey(kind) {
+  const query = serverPageQuery(kind);
+  return JSON.stringify([query.search.trim().toLowerCase(), query.status]);
+}
+
+function normalizeServerLeadItem(item = {}) {
+  const row = item.record || {};
+  const jobs = Array.isArray(item.jobs) ? item.jobs : [];
+  return normalizeContact({
+    ...(row.data || {}), id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "",
+    jobs: jobs.map((jobRow) => ({ ...(jobRow.data || {}), id: jobRow.id, ownerUserId: jobRow.owner_id || jobRow.data?.ownerUserId || "" })),
+    documents: [], updates: [],
+  }, state.company.documentCategories);
+}
+
+function normalizeServerJobItem(item = {}) {
+  const jobRow = item.record || {};
+  const contactRow = item.contact || {};
+  const contact = normalizeContact({
+    ...(contactRow.data || {}), id: contactRow.id || jobRow.lead_id || "",
+    ownerUserId: contactRow.owner_id || contactRow.data?.ownerUserId || "",
+    jobs: [{ ...(jobRow.data || {}), id: jobRow.id, ownerUserId: jobRow.owner_id || jobRow.data?.ownerUserId || "" }],
+    documents: [], updates: [],
+  }, state.company.documentCategories);
+  const job = contactJobs(contact)[0];
+  return { ...job, contactId: contact.id, contactName: contact.name, contactType: contact.type };
+}
+
+function adoptServerPageItems(kind, items = []) {
+  if (!items.length || !window.JobCrestRecordPages) return;
+  const rows = kind === "leads"
+    ? window.JobCrestRecordPages.rowsFromLeadItems(items)
+    : window.JobCrestRecordPages.rowsFromJobItems(items);
+  if (kind === "leads") {
+    items.map(normalizeServerLeadItem).forEach((incoming) => {
+      const existing = state.contacts.find((contact) => contact.id === incoming.id);
+      const merged = existing ? { ...incoming, documents: existing.documents || [], updates: existing.updates || [] } : incoming;
+      state.contacts = existing
+        ? state.contacts.map((contact) => contact.id === incoming.id ? merged : contact)
+        : [...state.contacts, merged];
+    });
+  } else {
+    items.forEach((item) => {
+      const incomingJob = normalizeServerJobItem(item);
+      const existing = state.contacts.find((contact) => contact.id === incomingJob.contactId);
+      if (!existing) {
+        const contact = normalizeContact({ ...(item.contact?.data || {}), id: incomingJob.contactId, jobs: [{ ...(item.record?.data || {}), id: incomingJob.id }] }, state.company.documentCategories);
+        state.contacts.push(contact);
+        return;
+      }
+      const jobs = contactJobs(existing);
+      existing.jobs = jobs.some((job) => job.id === incomingJob.id)
+        ? jobs.map((job) => job.id === incomingJob.id ? normalizeJob(incomingJob, existing) : job)
+        : [...jobs, normalizeJob(incomingJob, existing)];
+    });
+  }
+  if (durableRecordsReady) rememberAdditionalDurableRows(rows);
+  saveState({ localOnly: true });
+}
+
+async function loadServerSearchResults(query) {
+  if (!recordPageClient || !String(query || "").trim()) return false;
+  const sequence = ++serverSearchSequence;
+  try {
+    const result = await recordPageClient.leads({ limit: 25, search: query, status: "__all__" });
+    if (sequence !== serverSearchSequence || String(query) !== String(state.search)) return false;
+    adoptServerPageItems("leads", result.items);
+    renderLiveSearchResults();
+    return true;
+  } catch (error) {
+    console.warn("Server lead search could not be completed", error);
+    return false;
+  }
+}
+
+async function loadServerRecordPage(kind, { append = false, silent = false } = {}) {
+  if (!recordPageClient || !["leads", "jobs"].includes(kind)) return false;
+  const page = serverRecordPages[kind];
+  if (page.loading) return false;
+  const queryKey = serverPageQueryKey(kind);
+  const sequence = ++recordPageRequestSequence;
+  page.loading = true;
+  page.error = "";
+  if (!silent) kind === "leads" ? renderLeadsView() : renderJobsView();
+  try {
+    const result = await recordPageClient[kind]({
+      ...serverPageQuery(kind), cursor: append && page.queryKey === queryKey ? page.nextCursor : null,
+    });
+    if (sequence !== recordPageRequestSequence && queryKey !== serverPageQueryKey(kind)) return false;
+    page.items = append && page.queryKey === queryKey ? [...page.items, ...result.items] : result.items;
+    page.totalCount = result.totalCount;
+    page.hasMore = result.hasMore;
+    page.nextCursor = result.nextCursor;
+    page.queryKey = queryKey;
+    adoptServerPageItems(kind, result.items);
+    return true;
+  } catch (error) {
+    page.error = String(error?.message || "Server page unavailable");
+    console.warn(`${kind} server page could not be loaded`, error);
+    return false;
+  } finally {
+    page.loading = false;
+    if (!silent && state.view === kind) kind === "leads" ? renderLeadsView() : renderJobsView();
+  }
+}
+
+async function initializeRecordPages() {
+  if (!configureRecordPages()) return false;
+  const [leadResult, jobResult, aggregateResult] = await Promise.allSettled([
+    loadServerRecordPage("leads", { silent: true }),
+    loadServerRecordPage("jobs", { silent: true }),
+    recordPageClient.aggregates(),
+  ]);
+  if (aggregateResult.status === "fulfilled") dashboardAggregateTotals = aggregateResult.value;
+  return leadResult.status === "fulfilled" || jobResult.status === "fulfilled";
+}
+
+function ensureServerRecordPage(kind) {
+  if (!recordPageClient) return;
+  const page = serverRecordPages[kind];
+  if (!page.loading && page.queryKey !== serverPageQueryKey(kind)) void loadServerRecordPage(kind);
+}
+
+function invalidateServerRecordPages() {
+  Object.values(serverRecordPages).forEach((page) => { page.queryKey = ""; });
+  dashboardAggregateTotals = null;
+  if (recordPageClient) {
+    void recordPageClient.aggregates().then((totals) => {
+      dashboardAggregateTotals = totals;
+      if (state.view === "dashboard") renderDashboard();
+    }).catch((error) => console.warn("Dashboard totals could not be refreshed", error));
+  }
 }
 
 async function fetchRecentCompanyRows(table, limit = 500, configure = (query) => query) {
@@ -3243,6 +3433,37 @@ async function fetchAllCompanyRows(table, orderColumns = ["id"], { configure = (
   return rows;
 }
 
+async function ensureCompleteCoreRecordsLoaded() {
+  if (completeCoreRecordsLoaded || !canUseCloudSync()) return true;
+  if (completeCoreRecordsLoad) return completeCoreRecordsLoad;
+  completeCoreRecordsLoad = (async () => {
+    if (durableSaveInFlight || hasPendingDurableChanges()) {
+      if (!(await settleDurableWritesBeforeTrustedMutation())) return false;
+    }
+    const revision = localEditRevision;
+    const { rows, auditRows } = await fetchCompleteDurableSnapshot();
+    if (revision !== localEditRevision || durableSaveInFlight || hasPendingDurableChanges()) return false;
+    applyingCloudState = true;
+    applyDurableRows(rows, auditRows);
+    rememberDurableRows(rows, auditRows);
+    applyingCloudState = false;
+    completeCoreRecordsLoaded = true;
+    saveState({ localOnly: true });
+    render();
+    return true;
+  })().catch((error) => {
+    applyingCloudState = false;
+    console.warn("The complete CRM workspace could not be loaded", error);
+    showToast("This workspace could not finish loading. Your current records were kept.");
+    return false;
+  }).finally(() => { completeCoreRecordsLoad = null; });
+  return completeCoreRecordsLoad;
+}
+
+function viewNeedsCompleteCoreRecords(view) {
+  return ["contacts", "pipeline", "projects", "estimates", "reviews", "reports"].includes(view);
+}
+
 async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = false, force = false } = {}) {
   if (durableWriteBlocked) return null;
   try {
@@ -3261,6 +3482,7 @@ async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = f
     rememberDurableRows(rows, auditRows);
     applyingCloudState = false;
     saveState({ localOnly: true });
+    if (typeof invalidateServerRecordPages === "function") invalidateServerRecordPages();
     return rows;
   } catch (error) {
     applyingCloudState = false;
@@ -3369,6 +3591,7 @@ async function flushDurableRecordsSave() {
     batchRows.forEach(markRecentLocalDurableWrite);
     const { error } = await commitDurableChanges(batchRows, batchAuditRows, batchRemovals);
     if (error) { batchRows.forEach(clearRecentLocalDurableWrite); throw error; }
+    if (typeof invalidateServerRecordPages === "function") invalidateServerRecordPages();
     return true;
   } catch (error) {
     console.warn("Durable CRM record sync failed", error);
@@ -4142,6 +4365,7 @@ function setView(view) {
   state.view = view;
   saveUiState();
   render();
+  if (viewNeedsCompleteCoreRecords(view) && !completeCoreRecordsLoaded) void ensureCompleteCoreRecordsLoaded();
 }
 
 function openLeadDetail(contactId, tab = "overview", jobId = "") {
@@ -5052,6 +5276,19 @@ function estimateTotal(estimate) {
 }
 
 function dashboardMetrics() {
+  if (dashboardAggregateTotals) {
+    return {
+      leads: number(dashboardAggregateTotals.leads),
+      openLeads: number(dashboardAggregateTotals.openLeads),
+      totalJobs: number(dashboardAggregateTotals.totalJobs),
+      estimatesSent: number(dashboardAggregateTotals.estimatesSent),
+      openContracts: number(dashboardAggregateTotals.openContracts),
+      openValue: number(dashboardAggregateTotals.openValue),
+      closedJobs: number(dashboardAggregateTotals.closedJobs),
+      closedValue: number(dashboardAggregateTotals.closedValue),
+      pipelineValue: number(dashboardAggregateTotals.pipelineValue),
+    };
+  }
   const contacts = visibleContacts();
   const estimates = visibleEstimates();
   const leads = contacts.length;
@@ -6070,15 +6307,14 @@ function renderDashboardTasks() {
 function renderPipelineOverview() {
   if (!els.pipelineOverview) return;
   const jobs = allJobs();
-  const totalValue = jobs.reduce((sum, job) => sum + number(job.value), 0);
-  const stages = statuses.map((status) => {
+  const aggregateStages = dashboardAggregateTotals && window.JobCrestDashboardData
+    ? window.JobCrestDashboardData.stageGroups(dashboardAggregateTotals, statuses)
+    : null;
+  const totalValue = dashboardAggregateTotals ? number(dashboardAggregateTotals.pipelineValue) : jobs.reduce((sum, job) => sum + number(job.value), 0);
+  const stages = aggregateStages || statuses.map((status) => {
     const stageJobs = jobs.filter((job) => job.status === status);
     const stageLeadIds = new Set(stageJobs.map((job) => job.contactId));
-    return {
-      status,
-      count: stageLeadIds.size,
-      value: stageJobs.reduce((sum, job) => sum + number(job.value), 0),
-    };
+    return { status, count: stageLeadIds.size, value: stageJobs.reduce((sum, job) => sum + number(job.value), 0) };
   });
 
   els.pipelineOverview.innerHTML = `
@@ -6104,7 +6340,9 @@ function renderRevenueOverview() {
 
   // Build last 6 months of real closed revenue
   const now = new Date();
-  const months = Array.from({ length: 6 }, (_, i) => {
+  const months = dashboardAggregateTotals && window.JobCrestDashboardData
+    ? window.JobCrestDashboardData.revenueMonths(dashboardAggregateTotals, now)
+    : Array.from({ length: 6 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
     return {
       label: d.toLocaleString("en-US", { month: "short" }),
@@ -6114,7 +6352,7 @@ function renderRevenueOverview() {
     };
   });
 
-  allJobs().filter(jobHasFullPayment).forEach((job) => {
+  if (!dashboardAggregateTotals) allJobs().filter(jobHasFullPayment).forEach((job) => {
     const d = new Date(job.lastPaymentAt || job.closedDate || job.updatedAt);
     const bucket = months.find((m) => m.year === d.getFullYear() && m.month === d.getMonth());
     if (bucket) bucket.value += number(job.paidAmount);
@@ -6168,16 +6406,17 @@ function renderDashboardDonuts() {
   const leadContacts = visibleContacts().filter((contact) =>
     contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
   );
-  const sources = aggregateCounts(leadContacts, (contact) => contact.source || "Other");
-  const jobsByType = aggregateCounts(allJobs(), jobType);
+  const aggregateData = dashboardAggregateTotals && window.JobCrestDashboardData;
+  const sources = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "leadSources") : aggregateCounts(leadContacts, (contact) => contact.source || "Other");
+  const jobsByType = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "jobTypes") : aggregateCounts(allJobs(), jobType);
   const productionJobs = allJobs().filter((job) => soldJobStatuses.includes(job.status));
-  const projectStatus = aggregateCounts(productionJobs, (job) => job.status);
-  renderDonutWidget(els.leadSourcesChart, sources, leadContacts.length, "Total Leads");
+  const projectStatus = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "projectStatuses") : aggregateCounts(productionJobs, (job) => job.status);
+  renderDonutWidget(els.leadSourcesChart, sources, dashboardAggregateTotals ? number(dashboardAggregateTotals.openLeads) : leadContacts.length, "Total Leads");
   renderDonutWidget(els.jobsByTypeChart, jobsByType, dashboardMetrics().totalJobs, "Total Jobs");
   renderDonutWidget(
     els.projectStatusChart,
     projectStatus,
-    productionJobs.length,
+    dashboardAggregateTotals ? projectStatus.reduce((sum, item) => sum + item.count, 0) : productionJobs.length,
     "Active Projects",
   );
 }
@@ -6913,6 +7152,7 @@ function renderContacts() {
 
 function renderLeadsView() {
   if (!els.leadsList) return;
+  ensureServerRecordPage("leads");
   const stageOptions = allPipelineStages();
   const stage = stageOptions.includes(state.leadStageFilter) ? state.leadStageFilter : "";
   const activeTag = (state.leadTags || []).some((tag) => tag.id === state.leadTagFilter) ? state.leadTagFilter : "";
@@ -6939,27 +7179,35 @@ function renderLeadsView() {
     els.savedLeadFilter.innerHTML = '<option value="">Current view</option>' + (state.savedLeadFilters || []).map((filter) => `<option value="${escapeHtml(filter.id)}">${escapeHtml(filter.name)}</option>`).join("");
     els.savedLeadFilter.value = state.savedLeadFilterId || "";
   }
-  const leads = sortLeadIntakeChronologically(filteredContacts().filter((contact) =>
-    (stage
-      ? contactJobs(contact).some((job) => job.status === stage)
-      : contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)))
-      && (!activeTag || (state.recordTags || []).some((item) => item.recordType === "lead" && item.recordId === contact.id && item.tagId === activeTag)),
-  ));
+  const serverPage = serverRecordPages.leads;
+  const useServerPage = Boolean(recordPageClient && serverPage.queryKey === serverPageQueryKey("leads") && !serverPage.error && !activeTag);
+  const leads = useServerPage
+    ? serverPage.items.map(normalizeServerLeadItem)
+    : sortLeadIntakeChronologically(filteredContacts().filter((contact) =>
+      (stage
+        ? contactJobs(contact).some((job) => job.status === stage)
+        : contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)))
+        && (!activeTag || (state.recordTags || []).some((item) => item.recordType === "lead" && item.recordId === contact.id && item.tagId === activeTag)),
+    ));
+  const matchingLeadCount = useServerPage ? serverPage.totalCount : leads.length;
   const filterSummary = stage
     ? `
       <div class="lead-stage-filter-banner">
         <div>
           <span class="status-pill">${escapeHtml(stage)}</span>
-          <strong>${leads.length} ${leads.length === 1 ? "lead" : "leads"} in this pipeline stage</strong>
+          <strong>${matchingLeadCount} ${matchingLeadCount === 1 ? "lead" : "leads"} in this pipeline stage</strong>
           <small>Showing every lead with a job currently in ${escapeHtml(stage)}.</small>
         </div>
         <button class="secondary-button" type="button" data-action="clear-lead-stage-filter">Show all leads</button>
       </div>
     `
     : "";
+  const pageFooter = useServerPage
+    ? `<div class="server-page-footer"><span>Showing ${leads.length} of ${serverPage.totalCount} leads</span>${serverPage.hasMore ? `<button class="secondary-button" type="button" data-action="load-more-leads" ${serverPage.loading ? "disabled" : ""}>${serverPage.loading ? "Loading…" : "Load 50 more"}</button>` : ""}</div>`
+    : "";
   els.leadsList.innerHTML = filterSummary + (leads.length
     ? leads.map((contact) => renderRecordCard(contact)).join("")
-    : `<div class="empty-state">No leads are currently in ${escapeHtml(stage || "this view")}</div>`);
+    : `<div class="empty-state">${serverPage.loading ? "Loading leads…" : `No leads are currently in ${escapeHtml(stage || "this view")}`}</div>`) + pageFooter;
   hydrateIcons(els.leadsList);
 }
 
@@ -6985,8 +7233,11 @@ function applySavedLeadFilter(filterId) {
 
 function renderJobsView() {
   if (!els.jobsTableBody) return;
+  ensureServerRecordPage("jobs");
   const query = state.search.trim().toLowerCase();
-  const jobs = allJobs().filter((job) =>
+  const serverPage = serverRecordPages.jobs;
+  const useServerPage = Boolean(recordPageClient && serverPage.queryKey === serverPageQueryKey("jobs") && !serverPage.error);
+  const jobs = useServerPage ? serverPage.items.map(normalizeServerJobItem) : allJobs().filter((job) =>
     query
       ? [job.projectNumber, job.name, job.address, job.status, job.salesRep, job.contactName]
           .filter(Boolean)
@@ -7026,7 +7277,10 @@ function renderJobsView() {
         `,
         )
         .join("")
-    : '<tr><td colspan="7"><div class="empty-state">No matching jobs</div></td></tr>';
+    : `<tr><td colspan="7"><div class="empty-state">${serverPage.loading ? "Loading jobs…" : "No matching jobs"}</div></td></tr>`;
+  if (useServerPage) {
+    els.jobsTableBody.insertAdjacentHTML("beforeend", `<tr><td colspan="7"><div class="server-page-footer"><span>Showing ${jobs.length} of ${serverPage.totalCount} jobs</span>${serverPage.hasMore ? `<button class="secondary-button" type="button" data-action="load-more-jobs" ${serverPage.loading ? "disabled" : ""}>${serverPage.loading ? "Loading…" : "Load 50 more"}</button>` : ""}</div></td></tr>`);
+  }
   hydrateIcons(els.jobsTableBody);
 }
 
@@ -15749,6 +16003,14 @@ function bindEvents() {
     const { action, contactId, nextStatus, lineIndex } = actionButton.dataset;
     const permission = actionPermissions[action];
     if (permission && !requireAction(permission)) return;
+    if (action === "load-more-leads") {
+      await loadServerRecordPage("leads", { append: true });
+      return;
+    }
+    if (action === "load-more-jobs") {
+      await loadServerRecordPage("jobs", { append: true });
+      return;
+    }
     if (action === "show-more-job-photos") {
       const jobId = actionButton.dataset.jobId || "";
       photoDisplayLimits.set(jobId, (photoDisplayLimits.get(jobId) || PHOTO_PAGE_SIZE) + PHOTO_PAGE_SIZE);
@@ -15811,6 +16073,7 @@ function bindEvents() {
     if (action === "clear-lead-stage-filter") {
       state.leadStageFilter = "";
       saveUiState();
+      void loadServerRecordPage("leads");
       renderLeadsView();
     }
     if (action === "select-estimate") {
@@ -15984,6 +16247,11 @@ function bindEvents() {
     liveSearchActiveIndex = -1;
     renderSearchFilteredView();
     renderLiveSearchResults();
+    window.clearTimeout(serverSearchTimer);
+    if (recordPageClient && state.search.trim()) {
+      const query = state.search;
+      serverSearchTimer = window.setTimeout(() => void loadServerSearchResults(query), 180);
+    }
   });
   els.globalSearch.addEventListener("focus", renderLiveSearchResults);
   els.globalSearch.addEventListener("keydown", (event) => {
@@ -16361,6 +16629,7 @@ function bindEvents() {
     state.leadStageFilter = allPipelineStages().includes(event.target.value) ? event.target.value : "";
     state.savedLeadFilterId = "";
     saveUiState();
+    void loadServerRecordPage("leads");
     renderLeadsView();
   });
   document.addEventListener("change", (event) => {
@@ -16881,11 +17150,13 @@ async function startApp() {
   durableBusinessStateAuthoritative = true;
   await purgeLegacyJobCrestCaches();
   await initializeCloudSync();
+  configureRecordPages();
   await initializeDurableRecords();
   if (canUseCloudSync() && !durableRecordsReady) {
     showStartupDataError();
     return;
   }
+  await initializeRecordPages();
   await initializeFinancialLedger();
   await initializeProjectDelivery();
   await initializeJobOperations();

@@ -7170,3 +7170,17 @@ textarea:focus {
     height: auto;
   }
 }
+.server-page-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  color: var(--muted, #64748b);
+  font-size: 0.86rem;
+}
+
+@media (max-width: 640px) {
+  .server-page-footer { align-items: stretch; flex-direction: column; }
+}
