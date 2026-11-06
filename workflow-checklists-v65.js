@@ -238,6 +238,23 @@
     if (!targetStatus || targetStatus === currentStatus) return { allowed: true };
     if (targetStatus === "Lost") return { allowed: true };
 
+    const division = job.division || contact.division || "roofing";
+    if (division !== "roofing" && typeof pipelineStagesFor === "function") {
+      const stages = pipelineStagesFor(division);
+      const currentIndex = stages.indexOf(currentStatus);
+      const targetIndex = stages.indexOf(targetStatus);
+      const manager = typeof canManageTeamData === "function" && canManageTeamData();
+      const allowed = targetIndex >= 0 && (
+        (currentIndex >= 0 && targetIndex === currentIndex + 1) ||
+        (manager && ((currentIndex < 0 && targetIndex === 0) || targetIndex < currentIndex))
+      );
+      if (!allowed) return { allowed: false, reason: "Move this job one division stage at a time. Ask a manager to correct an earlier stage." };
+      if (targetStatus === "Paid" && !jobHasFullPayment(job)) {
+        return { allowed: false, reason: "Record confirmed payments covering the full contract before moving this job to Paid." };
+      }
+      return { allowed: true };
+    }
+
     const currentIndex = stageIndex(currentStatus);
     const targetIndex = stageIndex(targetStatus);
     // Mirrors crm_assert_job_stage_transition: only managers may correct a
@@ -538,7 +555,7 @@
         return `
           <div class="workflow-stage ${stateClass}" title="${escapeHtml(stage)}">
             <span>${index + 1}</span>
-            <strong>${escapeHtml(stage)}</strong>
+            <strong>${escapeHtml(stage === "New" ? "New Lead" : stage)}</strong>
           </div>
         `;
       })
@@ -595,7 +612,7 @@
         <div class="workflow-checklist-head">
           <div>
             <p class="eyebrow">Job progression</p>
-            <h3>${escapeHtml(job.name)}: ${escapeHtml(status)}</h3>
+            <h3>${escapeHtml(job.name)}: ${escapeHtml(status === "New" ? "New Lead" : status)}</h3>
           </div>
           ${
             contactJobs(contact).length > 1
@@ -842,7 +859,7 @@
       if (!contact) {
         return targetStatus === "New"
           ? null
-          : { blockedNew: true, targetStatus, reason: "New leads must begin at Lead Intake." };
+          : { blockedNew: true, targetStatus, reason: "Choose New Lead to save a new lead. You can advance its status after saving." };
       }
       return { contact, job: primaryJob(contact), targetStatus };
     }
@@ -855,7 +872,7 @@
       if (!job) {
         return targetStatus === "New"
           ? null
-          : { blockedNew: true, targetStatus, reason: "New jobs must begin at Lead Intake." };
+          : { blockedNew: true, targetStatus, reason: "Choose New Lead to save a new job. You can advance its status after saving." };
       }
       return { contact, job, targetStatus };
     }

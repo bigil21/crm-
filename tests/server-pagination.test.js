@@ -7,7 +7,7 @@ const pages = require('../record-pages.js');
 const dashboard = require('../dashboard-data.js');
 
 const root = path.resolve(__dirname, '..');
-const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20261104130000_server_pagination_and_aggregates.sql'), 'utf8');
+const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20261104173517_server_pagination_and_aggregates.sql'), 'utf8');
 
 test('pagination client bounds inputs and preserves opaque cursors', async () => {
   const calls = [];

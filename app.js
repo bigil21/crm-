@@ -176,8 +176,11 @@ const activeDivisions = () => (state.divisions?.length ? state.divisions : defau
 const activeServices = (divisionId) => (state.services?.length ? state.services : defaultServices).filter((item) => item.active !== false && (!divisionId || item.divisionId === divisionId)).sort((a, b) => number(a.displayOrder) - number(b.displayOrder));
 const pipelineStagesFor = (divisionId = "roofing") => {
   const configured = (state.pipelineStages || []).filter((item) => item.active !== false && item.divisionId === divisionId).sort((a, b) => number(a.displayOrder) - number(b.displayOrder)).map((item) => item.name);
-  return configured.length ? configured : (defaultPipelineStages[divisionId] || defaultPipelineStages.roofing);
+  const stages = configured.length ? configured : (defaultPipelineStages[divisionId] || defaultPipelineStages.roofing);
+  // Every division can capture a new lead before entering its delivery stages.
+  return ["New", ...stages.filter((stage) => stage !== "New")];
 };
+const leadStatusLabel = (status) => status === "New" ? "New Lead" : status;
 const allPipelineStages = () => [...new Set([...Object.values(defaultPipelineStages).flat(), ...(state.pipelineStages || []).map((item) => item.name), "Lost"])];
 const soldJobStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
 const pipelinePlaybook = [
@@ -6323,7 +6326,7 @@ function renderPipelineOverview() {
         .map(
           (stage, index) => `
             <button class="pipeline-stage stage-${index}" type="button" data-dashboard-stage="${escapeHtml(stage.status)}" aria-label="View ${stage.count} ${escapeHtml(stage.status)} lead${stage.count === 1 ? "" : "s"}">
-              <span>${escapeHtml(stage.status)}</span>
+              <span>${escapeHtml(leadStatusLabel(stage.status))}</span>
               <strong>${stage.count}</strong>
               <small>${stage.count === 1 ? "1 lead" : `${stage.count} leads`} · ${money.format(stage.value)}</small>
             </button>
@@ -7060,7 +7063,7 @@ function renderLeadCard(contact) {
             contactJobs(contact).reduce((sum, item) => sum + number(item.value), 0),
           )}</p>
         </div>
-        <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(contact.status)}</span>
+        <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(leadStatusLabel(contact.status))}</span>
       </header>
       ${staleTag}
       <p>${telLink(contact.phone) || "No phone"}<br />${escapeHtml(contact.email || "No email")}</p>
@@ -7121,7 +7124,7 @@ function renderContacts() {
               .join("<br />")}</span>
           </td>
           <td><span class="type-pill">${escapeHtml(contact.type)}</span></td>
-          <td><span class="status-pill">${escapeHtml(contact.status)}</span></td>
+          <td><span class="status-pill">${escapeHtml(leadStatusLabel(contact.status))}</span></td>
           <td>${escapeHtml(contact.salesRep || "Unassigned")}</td>
           <td class="contact-lines">
             <span>${escapeHtml(contact.phone || "No phone")}</span>
@@ -7166,7 +7169,7 @@ function renderLeadsView() {
         const count = visibleContacts().filter((contact) =>
           contactJobs(contact).some((job) => job.status === pipelineStage),
         ).length;
-        return `<option value="${escapeHtml(pipelineStage)}">${escapeHtml(pipelineStage)} (${count})</option>`;
+        return `<option value="${escapeHtml(pipelineStage)}">${escapeHtml(leadStatusLabel(pipelineStage))} (${count})</option>`;
       }),
     ].join("");
     els.leadStageFilter.value = stage;
@@ -7194,7 +7197,7 @@ function renderLeadsView() {
     ? `
       <div class="lead-stage-filter-banner">
         <div>
-          <span class="status-pill">${escapeHtml(stage)}</span>
+          <span class="status-pill">${escapeHtml(leadStatusLabel(stage))}</span>
           <strong>${matchingLeadCount} ${matchingLeadCount === 1 ? "lead" : "leads"} in this pipeline stage</strong>
           <small>Showing every lead with a job currently in ${escapeHtml(stage)}.</small>
         </div>
@@ -7263,7 +7266,7 @@ function renderJobsView() {
                 ${escapeHtml(job.contactName)}
               </button>
             </td>
-            <td><span class="status-pill">${escapeHtml(job.status)}</span></td>
+            <td><span class="status-pill">${escapeHtml(leadStatusLabel(job.status))}</span></td>
             <td>${escapeHtml(job.salesRep || "Unassigned")}</td>
             <td>${money.format(number(job.value))}</td>
             <td>${escapeHtml((job.address || "No address").split("\n")[0])}</td>
@@ -7292,7 +7295,7 @@ function renderProjectsView() {
         .map(
           (job) => `
           <article class="record-card">
-            <span class="status-pill">${escapeHtml(job.status)}</span>
+            <span class="status-pill">${escapeHtml(leadStatusLabel(job.status))}</span>
             ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
             <strong>${escapeHtml(job.name)}</strong>
             <span>${escapeHtml(job.contactName)} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
@@ -7338,7 +7341,7 @@ function renderRecordCard(contact) {
         </div>
       </div>
       <div class="lead-intake-stage">
-        <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(contact.status)}</span>
+        <span class="status-pill ${statusPillClass(contact.status)}">${escapeHtml(leadStatusLabel(contact.status))}</span>
         ${staleTag}
       </div>
       <div class="lead-intake-contact">
@@ -7422,7 +7425,7 @@ function renderLeadDetail() {
   }
 
   els.leadDetailTitle.textContent = contact.name;
-  els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${contact.status}`;
+  els.leadDetailMeta.textContent = `${contact.leadNumber ? `${contact.leadNumber} - ` : ""}${contact.type} - ${leadStatusLabel(contact.status)}`;
 
   if (
     (state.leadDetailTab === "profit" && !canManageJobFinancials()) ||
@@ -7464,7 +7467,7 @@ function renderLeadDetail() {
   const payments = contactPaymentMetrics(contact);
   const paidPercentage = payments.contractValue ? (payments.paidAmount / payments.contractValue) * 100 : 0;
   els.leadDetailStats.innerHTML = [
-    ["Status", contact.status, "Current job stage"],
+    ["Status", leadStatusLabel(contact.status), "Current job stage"],
     ["Sales Rep", contact.salesRep || "Unassigned", "Owner"],
     ["Jobs", jobs.length, `${openJobs} open`],
     ["Contract Value", money.format(payments.contractValue || jobValue), contact.leadNumber || "Assigned at estimate"],
@@ -7492,7 +7495,7 @@ function renderLeadDetail() {
         <h2 style="margin:0;font-size:20px">${escapeHtml(contact.name)}</h2>
         <p style="margin:4px 0 0;color:var(--muted);font-size:13px">${escapeHtml(contact.source || "No source")}</p>
       </div>
-      <span class="status-pill ${statusPillClass(contact.status)}" style="align-self:flex-start">${escapeHtml(contact.status)}</span>
+      <span class="status-pill ${statusPillClass(contact.status)}" style="align-self:flex-start">${escapeHtml(leadStatusLabel(contact.status))}</span>
     </div>
     ${sc ? `<div class="overview-stale-banner ${sc}"><span data-icon="alert-triangle" aria-hidden="true"></span> No contact in ${days} days — follow up soon</div>` : ""}
     <div class="overview-quick-actions">
@@ -7519,7 +7522,7 @@ function renderLeadDetail() {
             <button class="overview-job-link" type="button" data-action="open-job" data-contact-id="${contact.id}" data-job-id="${job.id}">
               <span class="overview-job-link-heading">
                 <strong>${escapeHtml(job.name)}</strong>
-                <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(job.status)}</span>
+                <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(leadStatusLabel(job.status))}</span>
               </span>
               ${job.projectNumber ? `<span class="project-number-inline">${escapeHtml(job.projectNumber)}</span>` : ""}
               <span class="overview-job-address">${nl2br(job.address || "No address saved")}</span>
@@ -7585,7 +7588,7 @@ function renderLeadJobs(contact) {
         <div>
           <button class="job-select-button" type="button" data-action="open-job" data-contact-id="${contact.id}" data-job-id="${job.id}">
             <span class="job-status-row">
-              <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(job.status)}</span>
+              <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(leadStatusLabel(job.status))}</span>
               ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
             </span>
             <strong>${escapeHtml(job.name)}</strong>
@@ -8781,7 +8784,7 @@ function populateDivisionFields(form, record = {}) {
   }
   if (statusField) {
     const choices = [...pipelineStagesFor(division), "Lost"];
-    statusField.innerHTML = choices.map((item) => `<option>${escapeHtml(item)}</option>`).join("");
+    statusField.innerHTML = choices.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(leadStatusLabel(item))}</option>`).join("");
     statusField.value = choices.includes(record.status) ? record.status : choices[0] || "New";
   }
 }
