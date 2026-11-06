@@ -208,7 +208,8 @@
   }
 
   function stageChecklist(contact, job, stage = job.status || contact.status || "New") {
-    const definitions = checklistDefinitions[stage] || [];
+    const roofing = (job.division || contact.division || "roofing") === "roofing";
+    const definitions = roofing ? checklistDefinitions[stage] || [] : [];
     const items = definitions.map((item) => ({
       ...item,
       complete: itemComplete(contact, job, stage, item),
@@ -218,7 +219,7 @@
       items,
       completed: items.filter((item) => item.complete).length,
       total: items.length,
-      ready: items.length > 0 && items.every((item) => item.complete),
+      ready: (!roofing || items.length > 0) && items.every((item) => item.complete),
       missing: items.filter((item) => !item.complete),
     };
   }
@@ -227,10 +228,12 @@
     return progressionStages.indexOf(status);
   }
 
-  function nextStage(status) {
-    const index = stageIndex(status);
-    if (index < 0 || index >= progressionStages.length - 1) return "";
-    return progressionStages[index + 1];
+  function nextStage(status, job = null, contact = null) {
+    const division = job?.division || contact?.division;
+    const stages = division && typeof pipelineStagesFor === "function" ? pipelineStagesFor(division) : progressionStages;
+    const index = stages.indexOf(status);
+    if (index < 0 || index >= stages.length - 1) return "";
+    return stages[index + 1];
   }
 
   function transitionCheck(contact, job, targetStatus) {
@@ -243,6 +246,7 @@
       const stages = pipelineStagesFor(division);
       const currentIndex = stages.indexOf(currentStatus);
       const targetIndex = stages.indexOf(targetStatus);
+      if (targetIndex < 0) return { allowed: false, reason: `${targetStatus} is not a ${division} stage. The next stage is ${stages[currentIndex + 1] || currentStatus}.` };
       const manager = typeof canManageTeamData === "function" && canManageTeamData();
       const allowed = targetIndex >= 0 && (
         (currentIndex >= 0 && targetIndex === currentIndex + 1) ||
@@ -361,9 +365,9 @@
       gate.classList.toggle("blocked", !checklist.ready);
       gate.innerHTML = `<span aria-hidden="true" data-icon="${checklist.ready ? "check" : "clipboard"}"></span>${
         checklist.ready
-          ? stage === "Lost" || !nextStage(stage)
+          ? stage === "Lost" || !nextStage(stage, job, contact)
             ? "Checklist complete"
-            : `All requirements complete for ${escapeHtml(nextStage(stage))}`
+            : `All requirements complete for ${escapeHtml(nextStage(stage, job, contact))}`
           : `Next requirement: ${escapeHtml(checklist.missing[0]?.label || "Complete the checklist")}`
       }`;
       hydrateIcons(gate);
@@ -545,9 +549,11 @@
     } catch {}
   }
 
-  function checklistStageMarkup(status) {
-    const currentIndex = stageIndex(status);
-    return progressionStages
+  function checklistStageMarkup(status, job, contact) {
+    const division = job?.division || contact?.division;
+    const stages = division && typeof pipelineStagesFor === "function" ? pipelineStagesFor(division) : progressionStages;
+    const currentIndex = stages.indexOf(status);
+    return stages
       .map((stage, index) => {
         let stateClass = "upcoming";
         if (index < currentIndex) stateClass = "complete";
@@ -590,7 +596,7 @@
   function workflowPanelMarkup(contact, job) {
     const status = job.status || contact.status || "New";
     const checklist = stageChecklist(contact, job, status);
-    const next = nextStage(status);
+    const next = nextStage(status, job, contact);
     const editable = canAction("manageJobs");
     const automaticMissing = checklist.missing.some((item) => item.mode === "auto");
     const progress = checklist.total ? Math.round((checklist.completed / checklist.total) * 100) : 100;
@@ -635,7 +641,7 @@
           }
         </div>
 
-        <div class="workflow-stage-track">${checklistStageMarkup(status)}</div>
+        <div class="workflow-stage-track">${checklistStageMarkup(status, job, contact)}</div>
 
         <div class="workflow-checklist-summary">
           <div>
@@ -790,7 +796,7 @@
     const contact = getContact(contactId);
     if (!contact) return;
     const job = contactJobs(contact).find((item) => item.id === jobId) || primaryJob(contact);
-    const targetStatus = nextStage(job.status);
+    const targetStatus = nextStage(job.status, job, contact);
     if (!targetStatus) return;
     const result = transitionCheck(contact, job, targetStatus);
     if (!result.allowed) {
