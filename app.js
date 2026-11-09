@@ -1693,7 +1693,7 @@ function categoryForLegacyName(name, categories = defaultDocumentCategories) {
   );
 }
 
-function normalizeContact(contact, categories = defaultDocumentCategories) {
+function normalizeContact(contact, categories = defaultDocumentCategories, options = {}) {
   const status = contact.status || "New";
   const seeded = seedContacts.find((seed) => seed.id === contact.id);
   const savedRep = contact.salesRep && contact.salesRep !== "Unassigned" ? contact.salesRep : "";
@@ -1725,9 +1725,12 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
     ),
     updates: (contact.updates || contact.activity || []).map(normalizeUpdate),
   };
+  const preserveEmptyJobs = options.preserveEmptyJobs === true && Array.isArray(contact.jobs);
   const jobs = contact.jobs?.length
     ? contact.jobs.map((job) => normalizeJob(job, baseContact))
-    : [normalizeJob({}, baseContact)];
+    : preserveEmptyJobs
+      ? []
+      : [normalizeJob({}, baseContact)];
   const primaryJobId = jobs[0]?.id || "";
   return {
     ...baseContact,
@@ -2807,7 +2810,10 @@ function durableRowsFromState() {
       updated_by: updatedBy,
       deleted_at: null,
     });
-    contactJobs(contact).forEach((job) => rows.push({
+    // Only explicit jobs are durable. contactJobs() intentionally creates a
+    // display fallback for old lead-only data; persisting that fallback can
+    // race a newly committed real job and create a duplicate project.
+    (Array.isArray(contact.jobs) ? contact.jobs : []).forEach((job) => rows.push({
       company_state_id: companyStateId,
       record_type: "job",
       id: job.id,
@@ -3186,7 +3192,7 @@ function applyDurableRows(rows = [], auditRows = []) {
     jobs: jobsByLead.get(row.id) || [],
     documents: documentsByLead.get(row.id) || [],
     updates: (updatesByLead.get(row.id) || []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
-  }, state.company.documentCategories));
+  }, state.company.documentCategories, { preserveEmptyJobs: true }));
   const estimates = byType("estimate").map((row) => ({ ...row.data, id: row.id, contactId: row.lead_id, jobId: row.job_id || row.data?.jobId || "", ownerUserId: row.owner_id || "" }));
   const calendarTasks = byType("task").map((row) => ({ ...row.data, id: row.id, contactId: row.lead_id || "", ownerUserId: row.owner_id || "" }));
   const companyDocumentRows = byType("document").filter((row) => row.lead_id === COMPANY_DOCUMENT_LEAD_ID);
@@ -3282,7 +3288,7 @@ function normalizeServerLeadItem(item = {}) {
     ...(row.data || {}), id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "",
     jobs: jobs.map((jobRow) => ({ ...(jobRow.data || {}), id: jobRow.id, ownerUserId: jobRow.owner_id || jobRow.data?.ownerUserId || "" })),
     documents: [], updates: [],
-  }, state.company.documentCategories);
+  }, state.company.documentCategories, { preserveEmptyJobs: true });
 }
 
 function normalizeServerJobItem(item = {}) {
@@ -3969,22 +3975,25 @@ function applyDurableRealtimeRecord(row, eventType = "UPDATE") {
       if (index >= 0) state.contacts.splice(index, 1);
     } else {
       const current = index >= 0 ? state.contacts[index] : null;
+      const incomingJobs = current?.jobs || row.data?.jobs || [];
       const normalized = normalizeContact({
         ...(current || {}),
         ...row.data,
         id: row.id,
         ownerUserId: row.owner_id || row.data?.ownerUserId || current?.ownerUserId || "",
-        jobs: current?.jobs || row.data?.jobs || [],
+        jobs: incomingJobs,
         documents: current?.documents || row.data?.documents || [],
         updates: current?.updates || row.data?.updates || [],
-      });
+      }, state.company.documentCategories, { preserveEmptyJobs: true });
       if (index >= 0) state.contacts[index] = normalized;
       else state.contacts.push(normalized);
     }
   } else if (type === "job") {
     const contact = state.contacts.find((item) => item.id === row.lead_id);
     if (!contact) return false;
-    contact.jobs = contactJobs(contact);
+    // Do not materialize contactJobs()'s display-only fallback while a
+    // contact and its first real job are arriving as separate realtime rows.
+    contact.jobs = Array.isArray(contact.jobs) ? contact.jobs : [];
     const index = contact.jobs.findIndex((item) => item.id === row.id);
     if (deleted) {
       if (index >= 0) contact.jobs.splice(index, 1);

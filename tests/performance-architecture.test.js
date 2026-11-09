@@ -83,6 +83,34 @@ test('realtime record events patch one record before falling back to a full relo
   assert.doesNotMatch(functionSource('applyDurableRealtimeAudit'), /fetchDurableRows|reloadDurableRecords/);
 });
 
+test('lead-only realtime rows cannot synthesize a second durable job', () => {
+  const source = functionSource('durableRowsFromState');
+  const context = vm.createContext({
+    state: {
+      contacts: [{ id: 'lead-new', jobs: [] }], estimates: [], calendarTasks: [], companyDocuments: [],
+    },
+    authSession: { user: { id: 'sales-user' } },
+    durableUnmappedRows: [],
+    supabaseStateId: () => 'coastal-crest',
+    contactOwnerId: () => 'sales-user',
+    estimateOwnerId: () => 'sales-user',
+    calendarTaskOwnerId: () => 'sales-user',
+    durableRecordData: value => ({ ...value }),
+    durableRecordKey: row => `${row.record_type}:${row.id}`,
+    preserveImmutableSalesNumbers: rows => rows,
+    preserveReadOnlyPaymentFields: rows => rows,
+    contactJobs: () => { throw new Error('display fallback must not become durable'); },
+    COMPANY_DOCUMENT_LEAD_ID: '__company__',
+    JSON, Set,
+  });
+  vm.runInContext(source, context);
+  const rows = context.durableRowsFromState();
+  assert.equal(rows.map(row => `${row.record_type}:${row.id}`).join(','), 'contact:lead-new');
+  assert.match(functionSource('normalizeContact'), /preserveEmptyJobs/);
+  assert.match(functionSource('applyDurableRealtimeRecord'), /preserveEmptyJobs: true/);
+  assert.doesNotMatch(functionSource('applyDurableRealtimeRecord'), /contact\.jobs = contactJobs\(contact\)/);
+});
+
 test('heavy PDF libraries load only when a PDF is requested', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   assert.doesNotMatch(html, /<script[^>]+jspdf\.umd\.min\.js/);

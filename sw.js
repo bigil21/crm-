@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcrest-crm-v180";
+const CACHE_NAME = "jobcrest-crm-v181";
 const PUBLIC_ASSET_PATHS = new Set([
   "/app.js", "/image-worker.js", "/record-writes.js", "/company-settings-writes.js", "/sales-numbering.js", "/payment-refresh.js", "/draft-recovery.js", "/recovery-cache.js", "/record-pages.js", "/dashboard-data.js", "/session-guard.js", "/auth.js", "/login.js", "/logout.js", "/styles.css",
   "/production-flow-v64.js", "/workflow-checklists-v65.js", "/project-conversations-v67.js", "/team-onboarding.js",
