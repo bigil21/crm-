@@ -2829,10 +2829,10 @@ function durableRowsFromState() {
   // the saved child. Keep unmapped rows untouched until a reviewed relationship
   // repair is loaded from the server, even if a local import reuses their IDs.
   const unmappedKeys = new Set(durableUnmappedRows.map(durableRecordKey));
-  return preserveReadOnlyPaymentFields([
+  return preserveImmutableSalesNumbers(preserveReadOnlyPaymentFields([
     ...rows.filter(row => !unmappedKeys.has(durableRecordKey(row))),
     ...durableUnmappedRows.map(row => JSON.parse(JSON.stringify(row))),
-  ]);
+  ]));
 }
 
 function durableAuditRowsFromState() {
@@ -2997,6 +2997,9 @@ const durableRejectionReasons = {
   stage_contact_required: "A job was saved without its lead.",
   full_payment_required: "A job can only be marked Paid after confirmed payments cover the full contract.",
   commit_too_large: "Too many records were saved at once. Import or edit fewer records at a time.",
+  sales_number_is_immutable: "A saved lead, project, or estimate number cannot be changed. The original number has been restored.",
+  sales_number_not_reserved: "This record needs a valid shared CRM number before it can be saved.",
+  estimate_sales_numbers_do_not_match: "The estimate number does not match its saved lead and project. The original numbers have been restored.",
   authentication_required: "Your sign-in has expired or is not approved for the CRM. Sign in again.",
 };
 
@@ -3071,6 +3074,40 @@ function preserveReadOnlyPaymentFields(rows) {
     }
   }
   return rows;
+}
+
+const immutableSalesNumberFields = {
+  contact: ["leadNumber"],
+  job: ["projectNumber"],
+  estimate: ["estimateNumber", "leadNumber", "projectNumber"],
+};
+
+function preserveImmutableSalesNumbers(rows) {
+  for (const row of rows) {
+    const fields = immutableSalesNumberFields[row.record_type] || [];
+    if (!fields.length) continue;
+    const baseline = durableFinancialBaseline.get(durableRecordKey(row));
+    if (!baseline) continue;
+    for (const field of fields) {
+      // Number reservations are permanent database identities. A stale tab or
+      // display normalizer must never turn an ordinary edit into a renumbering.
+      if (Object.prototype.hasOwnProperty.call(baseline, field)) row.data[field] = baseline[field];
+    }
+  }
+  return rows;
+}
+
+function restoreEstimateSalesNumbersFromBaseline(estimate) {
+  if (!estimate?.id) return false;
+  const baseline = durableFinancialBaseline.get(`estimate:${estimate.id}`);
+  if (!baseline) return false;
+  let changed = false;
+  for (const field of immutableSalesNumberFields.estimate) {
+    if (!Object.prototype.hasOwnProperty.call(baseline, field) || estimate[field] === baseline[field]) continue;
+    estimate[field] = baseline[field];
+    changed = true;
+  }
+  return changed;
 }
 
 function applyDurableRows(rows = [], auditRows = []) {
@@ -15654,6 +15691,7 @@ function printEstimate() {
 async function saveCurrentEstimateAndPdf() {
   const estimate = getSelectedEstimate();
   if (!estimate || estimateExplicitSaves.has(estimate.id)) return false;
+  if (restoreEstimateSalesNumbersFromBaseline(estimate)) queueLocalStateSave(0);
   const snapshot = JSON.parse(JSON.stringify(estimate));
   estimateExplicitSaves.add(estimate.id);
   flushQueuedLocalStateSave();

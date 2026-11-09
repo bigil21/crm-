@@ -245,6 +245,7 @@ test('orphan jobs and documents survive hydration without implicit deletion or r
     normalizeContact: value => value, normalizeDocument: value => value,
     supabaseStateId: () => 'coastal-crest', authSession: { user: { id: 'test' } },
     preserveReadOnlyPaymentFields: value => value,
+    preserveImmutableSalesNumbers: value => value,
     durableRecordKey: row => `${row.record_type}:${row.id}`,
     durableRecordsReady: true, durableRecordFingerprints: new Map(),
     durableAuditRowsFromState: () => [], durableAuditIds: new Set(),

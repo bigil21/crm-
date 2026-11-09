@@ -22,6 +22,7 @@ function load(names, globals = {}) {
     getSelectedEstimate: () => state.estimates.find(item => item.id === state.selectedEstimateId),
     getContact: id => ({ id, name: id }),
     durableRecordDataMatches: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    restoreEstimateSalesNumbersFromBaseline: () => false, queueLocalStateSave() {},
     setEstimateSaveState: (...args) => statuses.push(args), showToast() {},
     flushEstimateVerifiedSave: async () => true, downloadEstimatePdf: async () => true,
     window: { confirm: () => true }, ...globals });
