@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=85" />
+    <link rel="stylesheet" href="styles.css?v=86" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1018,11 +1018,11 @@
               <h3>Choose a lead and job</h3>
             </div>
             <div class="estimate-create-controls">
-              <label>
+              <label class="estimate-lead-combobox">
                 Lead
-                <select id="newEstimateContact">
-                  <option value="">Choose lead</option>
-                </select>
+                <input id="newEstimateContactSearch" type="search" autocomplete="off" placeholder="Search lead, address, phone, email, or job" role="combobox" aria-autocomplete="list" aria-controls="newEstimateContactResults" aria-expanded="false" />
+                <input id="newEstimateContact" type="hidden" />
+                <div id="newEstimateContactResults" class="estimate-lead-results hidden" role="listbox" aria-label="Matching leads"></div>
               </label>
               <label>
                 Job
@@ -1059,9 +1059,11 @@
                     <div><strong>Project details</strong><small>Customer, job, title, and status</small></div>
                   </div>
                   <div class="form-grid two">
-                    <label>
+                    <label class="estimate-lead-combobox">
                       Lead
-                      <select id="estimateContact" name="contactId" required></select>
+                      <input id="estimateContactSearch" type="search" autocomplete="off" placeholder="Search lead, address, phone, email, or job" role="combobox" aria-autocomplete="list" aria-controls="estimateContactResults" aria-expanded="false" />
+                      <input id="estimateContact" name="contactId" type="hidden" required />
+                      <div id="estimateContactResults" class="estimate-lead-results hidden" role="listbox" aria-label="Matching leads"></div>
                     </label>
                     <label>
                       Job
@@ -2055,7 +2057,7 @@
     <script src="recovery-cache.js?v=1" defer></script>
     <script src="record-pages.js?v=2" defer></script>
     <script src="dashboard-data.js?v=2" defer></script>
-    <script src="app.js?v=174" defer></script>
+    <script src="app.js?v=175" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
     <script src="workflow-checklists-v65.js?v=95" defer></script>

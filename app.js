@@ -1003,9 +1003,13 @@ const els = {
   toggleEstimateCreateButton: document.querySelector("#toggleEstimateCreateButton"),
   estimateActiveSummary: document.querySelector("#estimateActiveSummary"),
   estimateForm: document.querySelector("#estimateForm"),
+  newEstimateContactSearch: document.querySelector("#newEstimateContactSearch"),
   newEstimateContact: document.querySelector("#newEstimateContact"),
+  newEstimateContactResults: document.querySelector("#newEstimateContactResults"),
   newEstimateJob: document.querySelector("#newEstimateJob"),
+  estimateContactSearch: document.querySelector("#estimateContactSearch"),
   estimateContact: document.querySelector("#estimateContact"),
+  estimateContactResults: document.querySelector("#estimateContactResults"),
   estimateJob: document.querySelector("#estimateJob"),
   estimateNumber: document.querySelector("#estimateNumber"),
   estimateTitle: document.querySelector("#estimateTitle"),
@@ -13833,6 +13837,67 @@ async function exportPerformanceReportToGoogleSheets() {
   } catch (error) { showToast(error.message || "Google Sheets report could not be created"); }
 }
 
+function estimateLeadSearchMatches(query = "") {
+  const contacts = visibleContacts();
+  const normalized = normalizeLeadSearch(query);
+  const matches = normalized
+    ? contacts.filter((contact) => contactMatchesSearch(contact, query))
+    : [...contacts].sort((left, right) => left.name.localeCompare(right.name));
+  return matches.slice(0, 30);
+}
+
+function estimateLeadSearchMarkup(query = "", target = "new") {
+  const matches = estimateLeadSearchMatches(query);
+  if (!matches.length) {
+    return `<div class="estimate-lead-results-empty">No leads match “${escapeHtml(query)}”. Try the customer, address, phone, email, job, or lead number.</div>`;
+  }
+  return matches.map((contact) => {
+    const jobs = contactJobs(contact);
+    const matchedJob = query ? searchResultJob(contact, query) : jobs[0];
+    const jobSummary = matchedJob
+      ? `${matchedJob.name}${matchedJob.address ? ` · ${matchedJob.address}` : ""}`
+      : "No job saved";
+    return `<button class="estimate-lead-result" type="button" role="option" data-estimate-lead-id="${escapeHtml(contact.id)}" data-estimate-lead-target="${target}">
+      <strong>${escapeHtml(contact.name)}</strong>
+      <span>${escapeHtml([contact.leadNumber, contact.salesRep, jobSummary].filter(Boolean).join(" · "))}</span>
+    </button>`;
+  }).join("");
+}
+
+function showEstimateLeadResults(target, query = "") {
+  const isNew = target === "new";
+  const input = isNew ? els.newEstimateContactSearch : els.estimateContactSearch;
+  const results = isNew ? els.newEstimateContactResults : els.estimateContactResults;
+  if (!input || !results) return;
+  results.innerHTML = estimateLeadSearchMarkup(query, target);
+  results.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
+}
+
+function hideEstimateLeadResults(target) {
+  const isNew = target === "new";
+  const input = isNew ? els.newEstimateContactSearch : els.estimateContactSearch;
+  const results = isNew ? els.newEstimateContactResults : els.estimateContactResults;
+  results?.classList.add("hidden");
+  input?.setAttribute("aria-expanded", "false");
+}
+
+function selectEstimateLead(contactId, target) {
+  const contact = getContact(contactId);
+  if (!contact) return;
+  if (target === "new") {
+    state.newEstimateContactId = contact.id;
+    state.newEstimateJobId = primaryJob(contact)?.id || "";
+    saveUiState();
+    renderNewEstimatePickers();
+    hideEstimateLeadResults("new");
+    return;
+  }
+  updateSelectedEstimateFromField("contactId", contact.id);
+  renderEstimates();
+  hideEstimateLeadResults("editor");
+}
+
 function renderNewEstimatePickers() {
   if (!els.newEstimateContact || !els.newEstimateJob) return;
   const selectedContact = getContact(state.newEstimateContactId);
@@ -13840,16 +13905,10 @@ function renderNewEstimatePickers() {
   const jobs = selectedContact ? contactJobs(selectedContact) : [];
   const selectedJob = jobs.find((job) => job.id === state.newEstimateJobId) || jobs[0];
 
-  els.newEstimateContact.innerHTML = [
-    '<option value="">Choose lead</option>',
-    ...visibleContacts().map(
-      (contact) => `
-        <option value="${contact.id}" ${contact.id === contactId ? "selected" : ""}>
-          ${escapeHtml(contact.name)} (${escapeHtml(contact.type)})
-        </option>
-      `,
-    ),
-  ].join("");
+  els.newEstimateContact.value = contactId;
+  if (els.newEstimateContactSearch && document.activeElement !== els.newEstimateContactSearch) {
+    els.newEstimateContactSearch.value = selectedContact?.name || "";
+  }
 
   els.newEstimateJob.disabled = !selectedContact;
   els.newEstimateJob.innerHTML = selectedContact
@@ -13989,17 +14048,11 @@ function renderEstimateForm(estimate) {
   }
   renderEstimateSaveState(estimate.id);
 
-  els.estimateContact.innerHTML = visibleContacts()
-    .map(
-      (contact) => `
-      <option value="${contact.id}" ${contact.id === estimate.contactId ? "selected" : ""}>
-        ${escapeHtml(contact.name)} (${escapeHtml(contact.type)})
-      </option>
-    `,
-    )
-    .join("");
-
   const estimateContact = getEstimateContact(estimate);
+  els.estimateContact.value = estimateContact?.id || "";
+  if (els.estimateContactSearch && document.activeElement !== els.estimateContactSearch) {
+    els.estimateContactSearch.value = estimateContact?.name || "";
+  }
   const estimateJobs = contactJobs(estimateContact);
   const estimateJob = getEstimateJob(estimate);
   els.estimateJob.innerHTML = estimateJobs
@@ -16818,12 +16871,46 @@ function bindEvents() {
     els.toggleEstimateHistoryButton?.setAttribute("aria-expanded", "false");
   });
 
-  els.newEstimateContact?.addEventListener("change", (event) => {
-    const contact = getContact(event.target.value);
-    state.newEstimateContactId = contact?.id || "";
-    state.newEstimateJobId = primaryJob(contact)?.id || "";
-    saveUiState();
-    renderNewEstimatePickers();
+  const estimateLeadSearches = [
+    { target: "new", input: els.newEstimateContactSearch, results: els.newEstimateContactResults },
+    { target: "editor", input: els.estimateContactSearch, results: els.estimateContactResults },
+  ];
+  estimateLeadSearches.forEach(({ target, input, results }) => {
+    if (!input || !results) return;
+    input.addEventListener("focus", () => showEstimateLeadResults(target, input.value));
+    input.addEventListener("input", () => {
+      if (target === "new") {
+        const selected = getContact(state.newEstimateContactId);
+        if (!selected || normalizeLeadSearch(input.value) !== normalizeLeadSearch(selected.name)) {
+          state.newEstimateContactId = "";
+          state.newEstimateJobId = "";
+          renderNewEstimatePickers();
+        }
+      }
+      showEstimateLeadResults(target, input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        hideEstimateLeadResults(target);
+        return;
+      }
+      if (event.key !== "Enter") return;
+      const first = results.querySelector("[data-estimate-lead-id]");
+      if (!first) return;
+      event.preventDefault();
+      selectEstimateLead(first.dataset.estimateLeadId, target);
+    });
+    results.addEventListener("mousedown", (event) => event.preventDefault());
+    results.addEventListener("click", (event) => {
+      const option = event.target.closest("[data-estimate-lead-id]");
+      if (option) selectEstimateLead(option.dataset.estimateLeadId, target);
+    });
+  });
+  document.addEventListener("click", (event) => {
+    estimateLeadSearches.forEach(({ target, input, results }) => {
+      if (!input || !results || input.contains(event.target) || results.contains(event.target)) return;
+      hideEstimateLeadResults(target);
+    });
   });
   els.newEstimateJob?.addEventListener("change", (event) => {
     state.newEstimateJobId = event.target.value;
@@ -16831,7 +16918,7 @@ function bindEvents() {
   });
   els.newEstimateButton.addEventListener("click", async () => {
     if (!requireAction("manageEstimates")) return;
-    const estimate = await createEstimate(els.newEstimateContact?.value, true, els.newEstimateJob?.value);
+    const estimate = await createEstimate(state.newEstimateContactId || els.newEstimateContact?.value, true, els.newEstimateJob?.value);
     if (estimate) {
       els.estimateCreatePanel?.classList.add("hidden");
       els.toggleEstimateCreateButton?.setAttribute("aria-expanded", "false");
