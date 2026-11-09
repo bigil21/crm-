@@ -755,9 +755,10 @@
     mentionSuggestionQuery = "";
     state.leadDetailTab = "conversation";
     render();
-    if (posted.syncState === "saved") {
+    if (posted.syncState !== "failed") {
       const textarea = document.querySelector("#jobConversationMessage");
-      // Only clear what was posted; keep anything typed while it was saving.
+      // Clear a confirmed cloud or local-device save. Only failed cloud saves
+      // keep the draft in place for a retry, and never erase newer typing.
       if (textarea && textarea.value.trim() === message) textarea.value = "";
     }
     const mentionCount = posted.mentions.length;

@@ -422,6 +422,52 @@ test('reserved estimate number ignores every client-side edit', () => {
   assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /id="estimateNumber"[^>]*readonly/);
 });
 
+test('null legacy job placeholders cannot crash CRM normalization', () => {
+  const c = functions('app.js', ['normalizeJob'], {
+    number: value => Number(value || 0),
+    normalizeManualPayment: value => value,
+    normalizeCostItem: value => value,
+    normalizeJobEmail: value => value,
+    normalizePersonName: value => value || '',
+    normalizeSalesStage: () => 'New',
+    soldJobStatuses: ['Won', 'Paid'],
+    todayISO: () => '2026-11-09',
+    uid: prefix => `${prefix}-generated`,
+  });
+  const job = c.normalizeJob(null, { id: 'lead', name: 'QA Lead', status: 'New' });
+  assert.equal(job.id, 'job-generated');
+  assert.equal(job.name, 'QA Lead Job');
+  assert.equal(job.status, 'New');
+});
+
+test('successful local conversation posts clear the submitted draft', () => {
+  const source = fs.readFileSync(path.join(root, 'project-conversations-v67.js'), 'utf8');
+  assert.match(source, /if \(posted\.syncState !== "failed"\)/);
+  assert.match(source, /textarea\.value\.trim\(\) === message\) textarea\.value = ""/);
+});
+
+test('a stale local tab cannot overwrite a newer CRM snapshot', () => {
+  const values = new Map([
+    ['crm:write-metadata', JSON.stringify({ revision: 2, writerId: 'newer-tab' })],
+    ['crm', JSON.stringify({ marker: 'newer work' })],
+  ]);
+  const localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const c = functions('app.js', ['localStateMetadataKey', 'readLocalStateMetadata', 'writeStateToLocalStorage'], {
+    localStorage,
+    state: { marker: 'stale work' },
+    activeStorageKey: () => 'crm',
+    localStateBaseRevision: 1,
+    localStateWriterId: 'stale-tab',
+    localStateWriteBlocked: false,
+  });
+  assert.equal(c.writeStateToLocalStorage(), false);
+  assert.equal(JSON.parse(values.get('crm')).marker, 'newer work');
+  assert.equal(c.localStateWriteBlocked, true);
+});
+
 test('Zoho merge preserves jobs, documents, ownership, workflow and financial values', () => {
   const existing = {
     id: 'lead', name: 'Original', status: 'Won', type: 'Customer', salesRep: 'Alex', value: 35250.75,

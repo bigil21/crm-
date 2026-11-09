@@ -758,6 +758,9 @@ let durableUnmappedRows = [];
 const recentCloudWrites = new Map();
 let localStateSaveTimer = null;
 let localEditRevision = 0;
+const localStateWriterId = globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random()}`;
+let localStateBaseRevision = 0;
+let localStateWriteBlocked = false;
 let lastCloudSnapshot = "";
 let cloudSubscription = null;
 let applyingCloudState = false;
@@ -1163,6 +1166,21 @@ function activeStorageKey() {
   return authSession?.user?.id ? `${STORAGE_KEY}:${authSession.user.id}` : STORAGE_KEY;
 }
 
+function localStateMetadataKey(storageKey = activeStorageKey()) {
+  return `${storageKey}:write-metadata`;
+}
+
+function readLocalStateMetadata(storageKey = activeStorageKey()) {
+  try {
+    const metadata = JSON.parse(localStorage.getItem(localStateMetadataKey(storageKey)) || "null");
+    return metadata && Number.isFinite(Number(metadata.revision))
+      ? { revision: Number(metadata.revision), writerId: String(metadata.writerId || "") }
+      : { revision: 0, writerId: "" };
+  } catch {
+    return { revision: 0, writerId: "" };
+  }
+}
+
 function activeUiStorageKey() {
   return authSession?.user?.id ? `${UI_STORAGE_KEY}:${authSession.user.id}` : UI_STORAGE_KEY;
 }
@@ -1221,6 +1239,7 @@ function saveUiState() {
 
 function loadState(storageKey = activeStorageKey(), cachedState = null) {
   try {
+    if (!canUseCloudSync()) localStateBaseRevision = readLocalStateMetadata(storageKey).revision;
     if (cachedState && typeof cachedState === "object" && !Array.isArray(cachedState)) {
       return normalizeState({
         ...(authSession?.user?.id ? createEmptyState() : createInitialState()),
@@ -1724,6 +1743,11 @@ function normalizeContact(contact, categories = defaultDocumentCategories) {
 }
 
 function normalizeJob(job, contact = {}) {
+  // Relational and legacy payloads can contain a null placeholder in the jobs
+  // array. Treat it like an empty job instead of letting one malformed row
+  // abort the entire CRM render during startup.
+  job = job && typeof job === "object" ? job : {};
+  contact = contact && typeof contact === "object" ? contact : {};
   const status = job.status || contact.status || "New";
   const manualPayments = (job.manualPayments || []).map(normalizeManualPayment);
   const manualPaidAmount = manualPayments.reduce((sum, payment) => sum + number(payment.amount), 0);
@@ -2240,9 +2264,23 @@ function writeStateToLocalStorage() {
     return true;
   }
   try {
+    if (localStateWriteBlocked) return false;
+    const storageKey = activeStorageKey();
+    const metadata = readLocalStateMetadata(storageKey);
+    if (metadata.revision > localStateBaseRevision && metadata.writerId !== localStateWriterId) {
+      localStateWriteBlocked = true;
+      return false;
+    }
     const serializedState = JSON.stringify(state);
     checkpointPendingDraft(serializedState);
-    localStorage.setItem(activeStorageKey(), serializedState);
+    localStorage.setItem(storageKey, serializedState);
+    localStateBaseRevision = Math.max(metadata.revision, localStateBaseRevision) + 1;
+    localStorage.setItem(localStateMetadataKey(storageKey), JSON.stringify({
+      revision: localStateBaseRevision,
+      writerId: localStateWriterId,
+      writtenAt: new Date().toISOString(),
+    }));
+    localStateWriteBlocked = false;
     return true;
   } catch {
     console.warn("Local recovery cache is unavailable. Cloud saving will still be attempted; keep this tab open until saving completes.");
@@ -2253,7 +2291,7 @@ function writeStateToLocalStorage() {
 function flushQueuedLocalStateSave() {
   window.clearTimeout(localStateSaveTimer);
   localStateSaveTimer = null;
-  writeStateToLocalStorage();
+  return writeStateToLocalStorage();
 }
 
 function queueLocalStateSave(delay = 200) {
@@ -3800,7 +3838,7 @@ function durableRecordDataMatches(left, right) {
 }
 
 async function persistDurableRecordNow(recordType, recordId, verify, { syncLegacy = true } = {}) {
-  if (!canUseCloudSync()) return true;
+  if (!canUseCloudSync()) return flushQueuedLocalStateSave();
   if (!durableRecordsReady || !cloudClient || !authSession?.user?.id) return false;
 
   window.clearTimeout(durableSaveTimer);
@@ -14900,6 +14938,10 @@ function setEstimateSaveState(estimateId, message, tone = "") {
 }
 
 async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevisions.get(estimateId) || 0) {
+  if (localStateWriteBlocked) {
+    setEstimateSaveState(estimateId, "Not saved. Another CRM tab saved newer work; reload this tab before editing again.", "error");
+    return false;
+  }
   if (durableWriteBlocked) {
     setEstimateSaveState(estimateId, "Not saved. Shared saving is paused; review the recovery notice.", "error");
     return false;
@@ -15693,8 +15735,13 @@ async function saveCurrentEstimateAndPdf() {
   if (!estimate || estimateExplicitSaves.has(estimate.id)) return false;
   if (restoreEstimateSalesNumbersFromBaseline(estimate)) queueLocalStateSave(0);
   const snapshot = JSON.parse(JSON.stringify(estimate));
+  if (flushQueuedLocalStateSave() === false) {
+    window.clearTimeout(estimateSaveTimers.get(estimate.id));
+    estimateSaveTimers.delete(estimate.id);
+    setEstimateSaveState(estimate.id, "Not saved. Another CRM tab saved newer work; reload this tab before editing again.", "error");
+    return false;
+  }
   estimateExplicitSaves.add(estimate.id);
-  flushQueuedLocalStateSave();
   const revision = (estimateSaveRevisions.get(estimate.id) || 0) + 1;
   estimateSaveRevisions.set(estimate.id, revision);
   estimateCompletedSaveRevisions.delete(estimate.id);

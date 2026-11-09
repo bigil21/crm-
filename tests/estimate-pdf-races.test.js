@@ -17,7 +17,8 @@ function load(names, globals = {}) {
   const state = { estimates: [estimate('A'), estimate('B')], selectedEstimateId: 'A', view: 'estimates', company: {} };
   const statuses = [];
   const context = vm.createContext({ console, state, statuses, estimateExplicitSaves: new Set(),
-    estimateSaveRevisions: new Map(), estimateCompletedSaveRevisions: new Map(), estimateSaveStates: new Map(), flushQueuedLocalStateSave() {},
+    localStateWriteBlocked: false,
+    estimateSaveRevisions: new Map(), estimateCompletedSaveRevisions: new Map(), estimateSaveStates: new Map(), flushQueuedLocalStateSave() { return true; },
     els: { saveEstimateButton: { disabled: false } }, canAction: () => true,
     getSelectedEstimate: () => state.estimates.find(item => item.id === state.selectedEstimateId),
     getContact: id => ({ id, name: id }),
