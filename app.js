@@ -3017,6 +3017,10 @@ function getDurableCommitWriter() {
     rpc: (name, payload) => cloudClient.rpc(name, payload),
     requestId: () => crypto.randomUUID(),
     transientRetries: 1,
+    // Two people saving the same record: merge instead of pausing this tab.
+    baseFor: (row) => durableFinancialBaseline.get(durableRecordKey(row)),
+    fetchCurrent: (changes) => fetchCurrentDurableRows(changes),
+    onMerged: (entries) => applyMergedDurableRows(entries),
     onAcknowledged: (changes, auditIds) => {
       changes.forEach(row => {
         if (row.data) durableFinancialBaseline.set(durableRecordKey(row), row.data);
@@ -3031,6 +3035,39 @@ function getDurableCommitWriter() {
     onBlocked: preserveBlockedDurableWrite,
   });
   return durableCommitWriter;
+}
+
+async function fetchCurrentDurableRows(changes = []) {
+  const ids = [...new Set(changes.map((change) => String(change.id)))];
+  if (!ids.length) return [];
+  const { data, error } = await cloudClient.from(SUPABASE_RECORDS_TABLE).select("*")
+    .eq("company_state_id", supabaseStateId()).in("id", ids);
+  if (error || !Array.isArray(data)) throw error || new Error("Current records could not be loaded.");
+  const wanted = new Set(changes.map(durableRecordKey));
+  return data.filter((row) => wanted.has(durableRecordKey(row)));
+}
+
+function sameDurableData(left, right) {
+  const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function applyMergedDurableRows(entries = []) {
+  const conflicted = [];
+  entries.forEach(({ row, localData, conflicts }) => {
+    if (!row) return;
+    // Show the teammate's merged-in fields, unless this editor has typed more
+    // since; that newer edit saves next and merges again.
+    const projected = durableProjectedRow(row.record_type, row.id);
+    if (projected && sameDurableData(projected.data, localData)) applyDurableRealtimeRecord(row, "UPDATE");
+    if (conflicts?.length) conflicted.push(...conflicts);
+  });
+  if (!entries.length) return;
+  const fields = [...new Set(conflicted.map((path) => String(path).split(".").pop()))].slice(0, 3);
+  showToast(fields.length
+    ? `A teammate edited this record at the same time. Both sets of changes were saved; your value was kept for ${fields.join(", ")}.`
+    : "A teammate edited this record at the same time. Both sets of changes were saved.");
 }
 
 // Rule violations raised by crm_commit_records. The database rolled the whole
