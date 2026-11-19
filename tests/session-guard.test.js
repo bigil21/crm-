@@ -63,3 +63,44 @@ test('shared requests are blocked after cross-tab logout, while sign-in remains 
   assert.equal(invalidated, 1);
   assert.equal(context.window.RooflineAuth.isEditorSessionCurrent(user), false);
 });
+
+function loadAuthForTabTest({ sessionStorage, localStorage }) {
+  let clientOptions;
+  const context = vm.createContext({ URL, console, fetch: async () => ({ ok: true }),
+    CustomEvent: class { constructor(type) { this.type = type; } },
+    document: { readyState: 'loading', referrer: '', addEventListener() {} },
+    location: { pathname: '/', origin: 'https://synthetic.example' },
+    window: {
+      localStorage, sessionStorage, setTimeout,
+      ROOFLINE_SUPABASE_CONFIG: { supabaseUrl: 'https://synthref.supabase.co', supabaseAnonKey: 'not-a-key', authRequired: true },
+      CrmSessionGuard: { create }, dispatchEvent() {},
+      supabase: { createClient: (_url, _key, options) => { clientOptions = options; return { auth: { onAuthStateChange() {} } }; } },
+    },
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../auth.js'), 'utf8'), context);
+  context.window.RooflineAuth.createClient();
+  return clientOptions;
+}
+
+test('each tab uses its own auth storage key so another tab signing in or out cannot log it out', () => {
+  const memory = () => { const data = new Map(); return { get length() { return data.size; }, key: i => [...data.keys()][i] || null,
+    getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, String(value)), removeItem: key => data.delete(key) }; };
+  const tabA = loadAuthForTabTest({ sessionStorage: memory(), localStorage: memory() });
+  const tabB = loadAuthForTabTest({ sessionStorage: memory(), localStorage: memory() });
+  // supabase-js shares BroadcastChannel auth events and locks by storageKey.
+  assert.match(tabA.auth.storageKey, /^sb-jobcrest-auth-/);
+  assert.match(tabB.auth.storageKey, /^sb-jobcrest-auth-/);
+  assert.notEqual(tabA.auth.storageKey, tabB.auth.storageKey);
+});
+
+test('a tab signed in before the per-tab key keeps its session after the update', () => {
+  const memory = () => { const data = new Map(); return { get length() { return data.size; }, key: i => [...data.keys()][i] || null,
+    getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, String(value)), removeItem: key => data.delete(key) }; };
+  const sessionStorage = memory();
+  sessionStorage.setItem('jobcrest.auth.tab-id', 'tab-fixture-0001');
+  sessionStorage.setItem('sb-synthref-auth-token', 'existing-session');
+  const options = loadAuthForTabTest({ sessionStorage, localStorage: memory() });
+  assert.equal(options.auth.storageKey, 'sb-jobcrest-auth-tab-fixture-0001');
+  assert.equal(sessionStorage.getItem('sb-jobcrest-auth-tab-fixture-0001'), 'existing-session');
+  assert.equal(sessionStorage.getItem('sb-synthref-auth-token'), null);
+});

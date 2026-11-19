@@ -146,6 +146,7 @@
     return;
   }
 
+  await window.RooflineAuth.ready?.();
   const client = window.RooflineAuth.createClient();
   if (forceAccountSwitch) {
     setStatus("Clearing the prior CRM session. Sign in with the account you want to use.");

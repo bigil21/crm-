@@ -24,8 +24,103 @@
   const config = { ...fallbackConfig, ...cleanRuntimeConfig };
   const CRM_STORAGE_KEY = "roofline-crm-v1";
   const AUTH_STORAGE_KEY_PATTERN = /^(?:sb-|.*supabase\.auth(?:\.token)?)/;
+  const TAB_ID_STORAGE_KEY = "jobcrest.auth.tab-id";
+  const TAB_LOCK_PREFIX = "jobcrest-auth-tab:";
   let editorSessionGuard = null;
   let authStoragePrepared = false;
+  let tabId = "";
+
+  // Each browser tab owns its own Supabase session under a tab-specific
+  // storage key. supabase-js broadcasts SIGNED_IN / SIGNED_OUT /
+  // TOKEN_REFRESHED to every tab that shares a storage key (BroadcastChannel)
+  // and serializes auth work through a lock of the same name. With one shared
+  // key, signing in as another user in tab B logged tab A out. A per-tab key
+  // keeps accounts in different tabs fully independent.
+  function newTabId() {
+    try { if (window.crypto?.randomUUID) return window.crypto.randomUUID(); } catch { /* fall through */ }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function currentTabId() {
+    if (tabId) return tabId;
+    const storage = browserSessionStorage();
+    let stored = "";
+    try { stored = storage?.getItem(TAB_ID_STORAGE_KEY) || ""; } catch { /* Storage may be blocked. */ }
+    tabId = /^[A-Za-z0-9-]{8,64}$/.test(stored) ? stored : newTabId();
+    try { if (stored !== tabId) storage?.setItem(TAB_ID_STORAGE_KEY, tabId); } catch { /* Memory-only tab id. */ }
+    return tabId;
+  }
+
+  function authStorageKey() {
+    return `sb-jobcrest-auth-${currentTabId()}`;
+  }
+
+  function legacyAuthStorageKey() {
+    try {
+      return `sb-${new URL(config.supabaseUrl).hostname.split(".")[0]}-auth-token`;
+    } catch {
+      return "";
+    }
+  }
+
+  function migrateLegacyTabSession() {
+    // Keep tabs that signed in before this release signed in.
+    const storage = browserSessionStorage();
+    const legacyKey = legacyAuthStorageKey();
+    if (!storage || !legacyKey) return;
+    try {
+      const legacy = storage.getItem(legacyKey);
+      if (legacy && !storage.getItem(authStorageKey())) storage.setItem(authStorageKey(), legacy);
+      if (legacy) storage.removeItem(legacyKey);
+    } catch {
+      // A blocked storage area behaves like a signed-out tab.
+    }
+  }
+
+  function tryHoldTabLock(id) {
+    const locks = window.navigator?.locks;
+    if (!locks?.request) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      try {
+        locks.request(`${TAB_LOCK_PREFIX}${id}`, { ifAvailable: true }, (lock) => {
+          if (!lock) {
+            resolve(false);
+            return undefined;
+          }
+          resolve(true);
+          // Held for the lifetime of this page; released when the tab closes or navigates.
+          return new Promise(() => {});
+        }).catch(() => resolve(true));
+      } catch {
+        resolve(true);
+      }
+    });
+  }
+
+  // "Duplicate tab" (and some new-tab opens) copy sessionStorage, so two live
+  // tabs could start with the same tab id and the same single-use refresh
+  // token. The first tab to refresh would then revoke the other's session.
+  // A live tab holds a Web Lock named after its id; a copy that finds the lock
+  // taken starts a fresh, signed-out tab identity instead of sharing the token.
+  async function claimTabIdentity() {
+    const id = currentTabId();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      // A same-tab reload may briefly overlap the previous page's lock.
+      if (await tryHoldTabLock(id)) return id;
+      await new Promise((resolve) => window.setTimeout(resolve, 75));
+    }
+    removeAuthKeys(browserSessionStorage());
+    tabId = newTabId();
+    try { browserSessionStorage()?.setItem(TAB_ID_STORAGE_KEY, tabId); } catch { /* Memory-only tab id. */ }
+    await tryHoldTabLock(tabId);
+    return tabId;
+  }
+
+  let readyPromise = null;
+  function ready() {
+    if (!readyPromise) readyPromise = claimTabIdentity().catch(() => currentTabId());
+    return readyPromise;
+  }
 
   function removeAuthKeys(storage) {
     if (!storage) return;
@@ -138,10 +233,12 @@
     if (!hasConfig() || !window.supabase?.createClient) return null;
     prepareAuthStorage();
     if (!window.__rooflineSupabase) {
+      migrateLegacyTabSession();
       window.__rooflineSupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
         auth: {
           persistSession: true,
           storage: browserSessionStorage(),
+          storageKey: authStorageKey(),
           autoRefreshToken: true,
           detectSessionInUrl: true,
         },
@@ -160,6 +257,7 @@
   }
 
   async function getTrustedUser() {
+    await ready();
     const client = createClient();
     if (!client) return { error: new Error("Supabase is not configured") };
 
@@ -452,6 +550,8 @@
   }
 
   window.RooflineAuth = {
+    ready,
+    authStorageKey,
     bindEditorSession,
     isEditorSessionCurrent,
     config,
@@ -469,6 +569,9 @@
     roleForUser,
     validRoles,
   };
+
+  // Claim this tab's identity immediately so its lock is held from page load.
+  ready();
 
   // Search results are rendered from the current authoritative in-memory CRM
   // state by app.js. Never inspect stale local recovery snapshots for results.
