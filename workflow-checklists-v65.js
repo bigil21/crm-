@@ -427,7 +427,7 @@
     }
 
     if (typeof durableWriteBlocked !== "undefined" && durableWriteBlocked) {
-      checklistSaveStates.set(saveKey, { message: "Not saved. Shared saving is paused; review the recovery notice.", tone: "error" });
+      checklistSaveStates.set(saveKey, { message: "Not saved. Saving is paused in this tab; reload the page to sync, then try again.", tone: "error" });
       refreshChecklistSaveStatus(saveKey);
       return false;
     }

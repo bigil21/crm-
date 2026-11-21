@@ -3117,6 +3117,33 @@ function handleRejectedDurableWrite({ error }) {
   }, 0);
 }
 
+let durableRecoveryStored = false;
+let savePausedReloadRequested = false;
+
+// Saving stops in this tab until it reloads, so say so where it cannot be
+// missed. A brief toast was the only signal before, and people kept working
+// (uploading documents, editing estimates) without anything being saved.
+function showSavePausedNotice() {
+  if (document.getElementById("crmSavePausedNotice")) return;
+  const notice = document.createElement("aside");
+  notice.id = "crmSavePausedNotice";
+  notice.setAttribute("role", "alert");
+  notice.style.cssText = "position:fixed;top:12px;left:16px;right:16px;z-index:100004;background:#fdecea;color:#5b1111;padding:14px 16px;border:2px solid #b42318;border-radius:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:0 8px 24px rgba(0,0,0,.18)";
+  const message = document.createElement("span");
+  message.style.cssText = "flex:1 1 320px;font-weight:600";
+  message.textContent = "Saving is paused in this tab. Your last change could not be confirmed, so nothing else will save until you reload. A recovery copy was kept on this device.";
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.textContent = "Reload and sync";
+  reload.style.cssText = "background:#b42318;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer";
+  reload.addEventListener("click", () => {
+    savePausedReloadRequested = true;
+    window.location.reload();
+  });
+  notice.append(message, reload);
+  document.body.appendChild(notice);
+}
+
 function preserveBlockedDurableWrite({ error, payload }) {
   durableWriteBlocked = true;
   window.clearTimeout(durableSaveTimer);
@@ -3124,10 +3151,11 @@ function preserveBlockedDurableWrite({ error, payload }) {
   const recoveryKey = `jobcrest-unsaved-recovery:${authSession?.user?.id || "local"}:${payload.p_request_id}`;
   const recovery = { createdAt: new Date().toISOString(), request: payload, state };
   if (typeof recoveryCache !== "undefined" && recoveryCache) {
-    recoveryCache.put(recoveryKey, recovery).catch(() => showDraftStorageWarning());
+    recoveryCache.put(recoveryKey, recovery).then(() => { durableRecoveryStored = true; }).catch(() => showDraftStorageWarning());
   } else {
-    try { localStorage.setItem(recoveryKey, JSON.stringify(recovery)); } catch { /* Keep the in-memory download available. */ }
+    try { localStorage.setItem(recoveryKey, JSON.stringify(recovery)); durableRecoveryStored = true; } catch { /* Keep the in-memory download available. */ }
   }
+  showSavePausedNotice();
   const rejection = durableRejectionReason(error);
   showToast(error?.code === "40001"
     ? "A newer shared version exists. Reload the page before editing this record again."
@@ -3137,7 +3165,7 @@ function preserveBlockedDurableWrite({ error, payload }) {
 }
 
 async function commitDurableChanges(rows, auditRows = [], removals = []) {
-  if (durableWriteBlocked) return { data: null, error: new Error("Shared saving is paused. Review the recovery notice.") };
+  if (durableWriteBlocked) return { data: null, error: new Error("Saving is paused in this tab. Reload the page to sync, then try again.") };
   checkpointPendingDraft();
   const result = await getDurableCommitWriter().commit(rows, auditRows, removals);
   // Callers may still hold the in-flight flag; defer cleanup until their
@@ -4135,6 +4163,8 @@ async function initializeDurableRecords() {
   // Legacy import must be an explicit, separately reviewed maintenance operation.
   durableRecordsReady = true;
   durableBusinessStateAuthoritative = true;
+  // Replace any "Loading documents…" placeholders with the loaded lists.
+  renderDurableUpdateWhenIdle();
   if (hasPendingDurableChanges()) queueDurableRecordsSave();
   void createDailyRecoveryBackup();
   if (!cloudClient.channel || durableRecordsSubscription) return;
@@ -6000,12 +6030,23 @@ function applyPermissionsToDom() {
     [els.deleteEstimateButton, "manageEstimates"],
     [els.saveEstimateButton, "manageEstimates"],
     [els.sendEstimateButton, "manageEstimates"],
-    [els.deleteContactButton, "manageContacts"],
-    [els.estimateFromContactButton, "manageEstimates"],
   ].forEach(([element, permission]) => {
     if (!element) return;
     element.classList.toggle("hidden", !canAction(permission));
     element.disabled = !canAction(permission);
+  });
+  // The lead dialog's Delete and Estimate only apply to a saved lead. This
+  // pass runs on every render (including realtime updates while someone is
+  // typing a new lead), and used to reveal Delete in the spot where Save sat.
+  const editingSavedContact = Boolean(els.contactForm?.elements?.id?.value && getContact(els.contactForm.elements.id.value));
+  [
+    [els.deleteContactButton, "manageContacts"],
+    [els.estimateFromContactButton, "manageEstimates"],
+  ].forEach(([element, permission]) => {
+    if (!element) return;
+    const allowed = canAction(permission) && editingSavedContact;
+    element.classList.toggle("hidden", !allowed);
+    element.disabled = !allowed;
   });
 
   const estimateWritable = canAction("manageEstimates");
@@ -9625,7 +9666,11 @@ function renderLeadDocuments(contact) {
                         .join("") + (documents.length > visibleDocuments.length
                           ? `<button class="secondary-button" type="button" data-action="show-more-lead-documents" data-display-key="${escapeHtml(displayKey)}">Show ${Math.min(DOCUMENT_PAGE_SIZE, documents.length - visibleDocuments.length)} more documents</button>`
                           : "")
-                    : '<div class="document-folder-empty">No documents in this category</div>'
+                    : !durableRecordsReady && canUseCloudSync()
+                      // The shared copy is still loading; "No documents" here made
+                      // people think files were lost and upload them again.
+                      ? '<div class="document-folder-empty">Loading documents…</div>'
+                      : '<div class="document-folder-empty">No documents in this category</div>'
                 }
               </div>
             </section>`;
@@ -14743,8 +14788,8 @@ function reorderDocumentCategory(sourceId, targetId) {
 function openContactDialog(contactId, defaults = {}) {
   const contact = contactId ? getContact(contactId) : null;
   els.contactDialogTitle.textContent = contact ? "Edit Contact" : `Add ${defaults.type || "Lead"}`;
-  els.deleteContactButton.classList.toggle("hidden", !contact);
-  els.estimateFromContactButton.classList.toggle("hidden", !contact);
+  els.deleteContactButton.classList.toggle("hidden", !contact || !canAction("manageContacts"));
+  els.estimateFromContactButton.classList.toggle("hidden", !contact || !canAction("manageEstimates"));
 
   const data = {
     id: "",
@@ -15042,7 +15087,7 @@ async function flushEstimateVerifiedSave(estimateId, revision = estimateSaveRevi
     return false;
   }
   if (durableWriteBlocked) {
-    setEstimateSaveState(estimateId, "Not saved. Shared saving is paused; review the recovery notice.", "error");
+    setEstimateSaveState(estimateId, "Not saved. Saving is paused in this tab; reload the page to sync, then save again.", "error");
     return false;
   }
   if (!estimateId || !state.estimates.some((estimate) => estimate.id === estimateId)) return false;
@@ -17052,6 +17097,9 @@ function bindEvents() {
   window.addEventListener("pagehide", flushQueuedLocalStateSave);
   window.addEventListener("beforeunload", (event) => {
     flushQueuedLocalStateSave();
+    // The banner's reload is the way out of a paused tab, and the unconfirmed
+    // change is already in the recovery copy, so do not stand in its way.
+    if (savePausedReloadRequested || (durableWriteBlocked && durableRecoveryStored && !durableSaveInFlight && !cloudSaveInFlight)) return;
     if (window.RooflineAuth.isEditorSessionCurrent() && (state.companyFormDraft || (canUseCloudSync() && durableRecordsReady && (durableWriteBlocked || durableSaveInFlight || cloudSaveInFlight || hasPendingDurableChanges() || hasPendingCompanyChanges())))) {
       event.preventDefault();
       event.returnValue = "";

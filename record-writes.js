@@ -66,16 +66,30 @@
     baseFor = null,
     fetchCurrent = null,
     onMerged = () => {},
-    conflictRetries = 2,
+    // Busy shared records (company settings, a lead several people are
+    // working) can lose the race more than twice in a row. Each retry is a
+    // fresh merge onto the latest saved copy, so retrying is always safe.
+    conflictRetries = 6,
+    conflictDelayMs = (attempt) => Math.round((40 + Math.random() * 120) * attempt),
   }) {
     const versions = new Map();
+    // The last saved data this writer saw for each record (loaded, realtime or
+    // its own acknowledged save). It is the merge base of last resort when
+    // the app has no baseline for a record, so a conflict merges instead of
+    // pausing every save in the tab.
+    const snapshots = new Map();
     const ownCommits = new Map();
     let tail = Promise.resolve();
     let blocked = null;
     return {
       remember(rows) {
         // Only snapshots actually applied to the UI may advance the baseline.
-        for (const row of rows) if (Number.isSafeInteger(row.version) && row.version > 0) versions.set(key(row), row.version);
+        for (const row of rows) {
+          if (!Number.isSafeInteger(row.version) || row.version <= 0) continue;
+          versions.set(key(row), row.version);
+          if (row.deleted_at) snapshots.delete(key(row));
+          else if (isPlainObject(row.data)) snapshots.set(key(row), clone(row.data));
+        }
       },
       getVersion(row) { return versions.get(key(row)) || 0; },
       get blocked() { return blocked; },
@@ -91,6 +105,7 @@
         const bases = new Map(changes.map(row => {
           let base;
           try { base = typeof baseFor === 'function' ? baseFor(row) : undefined; } catch { base = undefined; }
+          if (base === undefined || base === null) base = snapshots.get(key(row));
           return [key(row), base === undefined || base === null ? undefined : clone(base)];
         }));
         const rebase = async (sent) => {
@@ -114,8 +129,11 @@
               continue;
             }
             const base = bases.get(key(change));
-            if (now.deleted_at || base === undefined || !Number.isSafeInteger(now.version) || !isPlainObject(now.data)) return null;
+            if (now.deleted_at || !Number.isSafeInteger(now.version) || !isPlainObject(now.data)) return null;
             const conflicts = [];
+            // Without any base, lists with ids still combine item by item and
+            // only values both sides hold differently are reported as conflicts
+            // (the editor saving now wins them, as with any conflict).
             const data = mergeRecordData(base, change.data, now.data, [], conflicts);
             rebased.push({ ...change, data, expected_version: now.version });
             // A further conflict merges against the copy this merge was built on.
@@ -165,6 +183,10 @@
                 // Someone else saved one of these records first. The database
                 // rolled this request back, so merge onto their copy and retry.
                 if (!isConflict(error) || conflictAttempt >= conflictRetries) throw error;
+                if (conflictAttempt > 0) {
+                  const wait = Math.max(0, Number(conflictDelayMs(conflictAttempt)) || 0);
+                  if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+                }
                 const rebased = await rebase(payload.p_changes);
                 if (!rebased) throw error;
                 payload.p_changes = rebased.changes;
@@ -189,6 +211,8 @@
             for (const row of returned) {
               versions.set(key(row), row.version);
               ownCommits.set(key(row), (ownCommits.get(key(row)) || 0) + 1);
+              if (row.deleted_at) snapshots.delete(key(row));
+              else if (isPlainObject(row.data)) snapshots.set(key(row), clone(row.data));
             }
             onAcknowledged(clone(sentChanges), response.data.audit_ids || []);
             if (merges.size) {

@@ -4186,6 +4186,21 @@ button:disabled {
   gap: 7px;
 }
 
+/* The save status sits on its own row with room reserved for two lines, so a
+   message appearing after "Save Estimate" never moves the buttons (it used to
+   slide Delete under the pointer). */
+.estimate-action-bar {
+  flex-wrap: wrap;
+}
+
+.estimate-action-bar > .save-state-message {
+  flex: 1 0 100%;
+  order: 3;
+  min-height: 34px;
+  margin: 0;
+  line-height: 17px;
+}
+
 .form-grid {
   display: grid;
   gap: 12px;

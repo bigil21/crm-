@@ -7,7 +7,7 @@
     <title>JobCrest CRM</title>
     <link rel="manifest" href="manifest.webmanifest?v=24" />
     <link rel="icon" href="icon.svg?v=23" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=86" />
+    <link rel="stylesheet" href="styles.css?v=87" />
     <script>
       try {
         if (sessionStorage.getItem("jobcrest.crm.sign-in-unlock") === "pending") {
@@ -1186,7 +1186,6 @@
                       <span aria-hidden="true" data-icon="trash"></span>
                       Delete
                     </button>
-                    <p class="save-state-message" id="estimateSaveStatus" role="status" aria-live="polite"></p>
                   </div>
                   <div>
                     <button class="secondary-button" type="submit" id="saveEstimateButton">
@@ -1206,6 +1205,7 @@
                       Send Estimate
                     </button>
                   </div>
+                  <p class="save-state-message" id="estimateSaveStatus" role="status" aria-live="polite"></p>
                 </div>
               </form>
             </section>
@@ -2049,7 +2049,7 @@
     <script src="vendor/tus.min.js?v=1" defer></script>
     <script src="session-guard.js?v=1" defer></script>
     <script src="auth.js?v=86" defer></script>
-    <script src="record-writes.js?v=4" defer></script>
+    <script src="record-writes.js?v=5" defer></script>
     <script src="company-settings-writes.js?v=1" defer></script>
     <script src="sales-numbering.js?v=1" defer></script>
     <script src="payment-refresh.js?v=1" defer></script>
@@ -2057,10 +2057,10 @@
     <script src="recovery-cache.js?v=1" defer></script>
     <script src="record-pages.js?v=2" defer></script>
     <script src="dashboard-data.js?v=2" defer></script>
-    <script src="app.js?v=176" defer></script>
+    <script src="app.js?v=177" defer></script>
     <script src="team-onboarding.js?v=3" defer></script>
     <script src="production-flow-v64.js?v=70" defer></script>
-    <script src="workflow-checklists-v65.js?v=95" defer></script>
+    <script src="workflow-checklists-v65.js?v=96" defer></script>
     <script src="project-conversations-v67.js?v=81" defer></script>
   </body>
 </html>
