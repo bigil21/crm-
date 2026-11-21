@@ -2314,7 +2314,15 @@ const handleRequest = (req, res) => {
       });
       res.end(req.method === "HEAD" ? undefined : content);
     } else {
-      send(res, 200, req.method === "HEAD" ? undefined : content, mimeType);
+      // Pages reference scripts and styles with a version (?v=N) that is
+      // bumped on every change, so a versioned file never changes and can be
+      // kept by the browser. Before, every page load downloaded ~1.3 MB of
+      // JavaScript and CSS again. Unversioned files are re-checked each time.
+      res.writeHead(200, {
+        "Content-Type": mimeType,
+        "Cache-Control": url.searchParams.has("v") ? "public, max-age=31536000, immutable" : "no-cache",
+      });
+      res.end(req.method === "HEAD" ? undefined : content);
     }
   });
 };

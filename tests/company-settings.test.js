@@ -185,3 +185,34 @@ test('settings writer refuses a baseline without the migration version', () => {
   assert.throws(() => writer.remember({ id: 'coastal-crest:company' }), /versioned database/);
   assert.throws(() => writer.remember({ id: 'other-company:company', version: 1 }), /versioned database/);
 });
+
+test('a second admin\'s settings save merges with a newer save instead of pausing the tab', async () => {
+  await as();
+  const rpc = async (name, p) => {
+    try { return { data: await commit(p.p_expected_version, p.p_data, p.p_request_id), error: null }; }
+    catch (error) { return { error }; }
+  };
+  const fetchCurrent = async () => {
+    await db.exec('reset role');
+    const row = await settings();
+    await as(currentRole);
+    return row;
+  };
+  let currentRole = 'admin';
+  const baseline = await settings();
+  const threads = baseline.data.company.threads || [];
+  const merges = []; let blocked = null;
+  const options = { companyId: 'coastal-crest', rpc, fetchCurrent, requestId: () => `merge-settings-${++sequence}` };
+  const gil = create({ ...options, onMerged: e => merges.push(...e), onBlocked: v => { blocked = v; } });
+  const devon = create(options);
+  gil.remember(baseline); devon.remember(baseline);
+  await devon.commit({ company: { ...baseline.data.company, threads: [...threads, { id: 'devon-post' }] } });
+  currentRole = 'second'; await as('second');
+  const result = await gil.commit({ company: { ...baseline.data.company, threads: [...threads, { id: 'gil-post' }] } });
+  assert.equal(result.error, null);
+  assert.equal(blocked, null);
+  assert.equal(merges.length, 1);
+  await db.exec('reset role');
+  const ids = (await settings()).data.company.threads.map(t => t.id);
+  assert.ok(ids.includes('devon-post') && ids.includes('gil-post'), 'both admins\' posts are kept');
+});

@@ -3,10 +3,20 @@
   'use strict';
   const recordWrites = typeof module !== 'undefined' && module.exports
     ? require('./record-writes.js') : root.CrmRecordWrites;
-  function create({ companyId, rpc, requestId, onBlocked, timeoutMs }) {
+  function create({ companyId, rpc, requestId, onBlocked, timeoutMs, fetchCurrent, onMerged }) {
     const id = `${companyId}:company`;
     const writer = recordWrites.create({
       requestId, timeoutMs,
+      // Company settings also hold shared lists (job conversations, document
+      // categories, team directory) that several admins change. On a version
+      // conflict merge onto the saved copy instead of pausing every save in
+      // the tab. fetchCurrent() returns the saved settings row, or null.
+      fetchCurrent: typeof fetchCurrent === 'function' ? async () => {
+        const row = await fetchCurrent();
+        if (!row) return [];
+        return [{ company_state_id: companyId, record_type: 'company', id, version: row.version, data: row.data, deleted_at: null }];
+      } : null,
+      onMerged,
       rpc: (_name, payload) => rpc('crm_commit_company_settings', {
         p_request_id: payload.p_request_id,
         p_expected_version: payload.p_changes[0].expected_version,

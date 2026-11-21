@@ -2694,9 +2694,40 @@ function getCompanySettingsWriter() {
   if (!companySettingsWriter) companySettingsWriter = window.CrmCompanySettingsWrites.create({
     companyId: supabaseStateId(), requestId: () => crypto.randomUUID(),
     rpc: (name, payload) => cloudClient.rpc(name, payload),
+    fetchCurrent: async () => {
+      const { data, error } = await cloudClient.from(SUPABASE_CRM_TABLE).select("id,version,data")
+        .eq("id", `${supabaseStateId()}:company`).maybeSingle();
+      if (error) throw error;
+      return data && Number.isSafeInteger(data.version) ? data : null;
+    },
+    onMerged: (entries) => applyMergedCompanySettings(entries),
     onBlocked: preserveBlockedDurableWrite,
   });
   return companySettingsWriter;
+}
+
+// After a settings save was merged with a teammate's newer save, bring their
+// additions into this tab without dropping anything typed here since the save
+// started (three-way: what we sent, what we have now, what was saved).
+function applyMergedCompanySettings(entries = []) {
+  const entry = entries.find((item) => item?.row?.data?.company);
+  if (!entry) return;
+  const sent = entry.localData?.company || {};
+  const saved = entry.row.data.company;
+  const merged = window.CrmRecordWrites.mergeRecordData(sent, state.company, saved, [], []);
+  applyingCloudState = true;
+  try {
+    applySharedState({
+      company: merged,
+      contacts: state.contacts,
+      estimates: state.estimates,
+      calendarTasks: state.calendarTasks,
+      companyDocuments: state.companyDocuments,
+    });
+  } finally {
+    applyingCloudState = false;
+  }
+  renderDurableUpdateWhenIdle();
 }
 
 async function flushCloudSave() {
@@ -17425,17 +17456,23 @@ async function startApp() {
     showStartupDataError();
     return;
   }
-  await initializeRecordPages();
-  await initializeFinancialLedger();
-  await initializeProjectDelivery();
-  await initializeJobOperations();
-  await initializeLeadOrganization();
-  await initializeCommunications();
-  await initializeDocumentOperations();
-  await initializeReportsAndGoals();
-  await initializeAdministration();
+  // These loads each fill their own part of the CRM and do not depend on one
+  // another. Running them one after another made startup wait for ~10
+  // database round trips in a row; together they take about as long as the
+  // slowest one.
+  const [, , , , , , , , , numbering] = await Promise.all([
+    initializeRecordPages(),
+    initializeFinancialLedger(),
+    initializeProjectDelivery(),
+    initializeJobOperations(),
+    initializeLeadOrganization(),
+    initializeCommunications(),
+    initializeDocumentOperations(),
+    initializeReportsAndGoals(),
+    initializeAdministration(),
+    canUseCloudSync() ? ensureExistingSharedSalesNumbers() : null,
+  ]);
   if (canUseCloudSync()) {
-    const numbering = await ensureExistingSharedSalesNumbers();
     if (numbering.failures.length) showToast("The CRM is ready, but some historical estimate numbers need administrator attention.");
   } else if (ensureExistingSalesNumbers()) saveState();
   void migrateInlineDocumentsToStorage();
