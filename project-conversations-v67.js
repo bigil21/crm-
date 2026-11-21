@@ -177,21 +177,17 @@
   }
 
   function ensureTeamDirectory() {
-    const next = collectTeamDirectory();
-    const current = (state.company?.teamDirectory || []).map(normalizeMember);
-    if (JSON.stringify(current) === JSON.stringify(next)) return false;
-    state.company = {
-      ...state.company,
-      teamDirectory: next,
-    };
-    saveState();
-    return true;
+    // The directory is derived from the signed-in identity, configured admins,
+    // known record owners, and the last shared directory. Persisting that
+    // derived value from render() made two admin sessions continually replace
+    // one another's identity normalization and save a new company-settings
+    // version every few seconds. Keep rendering side-effect free instead.
+    return collectTeamDirectory();
   }
 
   function teamDirectory() {
     const current = currentIdentity();
-    return (state.company?.teamDirectory || [])
-      .map(normalizeMember)
+    return collectTeamDirectory()
       .filter((member) => member.key && member.key !== current.key)
       .sort((a, b) => a.name.localeCompare(b.name));
   }

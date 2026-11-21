@@ -446,6 +446,18 @@ test('successful local conversation posts clear the submitted draft', () => {
   assert.match(source, /textarea\.value\.trim\(\) === message\) textarea\.value = ""/);
 });
 
+test('conversation rendering derives the team directory without saving company settings', () => {
+  const source = fs.readFileSync(path.join(root, 'project-conversations-v67.js'), 'utf8');
+  const ensure = source.match(/function ensureTeamDirectory\(\) \{([^]*?)\n  \}/);
+  const directory = source.match(/function teamDirectory\(\) \{([^]*?)\n  \}/);
+  assert.ok(ensure, 'team-directory refresh exists');
+  assert.doesNotMatch(ensure[1], /saveState\s*\(/);
+  assert.doesNotMatch(ensure[1], /state\.company\s*=/);
+  assert.match(ensure[1], /return collectTeamDirectory\(\)/);
+  assert.ok(directory, 'mention directory exists');
+  assert.match(directory[1], /collectTeamDirectory\(\)/);
+});
+
 test('a stale local tab cannot overwrite a newer CRM snapshot', () => {
   const values = new Map([
     ['crm:write-metadata', JSON.stringify({ revision: 2, writerId: 'newer-tab' })],
@@ -644,6 +656,20 @@ test('local file uploads roll back their in-memory cards when offline storage is
     assert.match(match[0], /!canUseCloudSync\(\) && !localSaved/);
     assert.match(match[0], /state\.contacts = state\.contacts\.map/);
   }
+});
+
+test('unconfirmed shared uploads are removed from lead, photo, and company views', () => {
+  const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  for (const name of ['uploadLeadDocuments', 'uploadLeadPhotos']) {
+    const match = source.match(new RegExp(`async function ${name}\\([^]*?^}`, 'm'));
+    assert.ok(match, `${name} exists`);
+    assert.match(match[0], /if \(!saved\) \{[^]*?rollbackUnconfirmedLeadUploads\(/);
+    assert.doesNotMatch(match[0], /if \(!saved\) \{\s*queueDurableRecordsSave\(\)/);
+  }
+  const company = source.match(/async function uploadCompanyDocuments\([^]*?^}/m);
+  assert.ok(company, 'uploadCompanyDocuments exists');
+  assert.match(company[0], /if \(!saved\) \{[^]*?rollbackUnconfirmedCompanyUploads\(/);
+  assert.doesNotMatch(company[0], /if \(!saved\) \{\s*queueDurableRecordsSave\(\)/);
 });
 
 test('failed authoritative startup does not load business data from legacy snapshots', async () => {

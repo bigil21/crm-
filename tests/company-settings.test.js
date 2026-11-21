@@ -6,12 +6,13 @@ const { PGlite } = require('@electric-sql/pglite');
 const { create } = require('../company-settings-writes.js');
 const root = path.resolve(__dirname, '..');
 const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20260914_versioned_company_settings.sql'), 'utf8');
+const compactMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20261121224042_compact_company_settings_receipts.sql'), 'utf8');
 const db = new PGlite();
 const ids = { admin: '00000000-0000-4000-8000-000000000001', sales: '00000000-0000-4000-8000-000000000002', second: '00000000-0000-4000-8000-000000000003', outsider: '00000000-0000-4000-8000-000000000004' };
 let sequence = 0;
 before(async () => {
   await db.exec(`
-    create role anon; create role authenticated;
+    create role anon; create role authenticated; create role service_role;
     create schema auth; create schema storage;
     create table auth.users(id uuid primary key, email text, raw_app_meta_data jsonb default '{}'::jsonb);
     create function auth.jwt() returns jsonb language sql stable as
@@ -21,7 +22,7 @@ before(async () => {
     create table storage.objects(id uuid, bucket_id text, name text, owner_id text);
     create function storage.foldername(text) returns text[] language sql immutable as
       $$ select string_to_array(trim(both '/' from $1), '/') $$;
-    grant usage on schema public, auth, storage to authenticated, anon;
+    grant usage on schema public, auth, storage to authenticated, anon, service_role;
     insert into auth.users(id,email,raw_app_meta_data) values
       ('${ids.admin}','admin@coastalcrestroofing.com','{"role":"admin"}'),
       ('${ids.sales}','sales@coastalcrestroofing.com','{"role":"sales"}'),
@@ -36,6 +37,7 @@ before(async () => {
     await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations', name), 'utf8'));
   }
   await db.exec(migration);
+  await db.exec(compactMigration);
 });
 after(() => db.close());
 async function as(role = 'admin') {
@@ -58,6 +60,7 @@ test('settings migration preserves existing data and initializes a version witho
   assert.equal(original.data.companyDocuments[0].id, 'retained-legacy-metadata');
   await db.exec('reset role');
   await db.exec(migration);
+  await db.exec(compactMigration);
   assert.deepEqual(await settings(), original);
 });
 
@@ -72,8 +75,26 @@ test('admin saves compare versions, retain legacy metadata, and record the previ
   await rejectsCode(() => db.query('select * from public.crm_company_settings_receipts'), '42501');
   await db.exec('reset role');
   const receipt = (await db.query("select * from public.crm_company_settings_receipts where request_id='audited-settings'")).rows[0];
-  assert.deepEqual(receipt.previous_data, old.data);
+  assert.equal(receipt.previous_data, null);
+  assert.equal(receipt.saved_version, response.rows[0].version);
+  assert.deepEqual(receipt.response, { version: response.rows[0].version });
   assert.equal(receipt.actor_user_id, ids.admin);
+});
+
+test('settings receipt retention is service-only and keeps recent receipts', async () => {
+  await as();
+  const old = await settings();
+  await commit(old.version, payload('Old receipt'), 'old-settings-receipt');
+  await db.exec('reset role');
+  await db.exec("update public.crm_company_settings_receipts set created_at=now()-interval '31 days' where request_id='old-settings-receipt'");
+  await as();
+  await rejectsCode(() => db.query("select public.crm_prune_company_settings_receipts(now()-interval '30 days')"), '42501');
+  await db.exec('reset role; set role service_role');
+  const result = await db.query("select public.crm_prune_company_settings_receipts(now()-interval '30 days') as deleted");
+  assert.equal(Number(result.rows[0].deleted), 1);
+  await db.exec('reset role');
+  assert.equal((await db.query("select count(*)::int count from public.crm_company_settings_receipts where request_id='old-settings-receipt'")).rows[0].count, 0);
+  assert.ok((await db.query('select count(*)::int count from public.crm_company_settings_receipts')).rows[0].count > 0);
 });
 
 test('an outdated second admin cannot overwrite company settings', async () => {

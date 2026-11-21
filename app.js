@@ -10080,6 +10080,29 @@ function reportUploadFailures(failures, element) {
   return false;
 }
 
+function rollbackUnconfirmedLeadUploads(contactId, documentIds = [], updateId = "") {
+  const rejectedIds = new Set(documentIds.filter(Boolean));
+  if (!contactId || !rejectedIds.size) return;
+  updateContact(contactId, (current) => ({
+    ...current,
+    documents: (current.documents || []).filter((document) => !rejectedIds.has(document.id)),
+    updates: updateId
+      ? (current.updates || []).filter((update) => update.id !== updateId)
+      : current.updates || [],
+  }));
+  rejectedIds.forEach((id) => photoPreviewCache.delete(id));
+  saveState({ localOnly: true });
+  render();
+}
+
+function rollbackUnconfirmedCompanyUploads(documentIds = []) {
+  const rejectedIds = new Set(documentIds.filter(Boolean));
+  if (!rejectedIds.size) return;
+  state.companyDocuments = state.companyDocuments.filter((document) => !rejectedIds.has(document.id));
+  saveState({ localOnly: true });
+  renderCompanyDocuments();
+}
+
 async function archiveDocumentRecord(record) {
   if (!record || durableWriteBlocked) return false;
   if (!canUseCloudSync()) {
@@ -10367,14 +10390,17 @@ async function uploadLeadDocuments(files) {
       );
     }
     if (!saved) {
-      queueDurableRecordsSave();
-      queueCloudSave();
+      rollbackUnconfirmedLeadUploads(
+        contact.id,
+        documents.map((document) => document.id),
+        documentUpdateContact?.updates?.[0]?.id || "",
+      );
       setSaveState(
         els.leadDocumentUploadStatus,
-        "File stored, but its shared CRM record is still retrying. Keep this page open.",
+        "Upload could not be confirmed. The unconfirmed file was removed; select it again to retry.",
         "error",
       );
-      showToast("Document stored, but its CRM record was not confirmed. Keep this page open while it retries.");
+      showToast("Upload was not confirmed and was removed from the lead. Please retry.");
       return false;
     }
     queueCloudSave();
@@ -10474,14 +10500,17 @@ async function uploadLeadPhotos(files) {
       );
     }
     if (!saved) {
-      queueDurableRecordsSave();
-      queueCloudSave();
+      rollbackUnconfirmedLeadUploads(
+        contact.id,
+        photos.map((photo) => photo.id),
+        photoUpdateContact?.updates?.[0]?.id || "",
+      );
       setSaveState(
         els.leadPhotoUploadStatus,
-        "Photos uploaded, but their shared CRM records are still retrying. Keep this page open.",
+        "Upload could not be confirmed. The unconfirmed photos were removed; select them again to retry.",
         "error",
       );
-      showToast("Photos uploaded, but their CRM records were not confirmed yet.");
+      showToast("Photo upload was not confirmed and was removed from the job. Please retry.");
       return false;
     }
 
@@ -10765,14 +10794,13 @@ async function uploadCompanyDocuments(files) {
       saved = await persistCompanyDocumentRecords(documents.map((document) => document.id));
     }
     if (!saved) {
-      queueDurableRecordsSave();
-      queueCloudSave();
+      rollbackUnconfirmedCompanyUploads(documents.map((document) => document.id));
       setSaveState(
         els.companyDocumentUploadStatus,
-        "File stored, but its shared library record is still retrying. Keep this page open.",
+        "Upload could not be confirmed. The unconfirmed file was removed; select it again to retry.",
         "error",
       );
-      showToast("Company document stored, but its shared record was not confirmed. Keep this page open while it retries.");
+      showToast("Company document was not confirmed and was removed. Please retry.");
       return false;
     }
 
