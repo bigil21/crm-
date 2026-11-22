@@ -5405,6 +5405,24 @@ textarea:focus {
   font-size: 13px;
 }
 
+.partial-data-notice button {
+  margin-left: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--accent-strong);
+  font: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.partial-data-notice button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .projects-filter-bar {
   grid-column: 1 / -1;
   display: flex;

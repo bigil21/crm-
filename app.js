@@ -3965,21 +3965,49 @@ async function ensureCompleteCoreRecordsLoaded() {
   }).catch((error) => {
     applyingCloudState = false;
     console.warn("The complete CRM workspace could not be loaded", error);
-    if (!scheduleCompleteCoreRecordsRetry()) showToast("This workspace could not finish loading. Your current records were kept.");
+    scheduleCompleteCoreRecordsRetry();
     return false;
   }).finally(() => { completeCoreRecordsLoad = null; });
   return completeCoreRecordsLoad;
 }
 
+// A brief outage is covered by a few quick tries. After those the load used to
+// be given up for the rest of the session, which left totals missing (or, on
+// two screens, replaced by differently-computed ones) until the page was
+// reloaded. It is now retried for as long as the session lasts, at a slower
+// pace, and at once when the connection or the tab comes back.
+const COMPLETE_LOAD_QUICK_ATTEMPTS = 8;
 function scheduleCompleteCoreRecordsRetry() {
   if (completeCoreRecordsLoaded || completeCoreRecordsRetryTimer) return true;
-  if (completeCoreRecordsAttempts >= 8) return false;
   completeCoreRecordsAttempts += 1;
+  const stalled = completeCoreRecordsAttempts >= COMPLETE_LOAD_QUICK_ATTEMPTS;
+  if (completeCoreRecordsAttempts === COMPLETE_LOAD_QUICK_ATTEMPTS) {
+    // Say so once, and let the open screen switch its notice to "not loaded yet".
+    showToast("The full list of leads and jobs has not loaded yet. Totals stay hidden until it does. The CRM keeps trying.");
+    renderDurableUpdateWhenIdle();
+  }
   completeCoreRecordsRetryTimer = window.setTimeout(() => {
     completeCoreRecordsRetryTimer = null;
     void ensureCompleteCoreRecordsLoaded();
-  }, Math.min(2000 * completeCoreRecordsAttempts, 10000));
+  }, stalled ? 30000 : Math.min(2000 * completeCoreRecordsAttempts, 10000));
   return true;
+}
+
+// Try now instead of waiting for the next timed attempt.
+function retryCompleteCoreRecordsNow() {
+  if (!coreRecordsArePartial()) return Promise.resolve(true);
+  window.clearTimeout(completeCoreRecordsRetryTimer);
+  completeCoreRecordsRetryTimer = null;
+  return ensureCompleteCoreRecordsLoaded();
+}
+
+// Coming back online, or back to the tab, is when a stalled load is most likely
+// to work.
+function watchForCompleteLoadRetry() {
+  window.addEventListener("online", () => { void retryCompleteCoreRecordsNow(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && companyTotalsState() === "stalled") void retryCompleteCoreRecordsNow();
+  });
 }
 
 // True while only the first page of leads and jobs is in memory. A
@@ -3990,23 +4018,58 @@ function coreRecordsArePartial() {
   return canUseCloudSync() && !completeCoreRecordsLoaded;
 }
 
+// One answer for every screen that shows a company-wide figure:
+//   "ready"   every lead and job is in memory, so the figures can be shown;
+//   "loading" the rest is still being fetched;
+//   "stalled" several tries have failed; it is still being retried, more slowly.
+// The Dashboard, Billing and Reports all go by this, so at any moment they
+// either all show the same figures or all show none.
+function companyTotalsState() {
+  if (!coreRecordsArePartial()) return "ready";
+  return completeCoreRecordsAttempts >= COMPLETE_LOAD_QUICK_ATTEMPTS ? "stalled" : "loading";
+}
+
+// The words shown in place of a figure that is not available yet.
+function companyTotalsCaption() {
+  return companyTotalsState() === "stalled" ? "Not loaded yet · still trying" : "Loading all records";
+}
+
 function viewNeedsCompleteCoreRecords(view) {
   return ["contacts", "pipeline", "projects", "estimates", "reviews", "reports", "dashboard", "invoices", "calendar"].includes(view);
 }
 
-// Shown at the top of a screen whose totals are still loading.
+// Shown at the top of a screen whose totals are not available yet.
 function renderPartialDataNotice(view) {
   const host = els.views?.[view];
   if (!host?.querySelector) return;
   const existing = host.querySelector(":scope > .partial-data-notice");
-  const needed = coreRecordsArePartial() && viewNeedsCompleteCoreRecords(view);
+  const totals = companyTotalsState();
+  const needed = totals !== "ready" && viewNeedsCompleteCoreRecords(view);
   if (!needed) { existing?.remove(); return; }
-  if (existing) return;
-  const notice = document.createElement("div");
+  if (existing?.dataset.state === totals) return;
+  const notice = existing || document.createElement("div");
   notice.className = "partial-data-notice";
+  notice.dataset.state = totals;
   notice.setAttribute("role", "status");
-  notice.textContent = "Loading all records. Totals on this page appear once every lead and job has loaded.";
-  host.prepend(notice);
+  if (totals === "stalled") {
+    notice.textContent = "Not every lead and job has loaded yet, so totals on this page are hidden rather than shown short. The CRM keeps trying. ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Try again now";
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      retry.textContent = "Trying…";
+      void retryCompleteCoreRecordsNow().finally(() => {
+        // Loaded: the screen redraws and this notice goes. Not loaded: offer the button again.
+        notice.dataset.state = "";
+        renderPartialDataNotice(state.view);
+      });
+    });
+    notice.append(retry);
+  } else {
+    notice.textContent = "Loading all records. Totals on this page appear once every lead and job has loaded.";
+  }
+  if (!existing) host.prepend(notice);
 }
 
 async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = false, force = false } = {}) {
@@ -6094,13 +6157,17 @@ function estimateTotal(estimate) {
 // Where company-wide figures come from. One source per number:
 //   "local"   every lead and job is in memory, so totals are computed here and
 //             update the moment a record changes;
-//   "pending" only the first page has loaded: show nothing rather than a
-//             partial total;
-//   "server"  the complete set could not be loaded after several attempts, so
-//             the database's own totals are shown instead.
+//   "pending" not every lead and job has loaded: show nothing rather than a
+//             partial total.
+// There used to be a third answer: after several failed attempts the
+// Dashboard and Reports switched to totals worked out by the database. Those
+// are defined differently (its "collected" is only the money on jobs marked
+// Paid, not every confirmed payment) and Billing had no such fallback, so the
+// three screens could show different things under the same label. Now all
+// three ask the same question and either show the real figure or none, and
+// the load keeps being retried (see scheduleCompleteCoreRecordsRetry).
 function dashboardDataSource() {
-  if (!coreRecordsArePartial()) return "local";
-  return completeCoreRecordsAttempts >= 8 && dashboardAggregateTotals ? "server" : "pending";
+  return coreRecordsArePartial() ? "pending" : "local";
 }
 
 // One money ledger for the dashboard, Billing and Reports: job payments
@@ -6116,20 +6183,6 @@ function dashboardMetrics() {
   const source = dashboardDataSource();
   if (source === "pending") {
     return { source, pending: true, leads: 0, openLeads: 0, totalJobs: 0, estimatesSent: 0, openContracts: 0, openValue: 0, closedJobs: 0, closedValue: 0, pipelineValue: 0 };
-  }
-  if (source === "server") {
-    return {
-      source,
-      leads: number(dashboardAggregateTotals.leads),
-      openLeads: number(dashboardAggregateTotals.openLeads),
-      totalJobs: number(dashboardAggregateTotals.totalJobs),
-      estimatesSent: number(dashboardAggregateTotals.estimatesSent),
-      openContracts: number(dashboardAggregateTotals.openContracts),
-      openValue: number(dashboardAggregateTotals.openValue),
-      closedJobs: number(dashboardAggregateTotals.closedJobs),
-      closedValue: number(dashboardAggregateTotals.closedValue),
-      pipelineValue: number(dashboardAggregateTotals.pipelineValue),
-    };
   }
   const contacts = visibleContacts();
   const estimates = visibleEstimates();
@@ -6856,7 +6909,7 @@ function renderSummary() {
   // While the full record set is still loading there is no honest number to
   // show, so the cards say so instead of showing a partial total.
   const shown = (value) => (metrics.pending ? "…" : value);
-  const note = (caption) => (metrics.pending ? "Loading all records" : caption);
+  const note = (caption) => (metrics.pending ? companyTotalsCaption() : caption);
 
   const cards = [
     ["Total Leads", shown(metrics.leads), note(`${metrics.openLeads} with open jobs · all time`), "user", "blue"],
@@ -7203,7 +7256,7 @@ function renderDashboard() {
   }
 
   if (els.leaderboardTableBody && dashboardDataSource() === "pending") {
-    els.leaderboardTableBody.innerHTML = '<tr><td colspan="5"><div class="empty-state">Loading all records…</div></td></tr>';
+    els.leaderboardTableBody.innerHTML = `<tr><td colspan="5"><div class="empty-state">${escapeHtml(companyTotalsCaption())}…</div></td></tr>`;
   } else if (els.leaderboardTableBody) {
     els.leaderboardTableBody.innerHTML = rows.length
       ? rows
@@ -7250,32 +7303,27 @@ function renderPipelineOverview() {
   if (!els.pipelineOverview) return;
   const source = dashboardDataSource();
   if (source === "pending") {
-    els.pipelineOverview.innerHTML = '<div class="empty-state compact-empty">Loading all records…</div>';
+    els.pipelineOverview.innerHTML = `<div class="empty-state compact-empty">${escapeHtml(companyTotalsCaption())}…</div>`;
     return;
   }
   const jobs = allJobs();
-  const aggregateStages = source === "server" && window.JobCrestDashboardData
-    ? window.JobCrestDashboardData.stageGroups(dashboardAggregateTotals, statuses)
-    : null;
   // The same figure as the Pipeline Value card above: every job that is not Lost.
   const totalValue = dashboardMetrics().pipelineValue;
-  const stages = aggregateStages || statuses.map((status) => {
+  const stages = statuses.map((status) => {
     const stageJobs = jobs.filter((job) => job.status === status);
     const stageLeadIds = new Set(stageJobs.map((job) => job.contactId));
     return { status, count: stageLeadIds.size, value: stageJobs.reduce((sum, job) => sum + number(job.value), 0) };
   });
   // Stages used by Construction and Home Services jobs are not roofing stages;
   // show them as one group so the ribbon accounts for every job.
-  if (!aggregateStages) {
-    const otherJobs = jobs.filter((job) => !statuses.includes(job.status));
-    if (otherJobs.length) {
-      stages.splice(Math.max(stages.length - 1, 0), 0, {
-        status: "__other__",
-        label: "Other division stages",
-        count: new Set(otherJobs.map((job) => job.contactId)).size,
-        value: otherJobs.reduce((sum, job) => sum + number(job.value), 0),
-      });
-    }
+  const otherJobs = jobs.filter((job) => !statuses.includes(job.status));
+  if (otherJobs.length) {
+    stages.splice(Math.max(stages.length - 1, 0), 0, {
+      status: "__other__",
+      label: "Other division stages",
+      count: new Set(otherJobs.map((job) => job.contactId)).size,
+      value: otherJobs.reduce((sum, job) => sum + number(job.value), 0),
+    });
   }
 
   els.pipelineOverview.innerHTML = `
@@ -7303,12 +7351,10 @@ function renderRevenueOverview() {
   const now = new Date();
   const source = dashboardDataSource();
   if (source === "pending") {
-    els.revenueChart.innerHTML = '<div class="empty-state compact-empty">Loading all records…</div>';
+    els.revenueChart.innerHTML = `<div class="empty-state compact-empty">${escapeHtml(companyTotalsCaption())}…</div>`;
     return;
   }
-  const months = source === "server" && window.JobCrestDashboardData
-    ? window.JobCrestDashboardData.revenueMonths(dashboardAggregateTotals, now)
-    : Array.from({ length: 6 }, (_, i) => {
+  const months = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
     return {
       label: d.toLocaleString("en-US", { month: "short" }),
@@ -7374,23 +7420,22 @@ function renderDashboardDonuts() {
   const source = dashboardDataSource();
   if (source === "pending") {
     [els.leadSourcesChart, els.jobsByTypeChart, els.projectStatusChart].forEach((container) => {
-      if (container) container.innerHTML = '<div class="empty-state compact-empty">Loading all records…</div>';
+      if (container) container.innerHTML = `<div class="empty-state compact-empty">${escapeHtml(companyTotalsCaption())}…</div>`;
     });
     return;
   }
-  const aggregateData = source === "server" && window.JobCrestDashboardData;
-  const sources = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "leadSources") : topGroupsWithOther(aggregateCounts(leadContacts, (contact) => leadSourceLabel(contact.source)));
-  const jobsByType = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "jobTypes") : topGroupsWithOther(aggregateCounts(allJobs(), jobType));
+  const sources = topGroupsWithOther(aggregateCounts(leadContacts, (contact) => leadSourceLabel(contact.source)));
+  const jobsByType = topGroupsWithOther(aggregateCounts(allJobs(), jobType));
   // Sold and still being delivered: after the sale, before the job is closed.
   const productionJobs = allJobs().filter(jobIsInProduction);
-  const projectStatus = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "projectStatuses") : topGroupsWithOther(aggregateCounts(productionJobs, (job) => job.status));
+  const projectStatus = topGroupsWithOther(aggregateCounts(productionJobs, (job) => job.status));
   // The donut shows leads that still have an open job, so it is labelled that way.
-  renderDonutWidget(els.leadSourcesChart, sources, aggregateData ? number(dashboardAggregateTotals.openLeads) : leadContacts.length, "Open Leads");
+  renderDonutWidget(els.leadSourcesChart, sources, leadContacts.length, "Open Leads");
   renderDonutWidget(els.jobsByTypeChart, jobsByType, dashboardMetrics().totalJobs, "Total Jobs");
   renderDonutWidget(
     els.projectStatusChart,
     projectStatus,
-    aggregateData ? projectStatus.reduce((sum, item) => sum + item.count, 0) : productionJobs.length,
+    productionJobs.length,
     "Jobs in Production",
   );
 }
@@ -15006,7 +15051,7 @@ function renderInvoicesView() {
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label">Overdue</span>
-        <span class="invoice-summary-value ${overdueInvoices.length ? "invoice-overdue-value" : ""}">${overdueInvoices.length}</span>
+        <span class="invoice-summary-value ${!pendingTotals && overdueInvoices.length ? "invoice-overdue-value" : ""}">${pendingTotals ? "…" : overdueInvoices.length}</span>
       </div>
       <div class="row-actions"><span class="invoice-poll-indicator" id="squarePollIndicator" title="Checking Square for payments every 30s">⟳ Live</span>${canManageManualPayments() ? '<button class="secondary-button" type="button" data-run-revenue-automation>Run billing automation</button>' : ""}</div>
     </div>
@@ -15018,18 +15063,23 @@ function renderInvoicesView() {
       ${internalInvoices.length ? `<div class="invoice-list-table">${internalInvoices.map((invoice) => {
         const contact = state.contacts.find((item) => item.id === invoice.contactId);
         const invoiceJob = contact && contactJobs(contact).find((item) => item.id === invoice.jobId);
+        // While records are still loading, an invoice whose job is not in
+        // memory yet has an unknown balance: the payments made on that job are
+        // not known. Say so instead of showing it as unpaid, and do not offer
+        // to take a payment against it.
+        const balancePending = pendingTotals && Boolean(invoice.jobId) && !invoiceJob && invoice.status !== "void";
         const outstanding = invoiceOutstanding(invoice);
         const jobPaymentsApplied = jobPaymentsAppliedToInvoice(invoice);
-        const aging = invoiceAging(invoice);
+        const aging = balancePending ? { key: "pending", label: invoice.status } : invoiceAging(invoice);
         const schedule = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id && item.active);
         const expenses = (state.financialExpenses || []).filter((item) => item.jobId === invoice.jobId).reduce((sum, item) => sum + number(item.amount), 0);
         const grossProfit = number(invoice.amountPaid) - expenses;
         return `<article class="invoice-list-row">
-          <div><strong>${escapeHtml(invoice.invoiceNumber)}</strong><small>${escapeHtml(contact?.name || "Unknown lead")}${invoiceJob ? ` · ${escapeHtml(invoiceJob.name)}` : ""} · ${escapeHtml(aging.label)}</small>${schedule ? `<small>Repeats ${escapeHtml(schedule.cadence)} · next ${escapeHtml(formatDate(schedule.nextIssueDate))}</small>` : ""}</div>
-          <span class="status-pill invoice-aging-${escapeHtml(aging.key)}">${escapeHtml(invoice.status === "void" ? "void" : outstanding <= 0 && number(invoice.totalAmount) > 0 && !["paid", "credited"].includes(invoice.status) ? "paid on job" : invoice.status)}</span>
-          <div class="invoice-row-amount"><strong>${money.format(invoice.totalAmount)}</strong><small>${money.format(outstanding)} outstanding${jobPaymentsApplied > 0 ? ` · ${money.format(jobPaymentsApplied)} covered by payments on the job` : ""} · ${money.format(grossProfit)} cash margin</small></div>
+          <div><strong>${escapeHtml(invoice.invoiceNumber)}</strong><small>${escapeHtml(contact?.name || (pendingTotals ? "Loading lead…" : "Unknown lead"))}${invoiceJob ? ` · ${escapeHtml(invoiceJob.name)}` : ""} · ${escapeHtml(aging.label)}</small>${schedule ? `<small>Repeats ${escapeHtml(schedule.cadence)} · next ${escapeHtml(formatDate(schedule.nextIssueDate))}</small>` : ""}</div>
+          <span class="status-pill invoice-aging-${escapeHtml(aging.key)}">${escapeHtml(invoice.status === "void" ? "void" : !balancePending && outstanding <= 0 && number(invoice.totalAmount) > 0 && !["paid", "credited"].includes(invoice.status) ? "paid on job" : invoice.status)}</span>
+          <div class="invoice-row-amount"><strong>${money.format(invoice.totalAmount)}</strong><small>${balancePending ? `Balance: ${escapeHtml(companyTotalsCaption().toLowerCase())}…` : `${money.format(outstanding)} outstanding${jobPaymentsApplied > 0 ? ` · ${money.format(jobPaymentsApplied)} covered by payments on the job` : ""} · ${money.format(grossProfit)} cash margin`}</small></div>
           <div class="row-actions invoice-row-actions">
-            ${outstanding > 0 && canManageManualPayments() ? `<button class="primary-button" type="button" data-record-invoice-payment="${escapeHtml(invoice.id)}">Payment</button><button class="secondary-button" type="button" data-apply-invoice-credit="${escapeHtml(invoice.id)}">Credit</button>` : ""}
+            ${outstanding > 0 && !balancePending && canManageManualPayments() ? `<button class="primary-button" type="button" data-record-invoice-payment="${escapeHtml(invoice.id)}">Payment</button><button class="secondary-button" type="button" data-apply-invoice-credit="${escapeHtml(invoice.id)}">Credit</button>` : ""}
             ${canManageManualPayments() && invoice.status !== "void" ? `<button class="secondary-button" type="button" data-schedule-invoice="${escapeHtml(invoice.id)}">${schedule ? "Edit recurring" : "Recurring"}</button>` : ""}
             ${canManageManualPayments() && invoice.status !== "void" && !(number(invoice.amountPaid) > 0) ? `<button class="secondary-button" type="button" data-void-invoice="${escapeHtml(invoice.id)}">Void</button>` : ""}
             <button class="secondary-button" type="button" data-action="open-job" data-contact-id="${escapeHtml(invoice.contactId)}" data-job-id="${escapeHtml(invoice.jobId || "")}">Open job</button>
@@ -15324,16 +15374,21 @@ function renderReportsView() {
   const billableHours=state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60;const activeGoals=(state.crmGoals||[]).filter((goal)=>goal.status==="active");
   // Company-wide figures wait for every record to load (see dashboardMetrics).
   const shown = (value) => (metrics.pending ? "…" : value);
+  // The tables below are totals too. Filled from a partly loaded set they
+  // showed figures that did not add up to the cards above them.
+  const tableRows = (columns, rows, emptyText) => (metrics.pending
+    ? `<tr><td colspan="${columns}"><div class="empty-state">${escapeHtml(companyTotalsCaption())}…</div></td></tr>`
+    : rows || `<tr><td colspan="${columns}">${emptyText}</td></tr>`);
   els.reportsContent.innerHTML = `
     <article class="report-card">
       <span class="eyebrow">Pipeline</span>
       <strong>${shown(money.format(metrics.pipelineValue))}</strong>
-      <span>${metrics.pending ? "Loading all records" : `${metrics.openContracts} open jobs · value of all jobs not lost`}</span>
+      <span>${metrics.pending ? companyTotalsCaption() : `${metrics.openContracts} open jobs · value of all jobs not lost`}</span>
     </article>
     <article class="report-card">
       <span class="eyebrow">Revenue Collected</span>
       <strong>${shown(money.format(metrics.closedValue))}</strong>
-      <span>${metrics.pending ? "Loading all records" : `All confirmed payments · ${metrics.closedJobs} jobs paid in full`}</span>
+      <span>${metrics.pending ? companyTotalsCaption() : `All confirmed payments · ${metrics.closedJobs} jobs paid in full`}</span>
     </article>
     <article class="report-card">
       <span class="eyebrow">Estimates Sent</span>
@@ -15352,31 +15407,27 @@ function renderReportsView() {
             </tr>
           </thead>
           <tbody>
-            ${
-              repRows.length
-                ? repRows
-                    .map(
-                      (rep) => `
-                        <tr>
-                          <td>${escapeHtml(rep.label)}</td>
-                          <td>${rep.count}</td>
-                          <td>${money.format(rep.value)}</td>
-                        </tr>
-                      `,
-                    )
-                    .join("")
-                : '<tr><td colspan="3"><div class="empty-state">No sold jobs yet</div></td></tr>'
-            }
+            ${tableRows(3, repRows
+              .map(
+                (rep) => `
+                  <tr>
+                    <td>${escapeHtml(rep.label)}</td>
+                    <td>${rep.count}</td>
+                    <td>${money.format(rep.value)}</td>
+                  </tr>
+                `,
+              )
+              .join(""), '<div class="empty-state">No sold jobs yet</div>')}
           </tbody>
         </table>
       </div>
     </article>
-    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${shown(money.format(grossProfit))}</strong><span>${metrics.pending ? "Loading all records" : `${money.format(collected)} collected · ${money.format(expenses)} expenses${refunds ? ` · ${money.format(refunds)} refunded` : ""}`}</span></article>
+    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${shown(money.format(grossProfit))}</strong><span>${metrics.pending ? companyTotalsCaption() : `${money.format(collected)} collected · ${money.format(expenses)} expenses${refunds ? ` · ${money.format(refunds)} refunded` : ""}`}</span></article>
     <article class="report-card"><span class="eyebrow">Billable time</span><strong>${billableHours.toFixed(1)} hours</strong><span>${state.jobTimeEntries.length} time entries</span></article>
     <article class="report-card"><span class="eyebrow">Goals</span><strong>${activeGoals.length}</strong><span>active sales and production goals</span></article>
-    <article class="report-card wide"><span class="eyebrow">Invoice aging</span><div class="report-metric-row"><span>Current <strong>${money.format(aging.current)}</strong></span><span>1–30 days <strong>${money.format(aging.days30)}</strong></span><span>31–60 days <strong>${money.format(aging.days60)}</strong></span><span>61+ days <strong>${money.format(aging.days90)}</strong></span></div></article>
-    <article class="report-card wide"><span class="eyebrow">Lead source conversion</span><div class="table-wrap"><table class="data-table"><thead><tr><th>Source</th><th>Leads</th><th>Won jobs</th></tr></thead><tbody>${sourceRows.map((row)=>`<tr><td>${escapeHtml(row.label)}</td><td>${row.count}</td><td>${row.value}</td></tr>`).join("")||'<tr><td colspan="3">No source data</td></tr>'}</tbody></table></div></article>
-    <article class="report-card wide"><span class="eyebrow">Payment methods</span><div class="table-wrap"><table class="data-table"><thead><tr><th>Method</th><th>Payments</th><th>Collected</th></tr></thead><tbody>${paymentMethodRows.map((row)=>`<tr><td>${escapeHtml(row.label)}</td><td>${row.count}</td><td>${money.format(row.value)}</td></tr>`).join("")||'<tr><td colspan="3">No payment data</td></tr>'}</tbody></table></div></article>
+    <article class="report-card wide"><span class="eyebrow">Invoice aging</span><div class="report-metric-row"><span>Current <strong>${shown(money.format(aging.current))}</strong></span><span>1–30 days <strong>${shown(money.format(aging.days30))}</strong></span><span>31–60 days <strong>${shown(money.format(aging.days60))}</strong></span><span>61+ days <strong>${shown(money.format(aging.days90))}</strong></span></div></article>
+    <article class="report-card wide"><span class="eyebrow">Lead source conversion</span><div class="table-wrap"><table class="data-table"><thead><tr><th>Source</th><th>Leads</th><th>Won jobs</th></tr></thead><tbody>${tableRows(3, sourceRows.map((row)=>`<tr><td>${escapeHtml(row.label)}</td><td>${row.count}</td><td>${row.value}</td></tr>`).join(""), "No source data")}</tbody></table></div></article>
+    <article class="report-card wide"><span class="eyebrow">Payment methods</span><div class="table-wrap"><table class="data-table"><thead><tr><th>Method</th><th>Payments</th><th>Collected</th></tr></thead><tbody>${tableRows(3, paymentMethodRows.map((row)=>`<tr><td>${escapeHtml(row.label)}</td><td>${row.count}</td><td>${money.format(row.value)}</td></tr>`).join(""), "No payment data")}</tbody></table></div></article>
   `;
 }
 
@@ -19207,6 +19258,7 @@ async function startApp() {
   // the rest right away, whichever screen the session opened on, so no screen
   // is left totalling a partial set of records.
   if (canUseCloudSync()) void ensureCompleteCoreRecordsLoaded();
+  if (canUseCloudSync()) watchForCompleteLoadRetry();
   // The menu is hidden until the grouped menu replaces it (see styles.css). If
   // that add-on never loads, show the built-in menu rather than none at all.
   window.setTimeout(() => {

@@ -1167,4 +1167,80 @@ test('#71 a refused automatic correction is remembered, and a late one gets its 
   assert.match(app.match(/^function handleRejectedDurableWrite\([^]*?^}/m)[0], /if \(hasPendingDurableChanges\(\)\) queueDurableRecordsSave\(\);/);
 });
 
+// ---- Dashboard, Billing and Reports always agree ----------------------------
+
+test('totals: there is no fallback figure, so the three screens can never show different things', () => {
+  const calls = [];
+  const globals = (loaded, attempts) => ({
+    canUseCloudSync: () => true, completeCoreRecordsLoaded: loaded, completeCoreRecordsAttempts: attempts,
+    // The database's own totals are present, and must not be used: its "collected"
+    // is only the money on jobs marked Paid.
+    dashboardAggregateTotals: { leads: 999, closedValue: 111, pipelineValue: 222 },
+    financialLedgerEntries: () => { calls.push('ledger'); return [{ kind: 'Payment', amount: 133640.97 }]; },
+    visibleContacts: () => [], visibleEstimates: () => [], allJobs: () => [], contactJobs: () => [], jobHasFullPayment: () => false,
+    number: (value) => Number(value) || 0,
+  });
+  const names = ['COMPLETE_LOAD_QUICK_ATTEMPTS', 'coreRecordsArePartial', 'companyTotalsState', 'companyTotalsCaption', 'dashboardDataSource', 'ledgerTotals', 'dashboardMetrics'];
+  // Still loading, and after the quick tries have all failed: nothing is shown, on any screen.
+  for (const [attempts, expectedState, caption] of [[0, 'loading', 'Loading all records'], [8, 'stalled', 'Not loaded yet · still trying'], [40, 'stalled', 'Not loaded yet · still trying']]) {
+    const context = functions(names, globals(false, attempts));
+    assert.equal(context.companyTotalsState(), expectedState);
+    assert.equal(context.companyTotalsCaption(), caption);
+    assert.equal(context.dashboardDataSource(), 'pending');
+    const metrics = context.dashboardMetrics();
+    assert.equal(metrics.pending, true, 'Dashboard and Reports show a placeholder');
+    assert.equal(metrics.closedValue, 0, 'the database total is never passed off as revenue collected');
+    assert.equal(context.coreRecordsArePartial(), true, 'Billing shows a placeholder by the same test');
+  }
+  assert.deepEqual(calls, [], 'no total is computed from a partial set');
+  // Everything loaded: one ledger, one figure.
+  const ready = functions(names, globals(true, 0));
+  assert.equal(ready.companyTotalsState(), 'ready');
+  assert.equal(ready.dashboardMetrics().closedValue, 133640.97);
+  assert.equal(ready.coreRecordsArePartial(), false);
+  // All three screens read the same ledger and the same "is it all loaded" answer.
+  assert.doesNotMatch(app, /source === "server"/);
+  assert.doesNotMatch(app.match(/^function dashboardDataSource\(\) \{[^]*?^}/m)[0], /dashboardAggregateTotals|"server"/);
+  const billing = app.match(/^function renderInvoicesView\(\) \{[^]*?^}/m)[0];
+  assert.match(billing, /const ledger = ledgerTotals\(ledgerEntries\);/);
+  assert.match(billing, /const pendingTotals = coreRecordsArePartial\(\);/);
+  const reports = app.match(/^function renderReportsView\(\) \{[^]*?^}/m)[0];
+  assert.match(reports, /const ledger = ledgerTotals\(ledgerEntries\);/);
+  assert.match(reports, /const shown = \(value\) => \(metrics\.pending \? "…" : value\);/);
+  // The tables on Reports are totals too: rep production, lead sources, payment methods, invoice aging.
+  assert.equal((reports.match(/\$\{tableRows\(3, /g) || []).length, 3);
+  assert.equal((reports.match(/shown\(money\.format\(aging\./g) || []).length, 4);
+  // Billing: an invoice whose job has not loaded has an unknown balance, so no figure and no Payment button.
+  assert.match(billing, /const balancePending = pendingTotals && Boolean\(invoice\.jobId\) && !invoiceJob && invoice\.status !== "void";/);
+  assert.match(billing, /outstanding > 0 && !balancePending && canManageManualPayments\(\)/);
+  assert.match(billing, /\$\{pendingTotals \? "…" : overdueInvoices\.length\}/);
+});
+
+test('totals: the full load is retried for as long as the session lasts, and says so once', () => {
+  const delays = [];
+  const toasts = [];
+  let redraws = 0;
+  const context = functions(['COMPLETE_LOAD_QUICK_ATTEMPTS', 'scheduleCompleteCoreRecordsRetry'], {
+    completeCoreRecordsLoaded: false, completeCoreRecordsRetryTimer: null, completeCoreRecordsAttempts: 0,
+    window: { setTimeout: (run, ms) => { delays.push(ms); return 1; } },
+    showToast: (text) => toasts.push(text), renderDurableUpdateWhenIdle: () => { redraws += 1; },
+    ensureCompleteCoreRecordsLoaded: async () => false,
+  });
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    assert.equal(context.scheduleCompleteCoreRecordsRetry(), true, 'it never gives up');
+    assert.equal(context.scheduleCompleteCoreRecordsRetry(), true);
+    context.completeCoreRecordsRetryTimer = null; // the timer fired and the attempt failed again
+  }
+  assert.deepEqual(delays, [2000, 4000, 6000, 8000, 10000, 10000, 10000, 30000, 30000, 30000, 30000, 30000], 'one timer per failed attempt, slower after the quick tries');
+  assert.equal(toasts.length, 1, 'the user is told once, not on every retry');
+  assert.match(toasts[0], /has not loaded yet/);
+  assert.equal(redraws, 1, 'the open screen switches its notice once');
+  // Nothing more to do once everything is loaded.
+  context.completeCoreRecordsLoaded = true;
+  context.scheduleCompleteCoreRecordsRetry();
+  assert.equal(delays.length, 12);
+  assert.match(app.slice(app.indexOf('async function startApp()')), /if \(canUseCloudSync\(\)\) watchForCompleteLoadRetry\(\);/);
+  assert.match(app.match(/^function renderPartialDataNotice\([^]*?^}/m)[0], /Try again now/);
+});
+
 module.exports = { functions, app, page, styles };
