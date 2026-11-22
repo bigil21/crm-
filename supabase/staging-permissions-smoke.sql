@@ -29,12 +29,12 @@ select public.crm_commit_records('smoke-next','[{"company_state_id":"coastal-cre
 insert into staging_checks select 'Retry does not duplicate the write',version=2 from public.crm_records where id='staging-job';
 do $$ declare rejected boolean:=false; begin
  begin perform public.crm_commit_records('smoke-stale','[{"company_state_id":"coastal-crest","record_type":"job","id":"staging-job","expected_version":1,"data":{"status":"New"}}]'::jsonb);
- exception when sqlstate '40001' then rejected:=true; end;
+ exception when sqlstate 'PT409' then rejected:=true; end;
  insert into staging_checks values('Stale record rejected',rejected);
 end $$;
 do $$ declare rejected boolean:=false; begin
  begin perform public.crm_commit_records('smoke-batch','[{"company_state_id":"coastal-crest","record_type":"contact","id":"batch-probe","expected_version":0,"data":{}},{"company_state_id":"coastal-crest","record_type":"job","id":"staging-job","expected_version":1,"data":{}}]'::jsonb);
- exception when sqlstate '40001' then rejected:=true; end;
+ exception when sqlstate 'PT409' then rejected:=true; end;
  insert into staging_checks select 'Conflicting batch rolls back completely', rejected and not exists(select 1 from public.crm_records where id='batch-probe') and not exists(select 1 from public.crm_audit_events where metadata->>'record_id'='batch-probe');
 end $$;
 do $$ declare rejected boolean:=false; begin

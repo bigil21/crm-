@@ -100,7 +100,7 @@ test('stale saves are rejected without erasing the newer record', async () => {
   await as();
   await commit([row('stale')]);
   await commit([row('stale', 1, { status: 'Estimate sent' })]);
-  await rejectsCode(() => commit([row('stale', 1, { status: 'New' })]), '40001');
+  await rejectsCode(() => commit([row('stale', 1, { status: 'New' })]), 'PT409');
   assert.equal((await get('stale')).data.status, 'Estimate sent');
   assert.equal((await get('stale')).version, 2);
 });
@@ -146,7 +146,7 @@ test('legacy manual and paid-date records remain editable by sales without backf
 test('a conflict rolls back every record and audit event in the batch', async () => {
   await as();
   await commit([row('batch-b')]);
-  await rejectsCode(() => commit([row('batch-a'), row('batch-b', 0)], [{ id: 'batch-event', company_state_id: 'coastal-crest', lead_id: 'fixture-lead' }]), '40001');
+  await rejectsCode(() => commit([row('batch-a'), row('batch-b', 0)], [{ id: 'batch-event', company_state_id: 'coastal-crest', lead_id: 'fixture-lead' }]), 'PT409');
   assert.equal(await get('batch-a'), undefined);
   assert.equal((await db.query("select id from public.crm_audit_events where id='batch-event' or metadata->>'record_id'='batch-a'")).rows.length, 0);
 });
@@ -163,8 +163,8 @@ test('archived records cannot be silently recreated by a stale client', async ()
   await commit([row('archived')]);
   await commit([row('archived', 1, {}, { operation: 'delete' })]);
   assert.ok((await get('archived')).deleted_at);
-  await rejectsCode(() => commit([row('archived', 0)]), '40001');
-  await rejectsCode(() => commit([row('archived', 2)]), '40001');
+  await rejectsCode(() => commit([row('archived', 0)]), 'PT409');
+  await rejectsCode(() => commit([row('archived', 2)]), 'PT409');
 });
 test('financial history cannot be deleted even by an admin', async () => {
   await as('admin');
@@ -220,7 +220,7 @@ test('browser writer against PostgreSQL: rapid saves, stale second client, and p
   assert.equal((await a).error, null);
   assert.equal((await b).error, null);
   await as();
-  assert.equal((await stale.commit([{ ...baseline, data: { status: 'Inspection' } }])).error.code, '40001');
+  assert.equal((await stale.commit([{ ...baseline, data: { status: 'Inspection' } }])).error.code, 'PT409');
   const saved = await get('browser-integration');
   assert.equal(saved.version, 3);
   assert.equal(saved.data.manualPayments[0].amount, 3525.75);
@@ -234,7 +234,7 @@ test('an audit ID collision cannot silently attach the wrong history', async () 
   await as();
   const event = { id: 'collision-test', company_state_id: 'coastal-crest', lead_id: 'fixture-lead', message: 'Original' };
   await commit([], [event]);
-  await rejectsCode(() => commit([row('event-collision')], [{ ...event, message: 'Replaced' }]), '40001');
+  await rejectsCode(() => commit([row('event-collision')], [{ ...event, message: 'Replaced' }]), 'PT409');
   assert.equal(await get('event-collision'), undefined);
 });
 

@@ -235,6 +235,12 @@
     if (!window.__rooflineSupabase) {
       migrateLegacyTabSession();
       window.__rooflineSupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
+        // JobCrest owns record-version conflict recovery. supabase-js 2.102+
+        // retries HTTP 409 responses by default, which delays that recovery and
+        // can repeat write RPCs that must instead be merged exactly once here.
+        db: {
+          retry: false,
+        },
         auth: {
           persistSession: true,
           storage: browserSessionStorage(),

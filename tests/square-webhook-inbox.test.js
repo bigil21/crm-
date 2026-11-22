@@ -205,7 +205,7 @@ test('exact duplicate event is acknowledged once without resetting processing st
 test('reusing an event ID with changed data is rejected and original payload is retained', async () => {
   const payload = event(); await as(); await enqueue(payload);
   const changed = JSON.parse(JSON.stringify(payload)); changed.data.object.invoice.status = 'PAID';
-  await assert.rejects(enqueue(changed), error => error.code === '40001' && /webhook_event_id_reused/.test(error.message));
+  await assert.rejects(enqueue(changed), error => error.code === 'PT409' && /webhook_event_id_reused/.test(error.message));
   assert.deepEqual((await stored(payload)).payload, payload);
 });
 

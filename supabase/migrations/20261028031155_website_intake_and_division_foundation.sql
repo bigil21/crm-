@@ -186,7 +186,7 @@ begin
       'Website request received',jsonb_build_object('division',v_division_id,'service',v_service_id,'urgency',p_request->>'urgency'));
   return jsonb_build_object('created',true,'lead_id',p_lead_id,'job_id',p_job_id,'status',initial_status);
 exception when unique_violation then
-  raise exception 'website_intake_conflict' using errcode='40001';
+  raise exception 'website_intake_conflict' using errcode='PT409';
 end;
 $$;
 revoke all on function public.crm_ingest_website_request(text,text,text,text,text,uuid,jsonb) from public,anon,authenticated;

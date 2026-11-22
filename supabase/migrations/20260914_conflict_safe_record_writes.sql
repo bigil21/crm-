@@ -83,7 +83,9 @@ begin
     exists_before := found;
     if (exists_before and (previous.version <> expected or previous.deleted_at is not null)) or
        (not exists_before and (expected <> 0 or removing)) then
-      raise exception 'record_conflict' using errcode = '40001',
+      -- PT409, never 40001: PostgREST retries a 40001 transaction forever, so a
+      -- conflict would loop inside the API layer and pin a pool connection.
+      raise exception 'record_conflict' using errcode = 'PT409',
         detail = jsonb_build_object('record_type',change->>'record_type','id',change->>'id',
           'expected_version',expected,'current_version',previous.version)::text;
     end if;
@@ -169,7 +171,7 @@ begin
         values(company,change->>'record_type',change->>'id',nullif(change->>'lead_id',''),
           nullif(change->>'job_id',''),actor,incoming,1,actor) returning * into saved;
       exception when unique_violation then
-        raise exception 'record_conflict' using errcode='40001';
+        raise exception 'record_conflict' using errcode='PT409';
       end;
     end if;
     insert into public.crm_audit_events(id,company_state_id,lead_id,job_id,event_type,actor_user_id,actor_name,message,metadata)
@@ -186,7 +188,7 @@ begin
     if exists (select 1 from public.crm_audit_events a where a.id = event->>'id' and
       (a.company_state_id is distinct from company or a.lead_id is distinct from event->>'lead_id' or
        a.job_id is distinct from nullif(event->>'job_id','') or a.message is distinct from coalesce(event->>'message',''))) then
-      raise exception 'audit_event_conflict' using errcode = '40001';
+      raise exception 'audit_event_conflict' using errcode = 'PT409';
     end if;
     insert into public.crm_audit_events(id,company_state_id,lead_id,job_id,event_type,actor_user_id,actor_name,message,status,created_at)
     values(event->>'id',company,event->>'lead_id',nullif(event->>'job_id',''),coalesce(event->>'event_type','note'),actor,

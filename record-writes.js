@@ -49,7 +49,10 @@
     return local === undefined ? server : local;
   }
 
-  const isConflict = (error) => String(error?.code || '') === '40001' ||
+  // The database raises conflicts as PT409 (HTTP 409). 40001 is still accepted
+  // for a database that has not had that migration yet.
+  const CONFLICT_CODES = new Set(['PT409', '40001']);
+  const isConflict = (error) => CONFLICT_CODES.has(String(error?.code || '')) ||
     /record_conflict/.test(`${error?.message || ''} ${error?.details || ''}`);
 
   function create({

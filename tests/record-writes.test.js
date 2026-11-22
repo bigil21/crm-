@@ -51,6 +51,25 @@ test('conflict preserves the exact request and pauses subsequent network writes'
   assert.equal(recovery.payload.p_changes[0].id, 'job-1');
   assert.ok(recovery.payload.p_request_id);
 });
+test('a PT409 conflict from the database is recognised without relying on its message', async () => {
+  // The database raises conflicts as PT409 so PostgREST answers 409 once
+  // instead of retrying forever. The settings writer's message is not
+  // "record_conflict", so the code alone has to be enough to merge.
+  const calls = [];
+  const w = writer({
+    fetchCurrent: async () => [row('job-1', 2, { status: 'Contacted' })],
+    rpc: async (_name, payload) => {
+      calls.push(structuredClone(payload));
+      return calls.length === 1 ? { data: null, error: { code: 'PT409', message: 'settings_conflict' } } : reply(payload);
+    },
+  });
+  w.remember([row()]);
+  const result = await w.commit([row('job-1', 1, { status: 'New', note: 'kept' })]);
+  assert.equal(result.error, null);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].p_changes[0].expected_version, 2);
+  assert.notEqual(calls[1].p_request_id, calls[0].p_request_id);
+});
 test('confirmed business-rule rejection does not block later valid saves', async () => {
   let calls = 0; let rejected;
   const validationError = { message: 'invalid_stage_transition' };

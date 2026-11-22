@@ -97,7 +97,7 @@ begin
     or e.data->>'id' is distinct from e.id or e.data->>'contactId' is distinct from c.id or e.data->>'jobId' is distinct from j.id
     or c.data->>'id' is distinct from c.id or j.data->>'id' is distinct from j.id then
     raise exception 'invalid_invoice_relationship' using errcode='23514'; end if;
-  if e.version<>p_expected_version then raise exception 'estimate_changed_before_invoice' using errcode='40001'; end if;
+  if e.version<>p_expected_version then raise exception 'estimate_changed_before_invoice' using errcode='PT409'; end if;
   if e.data->>'status' is distinct from 'Won' then raise exception 'won_estimate_required' using errcode='23514'; end if;
   if coalesce(e.data->>'squareInvoiceId','')<>'' then raise exception 'invoice_already_linked' using errcode='23514'; end if;
   if not exists(select 1 from public.crm_square_invoice_policy p where p.company_state_id=p_company and p.environment=p_environment
@@ -144,7 +144,7 @@ begin
     or coalesce(p_receipt->>'id','')='' or octet_length(p_receipt::text)>200000 then
     raise exception 'invalid_invoice_receipt' using errcode='22023'; end if;
   if intent.receipts ? p_stage then
-    if intent.receipts->p_stage is distinct from p_receipt then raise exception 'invoice_receipt_conflict' using errcode='40001'; end if;
+    if intent.receipts->p_stage is distinct from p_receipt then raise exception 'invoice_receipt_conflict' using errcode='PT409'; end if;
     return public.crm_square_intent_json(intent);
   end if;
   predecessor:=case p_stage when 'location' then 'customer' when 'order' then 'location' when 'invoice' then 'order' when 'published' then 'invoice' end;
@@ -175,7 +175,7 @@ begin
   select * into e from public.crm_records where company_state_id=p_company and record_type='estimate' and id=intent.estimate_id for update;
   if not found or e.deleted_at is not null or e.lead_id is distinct from intent.lead_id or e.job_id is distinct from intent.job_id
     or coalesce(e.data->>'squareInvoiceId','') not in ('',published->>'id') then
-    raise exception 'invoice_target_changed' using errcode='40001'; end if;
+    raise exception 'invoice_target_changed' using errcode='PT409'; end if;
   fields:=jsonb_build_object('squareInvoiceId',published->>'id','squareOrderId',intent.receipts->'order'->>'id',
     'squareInvoiceNumber',coalesce(published->>'invoice_number',''),'squareInvoiceUrl',coalesce(published->>'public_url',''),
     'squareDeliveryMethod','EMAIL','squarePublishedAt',coalesce(published->>'updated_at',intent.updated_at::text),

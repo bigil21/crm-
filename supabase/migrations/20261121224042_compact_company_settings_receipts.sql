@@ -74,7 +74,9 @@ begin
   exists_before := found;
   if (exists_before and previous.version <> p_expected_version)
     or (not exists_before and p_expected_version <> 0) then
-    raise exception 'settings_conflict' using errcode = '40001';
+    -- PT409, never 40001 (PostgREST retries 40001 forever). The detail keeps
+    -- older clients, which match on "record_conflict", merging as designed.
+    raise exception 'settings_conflict' using errcode = 'PT409', detail = 'record_conflict: company settings changed since they were loaded';
   end if;
   if exists_before then
     update public.crm_state set data=previous.data || p_data,

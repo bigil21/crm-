@@ -34,7 +34,7 @@ begin
   select * into prior from public.crm_square_webhook_events where company_state_id=p_company and environment=p_environment
     and merchant_id=p_event->>'merchant_id' and event_id=p_event->>'event_id';
   if found then
-    if prior.payload is distinct from p_event then raise exception 'webhook_event_id_reused' using errcode='40001'; end if;
+    if prior.payload is distinct from p_event then raise exception 'webhook_event_id_reused' using errcode='PT409'; end if;
     return jsonb_build_object('durable',true,'duplicate',true,'eventId',prior.event_id);
   end if;
   insert into public.crm_square_webhook_events(company_state_id,environment,merchant_id,event_id,invoice_id,event_type,event_created_at,payload)

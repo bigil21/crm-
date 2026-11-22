@@ -102,7 +102,7 @@ test('an outdated second admin cannot overwrite company settings', async () => {
   const stale = await settings();
   await commit(stale.version, payload('Newer admin edit'));
   await as('second');
-  await rejectsCode(() => commit(stale.version, payload('Stale edit')), '40001');
+  await rejectsCode(() => commit(stale.version, payload('Stale edit')), 'PT409');
   assert.equal((await settings()).data.company.name, 'Newer admin edit');
 });
 
@@ -147,7 +147,7 @@ test('missing settings are created at version one, and stale creation conflicts'
     await db.exec("delete from public.crm_state where id='coastal-crest:company'");
     await as();
     assert.equal((await commit(0, payload('New'))).rows[0].version, 1);
-    await rejectsCode(() => commit(0, payload('Stale creation')), '40001');
+    await rejectsCode(() => commit(0, payload('Stale creation')), 'PT409');
   } finally { await db.exec('rollback; reset role'); }
 });
 
@@ -170,7 +170,7 @@ test('settings browser writer preserves rapid edits and refuses a stale second e
   assert.equal((await a).data.rows[0].data.company.name, 'First typed');
   assert.equal((await b).error, null);
   await as('second');
-  assert.equal((await second.commit(payload('Stale edit'))).error.code, '40001');
+  assert.equal((await second.commit(payload('Stale edit'))).error.code, 'PT409');
   assert.equal(blocked.payload.rpc, 'crm_commit_company_settings');
   assert.equal(blocked.payload.p_changes[0].data.company.name, 'Stale edit');
   assert.equal((await settings()).data.company.name, 'Second typed');

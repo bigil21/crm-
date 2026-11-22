@@ -70,12 +70,12 @@ begin
   if coalesce(p_code,'') !~ '^[a-z][a-z0-9_]{0,79}$' then raise exception 'payment_failure_code_invalid' using errcode='22023'; end if;
   select * into item from public.crm_square_webhook_events where company_state_id=p_company and environment=p_environment
     and merchant_id=p_merchant and event_id=p_event_id for update;
-  if not found or item.lease_id is distinct from p_lease_id or p_lease_id is null then raise exception 'payment_lease_lost' using errcode='40001'; end if;
+  if not found or item.lease_id is distinct from p_lease_id or p_lease_id is null then raise exception 'payment_lease_lost' using errcode='PT409'; end if;
   next_status:=case when coalesce(p_retryable,false) and item.attempts<10 then 'pending' else 'review' end;
   if item.status=next_status and item.last_error=p_code then
     return jsonb_build_object('durable',true,'eventId',p_event_id,'status',item.status);
   end if;
-  if item.status<>'processing' or item.lease_until is null or item.lease_until<=clock_timestamp() then raise exception 'payment_lease_lost' using errcode='40001'; end if;
+  if item.status<>'processing' or item.lease_until is null or item.lease_until<=clock_timestamp() then raise exception 'payment_lease_lost' using errcode='PT409'; end if;
   delay_seconds:=least(900,(30*power(2,greatest(0,item.attempts-1)))::integer);
   update public.crm_square_webhook_events set status=next_status,last_error=p_code,
     lease_until=case when next_status='pending' then clock_timestamp()+make_interval(secs=>delay_seconds) else null end
@@ -141,12 +141,12 @@ begin
   select * into item from public.crm_square_webhook_events where company_state_id=p_company and environment=p_environment
     and merchant_id=p_merchant and event_id=p_event_id for update;
   if not found or p_lease_id is null or item.lease_id is distinct from p_lease_id or item.invoice_id<>invoice_id then
-    raise exception 'payment_lease_lost' using errcode='40001'; end if;
+    raise exception 'payment_lease_lost' using errcode='PT409'; end if;
   if item.status='complete' then
     if item.payment_snapshot_hash is distinct from snapshot_hash then raise exception 'payment_version_conflict' using errcode='23514'; end if;
     return jsonb_build_object('durable',true,'eventId',p_event_id,'applied',item.payment_applied);
   end if;
-  if item.status<>'processing' or item.lease_until is null or item.lease_until<=clock_timestamp() then raise exception 'payment_lease_lost' using errcode='40001'; end if;
+  if item.status<>'processing' or item.lease_until is null or item.lease_until<=clock_timestamp() then raise exception 'payment_lease_lost' using errcode='PT409'; end if;
   perform pg_advisory_xact_lock(hashtextextended(jsonb_build_array('square-payment',p_company,p_environment,p_merchant,invoice_id)::text,0));
   select * into watermark from public.crm_square_invoice_watermarks w where w.company_state_id=p_company and w.environment=p_environment
     and w.merchant_id=p_merchant and w.invoice_id=invoice_id for update;

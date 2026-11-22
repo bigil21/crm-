@@ -115,7 +115,7 @@ test('a record someone else deleted is not silently resurrected; the edit is kep
   await remover.writer.commit([], [], [job('merge-3', undefined)]);
   copy.name = 'Edited after delete';
   const result = await editorTab.writer.commit([job('merge-3', copy)]);
-  assert.equal(result.error.code, '40001');
+  assert.equal(result.error.code, 'PT409');
   assert.equal(editorTab.blocked.length, 1);
   assert.equal(editorTab.blocked[0].payload.p_changes[0].data.name, 'Edited after delete');
   assert.ok((await saved('merge-3')).deleted_at);

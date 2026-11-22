@@ -3188,7 +3188,8 @@ function preserveBlockedDurableWrite({ error, payload }) {
   }
   showSavePausedNotice();
   const rejection = durableRejectionReason(error);
-  showToast(error?.code === "40001"
+  // PT409 is the database's conflict code; 40001 is the code it used before.
+  showToast(["PT409", "40001"].includes(error?.code)
     ? "A newer shared version exists. Reload the page before editing this record again."
     : rejection
       ? `Change not saved. ${rejection}`
