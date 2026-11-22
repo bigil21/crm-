@@ -95,9 +95,11 @@ test('choosing a team member as Sales Rep moves the lead, its jobs, estimates an
   assert.equal(context.assign({ id: 'y', salesRep: 'Jane Smith', ownerUserId: 'me', jobs: [] }).ownerUserId, 'me');
 });
 
-test('both contact form savers apply the Sales Rep assignment and reps cannot retype it', () => {
+test('the contact form saver applies the Sales Rep assignment and reps cannot retype it', () => {
   assert.match(source(app, 'saveContactFromForm'), /Object\.assign\(contact, applySalesRepAssignment\(contact\)\)/);
-  assert.match(productionFlow, /Object\.assign\(contact, applySalesRepAssignment\(contact\)\)/);
+  // The legacy copy of the contact saver was dead code and has been removed;
+  // app.js is the only saver, so there is nothing left to drift.
+  assert.doesNotMatch(productionFlow, /saveContactFromFormProduction/);
   assert.match(source(app, 'openContactDialog'), /repField\.readOnly = !canAssignLeadOwners\(\)/);
   assert.match(app, /loadAssignableTeam\(\);/);
 });

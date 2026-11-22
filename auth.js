@@ -277,7 +277,26 @@
       return { error: userResult.error || new Error("Unable to verify user") };
     }
 
-    const accessResult = await client.rpc("crm_access_profile");
+    // Being unable to ASK whether an account is approved (a timeout, an outage,
+    // no connection) is not the same as the answer being no. Treating the two
+    // alike signed approved people out and told them they were "not approved"
+    // while the database was simply not responding. Try once more, then report
+    // the failed check as what it is.
+    const unreachable = (result) => Boolean(result.error) &&
+      (!result.status || result.status >= 500 || result.status === 408 || result.status === 429);
+    let accessResult = await client.rpc("crm_access_profile");
+    if (unreachable(accessResult)) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      accessResult = await client.rpc("crm_access_profile");
+    }
+    if (unreachable(accessResult)) {
+      return {
+        session: sessionResult.data.session,
+        user: userResult.data.user,
+        accessCheckFailed: true,
+        error: accessResult.error,
+      };
+    }
     if (accessResult.error || accessResult.data?.approved !== true) {
       return {
         session: sessionResult.data.session,
@@ -324,6 +343,11 @@
     if (passwordSetupType && auth.user && !auth.accessDenied) {
       const mode = passwordSetupType === "invite" ? "invite" : "recovery";
       location.replace(`/login?${mode}=1&redirect=%2F`);
+      return null;
+    }
+    if (auth.accessCheckFailed) {
+      // The session is intact; only the approval check could not be completed.
+      location.replace(loginUrl("unavailable"));
       return null;
     }
     if (auth.error || !auth.user) {

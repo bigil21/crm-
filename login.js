@@ -18,6 +18,8 @@
   const forceAccountSwitch = params.get("switchAccount") === "1" || params.get("reason") === "session-reset";
   const isPasswordSetup = params.get("recovery") === "1" || params.get("invite") === "1";
   const isInvitation = params.get("invite") === "1";
+  // Shown when the approval check could not be completed. Never "not approved".
+  const SERVICE_UNAVAILABLE_MESSAGE = "The CRM could not confirm your access because the service is not responding. Your account has not been changed. Wait a minute, then sign in again.";
 
   function setStatus(message, tone = "") {
     status.textContent = message;
@@ -126,6 +128,11 @@
       return false;
     }
     const trusted = await window.RooflineAuth.getTrustedUser();
+    if (trusted.accessCheckFailed) {
+      // The service did not answer. Say that, and leave the session alone.
+      setStatus(SERVICE_UNAVAILABLE_MESSAGE, "error");
+      return false;
+    }
     if (trusted.error || trusted.accessDenied) {
       await signOutCurrentSession();
       setStatus("Your account exists but has not been approved for CRM access. Ask an administrator to approve it.", "error");
@@ -165,6 +172,8 @@
     if (confirmPasswordField) confirmPasswordField.required = true;
     form.querySelector('button[type="submit"]').textContent = isInvitation ? "Create Password & Open CRM" : "Save New Password";
     [createAccountButton, magicLinkButton, resetPasswordButton, clearSessionButton].forEach((button) => button?.classList.add("hidden"));
+  } else if (existing.accessCheckFailed || (params.get("reason") === "unavailable" && !existing.accessDenied)) {
+    setStatus(SERVICE_UNAVAILABLE_MESSAGE, "error");
   } else if (existing.accessDenied || params.get("reason") === "approval") {
     await signOutCurrentSession();
     setStatus("Your account exists but has not been approved for CRM access. Ask an administrator to approve it.", "error");

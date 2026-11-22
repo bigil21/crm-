@@ -44,7 +44,7 @@ test('sales representative inputs share one app-controlled suggestion list', () 
 });
 
 test('lead overview shows the representative only in the dedicated Sales Rep field', () => {
-  assert.match(app, /\["Sales Rep", contact\.salesRep \|\| "Unassigned", "Owner"\]/);
+  assert.match(app, /\["Sales Rep", headerJob\?\.salesRep \|\| contact\.salesRep \|\| "Unassigned", "Owner"\]/);
   assert.doesNotMatch(app, /contact\.status} - \$\{contact\.salesRep/);
   assert.doesNotMatch(app, /contact\.source \|\| "No source"\)} &middot; \$\{escapeHtml\(contact\.salesRep/);
 });

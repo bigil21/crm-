@@ -35,9 +35,12 @@ test('Paid requires a positive contract and confirmed full payment in UI and dat
 test('dashboard total is every visible lead while open opportunities remain a separate caption', () => {
   assert.match(app, /const leads = contacts\.length/);
   assert.match(app, /const openLeads = contacts\.filter/);
-  assert.match(app, /\["Total Leads", metrics\.leads, `\$\{metrics\.openLeads\} open sales opportunities`/);
-  assert.match(productionFlow, /const leads = contacts\.length/);
-  assert.match(productionFlow, /`\$\{metrics\.openLeads\} open sales opportunities`/);
+  assert.match(app, /\["Total Leads", shown\(metrics\.leads\), note\(`\$\{metrics\.openLeads\} with open jobs · all time`\)/);
+  // The dashboard is owned by app.js: the legacy layer must not replace it
+  // with its own copy (it did, and the two disagreed).
+  for (const name of ['dashboardMetrics', 'renderSummary', 'renderDashboard', 'renderRevenueOverview', 'renderDashboardDonuts', 'renderProjectsView', 'renderReviewsView']) {
+    assert.doesNotMatch(productionFlow, new RegExp(`assignGlobal\\("${name}"`), `${name} is not overridden`);
+  }
 });
 
 test('adding another job preserves primary lead fields and totals every project', () => {
@@ -92,16 +95,18 @@ test('high-frequency stage and navigation actions avoid full-state cloud saves',
 
 test('job buttons carry and select the exact project identity', () => {
   assert.match(app, /data-action="open-job" data-contact-id="\$\{job\.contactId}" data-job-id="\$\{job\.id}"/);
-  assert.match(productionFlow, /data-action="open-contact-tab" data-contact-id="\$\{job\.contactId}" data-job-id="\$\{job\.id}"/);
+  assert.match(app.slice(app.indexOf('function renderProjectsView()'), app.indexOf('function renderRecordCard(')), /data-action="open-job" data-contact-id="\$\{job\.contactId}" data-job-id="\$\{job\.id}"/);
   assert.match(app, /function openLeadDetail\([^]*?state\.selectedLeadJobId = jobId/);
   assert.match(app, /function openLeadJob\([^]*?find\(\(item\) => item\.id === jobId\)/);
 });
 
 test('legacy production UI cannot bypass payment and ownership protections', () => {
   assert.doesNotMatch(productionFlow, /assignGlobal\("applyStatusUpdate"/);
-  assert.match(productionFlow, /const closedJobs = jobs\.filter\(jobHasFullPayment\)/);
-  assert.match(productionFlow, /\(job\) => jobHasFullPayment\(job\) && isInLeaderboardRange/);
-  assert.match(productionFlow, /visibleContacts\(\)\.filter/);
-  assert.match(productionFlow, /visibleEstimates\(\)\.filter/);
-  assert.match(productionFlow, /Collected revenue - last 6 months/);
+  // These protections now live only in app.js, where the dashboard is drawn.
+  const metrics = app.slice(app.indexOf('function dashboardMetrics()'), app.indexOf('function collectedByMonth('));
+  assert.match(metrics, /const closedJobs = jobs\.filter\(jobHasFullPayment\)/);
+  assert.match(metrics, /const contacts = visibleContacts\(\)/);
+  assert.match(metrics, /const estimates = visibleEstimates\(\)/);
+  assert.match(app, /\(job\) => jobHasFullPayment\(job\) && isInLeaderboardRange/);
+  assert.match(app, /Collected revenue — last 6 months/);
 });

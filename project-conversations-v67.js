@@ -534,7 +534,9 @@
   }
 
   function messageMarkup(message, current) {
-    const authorName = message.authorName || message.authorEmail || "CRM user";
+    // Show a person's name, never a raw email address, where the CRM knows it.
+    const storedAuthor = message.authorName || message.authorEmail || "CRM user";
+    const authorName = (typeof actorDisplayName === "function" ? actorDisplayName(storedAuthor) : storedAuthor) || "CRM user";
     const own =
       (message.authorUserId && message.authorUserId === current.userId) ||
       (message.authorEmail && message.authorEmail.toLowerCase() === current.email);

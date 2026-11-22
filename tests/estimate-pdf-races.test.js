@@ -113,7 +113,7 @@ test('delayed lead navigation cannot hijack another estimate or view', async () 
     c => { c.state.view = 'jobs'; },
   ]) {
     const save = deferred(); const opened = [];
-    const c = load(['openEstimateLeadOverview'], {
+    const c = load(['openAppDialog', 'appConfirm', 'openEstimateLeadOverview'], {
       saveCurrentEstimateAndPdf: () => save.promise,
       openLeadDetail: (...args) => opened.push(args),
     });
@@ -127,7 +127,8 @@ test('delayed lead navigation cannot hijack another estimate or view', async () 
 
 test('lead navigation requires a fully saved original estimate and its actual lead', async () => {
   const opened = [];
-  const c = load(['openEstimateLeadOverview'], {
+  // The in-app dialog falls back to window.confirm where there is no page.
+  const c = load(['openAppDialog', 'appConfirm', 'openEstimateLeadOverview'], {
     saveCurrentEstimateAndPdf: async () => true,
     openLeadDetail: (...args) => opened.push(args),
   });
@@ -142,7 +143,7 @@ test('lead navigation requires a fully saved original estimate and its actual le
 test('a completed estimate save opens its lead without asking to save again', async () => {
   const opened = [];
   let confirmations = 0;
-  const c = load(['openEstimateLeadOverview'], {
+  const c = load(['openAppDialog', 'appConfirm', 'openEstimateLeadOverview'], {
     window: { confirm: () => { confirmations++; return true; } },
     saveCurrentEstimateAndPdf: async () => { throw Error('Already-saved estimate must not be saved twice'); },
     openLeadDetail: (...args) => opened.push(args),
@@ -164,7 +165,8 @@ test('PDF renderer uses a detached explicit snapshot without changing the drawin
       return () => {};
     } });
   }
-  const c = load(['estimateLineAmount', 'downloadEstimatePdf'], {
+  const c = load(['estimateLineAmount', 'isPlaceholderEstimateItem', 'printableEstimateItems', 'estimateWordingFor', 'downscaleImageDataUrl', 'downloadEstimatePdf'], {
+    ESTIMATE_PLACEHOLDER_DESCRIPTION: 'starter line', estimateDivisionWording: {},
     window: { jspdf: { jsPDF: Pdf } }, getEstimateContact: item => ({ id: item.contactId, name: item.contactId }),
     getEstimateJob: item => ({ id: item.jobId }), estimateSalesRep: () => ({}), companyOfficeAddress: () => '',
     companyLogoDataUrlForPdf: async () => '',

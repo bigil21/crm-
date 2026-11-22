@@ -19,7 +19,11 @@ function harness(manager) {
   });
   vm.runInContext(workflow.match(/const progressionStages = \[[^]*?\];/)[0] +
     'const checklistDefinitions={ New:[{id:"phone",label:"Phone",mode:"auto"}] };' +
-    ['stageIndex', 'nextStage', 'stageChecklist', 'transitionCheck', 'checklistStageMarkup'].map(source).join('\n'), context);
+    // Only roofing has a checklist in this harness: these tests cover stage
+    // order. The division checklists themselves are covered in qa-fixes.test.js.
+    'const checklistDefinitionsByDivision={ roofing: checklistDefinitions };' +
+    'function fullPaymentItem(){ return {id:"final-payment",label:"Paid in full",mode:"auto"}; }' +
+    ['definitionsForDivision', 'stageIndex', 'nextStage', 'stageChecklist', 'transitionCheck', 'checklistStageMarkup'].map(source).join('\n'), context);
   return context;
 }
 test('Jeff service-lead progression chooses Request rather than the roofing Contacted stage', () => {

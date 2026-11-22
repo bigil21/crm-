@@ -115,7 +115,7 @@ const defaultServices = [
 const defaultPipelineStages = {
   roofing: statuses.filter((status) => status !== "Lost"),
   construction: ["Consultation", "Design & Selections", "Estimate", "Contract", "Permits", "Demo", "Rough-In", "Inspections", "Finishes", "Punch List", "Final Walkthrough", "Paid"],
-  services: ["Request", "Scheduled", "Completed", "Invoiced"],
+  services: ["Request", "Scheduled", "Completed", "Invoiced", "Paid"],
 };
 const defaultSalesPipelineStages = {
   roofing: ["New", "Contacted", "Inspection Scheduled", "Inspection Complete", "Estimate Sent", "Follow-Up/Decision", "Contract & Deposit", "Production Handoff"],
@@ -166,6 +166,13 @@ function normalizeSalesStage(job = {}, contact = {}, division = "roofing", prope
   const derived = legacySalesStageFor(division, job.status || contact.status, propertyType);
   if (!available.has(requested)) return derived;
   if (requested === "Lost" || derived === "Lost") return requested === "Lost" ? requested : derived;
+  // Several board columns share one production stage (Construction's New,
+  // Contacted and Consultation Scheduled are all "Consultation"). A saved
+  // column that matches the job's production stage is the truth. Deriving it
+  // again from the production stage pushed cards one column too far, so
+  // Contacted and Site Visit & Measurements could never hold a card.
+  if (stages.includes(requested) && typeof pipelineLifecycleStatusFor === "function"
+    && pipelineLifecycleStatusFor(division, requested, job.status || contact.status) === (job.status || contact.status)) return requested;
   const requestedIndex = stages.indexOf(requested);
   const derivedIndex = stages.indexOf(derived);
   // Existing job-progression controls remain authoritative. If a job advances
@@ -183,6 +190,39 @@ const pipelineStagesFor = (divisionId = "roofing") => {
 const leadStatusLabel = (status) => status === "New" ? "New Lead" : status;
 const allPipelineStages = () => [...new Set([...Object.values(defaultPipelineStages).flat(), ...(state.pipelineStages || []).map((item) => item.name), "Lost"])];
 const soldJobStatuses = ["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed", "Paid"];
+// Where a job is in its life, whatever its division. soldJobStatuses above
+// only knows the roofing stage names, which left Construction and Home
+// Services jobs out of production lists, reports and "open job" counts.
+//   sales       still being sold
+//   production  sold and being delivered (or delivered and awaiting payment)
+//   closed      paid in full
+//   lost
+const soldStageStartByDivision = { roofing: "Won", construction: "Contract", services: "Scheduled" };
+function jobLifecyclePhase(job = {}) {
+  const status = job.status || "New";
+  if (status === "Lost") return "lost";
+  if (status === "Paid") return "closed";
+  const division = job.division || "roofing";
+  const stages = pipelineStagesFor(division);
+  const index = stages.indexOf(status);
+  if (index < 0) return soldJobStatuses.includes(status) ? "production" : "sales";
+  const soldFrom = stages.indexOf(soldStageStartByDivision[division] || "Won");
+  return soldFrom >= 0 && index >= soldFrom ? "production" : "sales";
+}
+const jobIsInProduction = (job) => jobLifecyclePhase(job) === "production";
+const jobIsSold = (job) => ["production", "closed"].includes(jobLifecyclePhase(job));
+const jobIsOpen = (job) => !["closed", "lost"].includes(jobLifecyclePhase(job));
+
+// Lead sources are typed by hand, so "REFERRAL", "referral" and "Refferal" all
+// exist as separate sources. Charts, filters and the source list group them.
+function leadSourceLabel(source) {
+  const text = String(source || "").trim().replace(/\s+/g, " ");
+  if (!text) return "No source";
+  const key = text.toLowerCase();
+  if (/^ref+er+al+s?$/.test(key)) return "Referral";
+  if (text === key || (text === text.toUpperCase() && text.length > 4)) return key.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+  return text;
+}
 const pipelinePlaybook = [
   {
     status: "New",
@@ -456,7 +496,89 @@ const defaultCompanyDocumentFolders = [
 
 const documentCategoryIcons = ["folder", "file", "check", "dollar", "invoice", "upload"];
 
+// The instruction line a new estimate starts with. It is replaced when a
+// template is applied and is never printed on the customer's copy.
+const ESTIMATE_PLACEHOLDER_DESCRIPTION = "Add product details, material notes, manufacturer/color selections, and installation scope for this item.";
+function isPlaceholderEstimateItem(item = {}) {
+  return String(item.description || "").trim() === ESTIMATE_PLACEHOLDER_DESCRIPTION && !number(item.rate);
+}
+// The lines that belong on the customer's copy.
+function printableEstimateItems(estimate = {}) {
+  return (estimate.items || []).filter((item) => !isPlaceholderEstimateItem(item));
+}
+// Wording that depends on the division of the job being estimated. Every
+// estimate used to be titled "CONSTRUCTION ESTIMATE" and described as
+// "exterior restoration", including roof repairs and pressure washing.
+const estimateDivisionWording = {
+  roofing: { label: "ROOFING ESTIMATE", title: "Roofing Estimate", line: "Roofing scope", scope: "Provide labor, materials, project supervision, debris removal, and final cleanup for the approved roofing scope." },
+  construction: { label: "CONSTRUCTION ESTIMATE", title: "Construction Estimate", line: "Construction scope", scope: "Provide labor, materials, project supervision, debris removal, and final cleanup for the approved construction scope." },
+  services: { label: "SERVICE ESTIMATE", title: "Service Estimate", line: "Service scope", scope: "Provide labor, equipment, and materials to complete the approved service scope, including cleanup." },
+};
+function estimateWordingFor(division = "roofing") {
+  return estimateDivisionWording[division] || { label: "ESTIMATE", title: "Estimate", line: "Scope of work", scope: "Provide labor, materials, and cleanup for the approved scope of work." };
+}
+
+// Templates are offered for the division of the job being estimated. The
+// Construction and Home Services templates carry no prices on purpose: enter
+// the rate for each job.
 const estimateTemplates = [
+  {
+    name: "Remodel / Addition",
+    division: "construction",
+    items: [
+      { title: "Demolition & site preparation", description: "Protect the work area, remove existing finishes, and haul away debris.", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Framing & structural work", description: "", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Electrical, plumbing & mechanical", description: "Rough-in and trim-out by licensed trades.", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Finishes", description: "Drywall, flooring, trim, paint, and fixtures per approved selections.", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Permits & inspections", description: "", quantity: 1, unit: "lot", rate: 0 },
+    ],
+  },
+  {
+    name: "Windows & Impact Openings",
+    division: "construction",
+    items: [
+      { title: "Impact windows - supply & install", description: "", quantity: 0, unit: "ea", rate: 0 },
+      { title: "Impact doors - supply & install", description: "", quantity: 0, unit: "ea", rate: 0 },
+      { title: "Removal & disposal of existing openings", description: "", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Permit & inspection", description: "", quantity: 1, unit: "lot", rate: 0 },
+    ],
+  },
+  {
+    name: "Screen Enclosure / Carport",
+    division: "construction",
+    items: [
+      { title: "Structure - supply & install", description: "Aluminum framing engineered for local wind load.", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Screening or roof panels", description: "", quantity: 0, unit: "sf", rate: 0 },
+      { title: "Concrete footers & anchoring", description: "", quantity: 1, unit: "lot", rate: 0 },
+      { title: "Permit & engineering", description: "", quantity: 1, unit: "lot", rate: 0 },
+    ],
+  },
+  {
+    name: "Pressure Washing",
+    division: "services",
+    items: [
+      { title: "Roof soft wash", description: "", quantity: 1, unit: "job", rate: 0 },
+      { title: "Driveway & walkways", description: "", quantity: 1, unit: "job", rate: 0 },
+      { title: "Lanai / pool deck", description: "", quantity: 1, unit: "job", rate: 0 },
+    ],
+  },
+  {
+    name: "Service Call",
+    division: "services",
+    items: [
+      { title: "Service call & diagnosis", description: "", quantity: 1, unit: "ea", rate: 0 },
+      { title: "Labor", description: "", quantity: 0, unit: "hr", rate: 0 },
+      { title: "Materials", description: "", quantity: 1, unit: "lot", rate: 0 },
+    ],
+  },
+  {
+    name: "Dump Trailer",
+    division: "services",
+    items: [
+      { title: "Dump trailer rental", description: "", quantity: 1, unit: "day", rate: 0 },
+      { title: "Disposal fee", description: "", quantity: 1, unit: "load", rate: 0 },
+    ],
+  },
   {
     name: "Full Reroof",
     items: [
@@ -744,6 +866,8 @@ let dashboardAggregateTotals = null;
 let recordPageRequestSequence = 0;
 let completeCoreRecordsLoaded = false;
 let completeCoreRecordsLoad = null;
+let completeCoreRecordsAttempts = 0;
+let completeCoreRecordsRetryTimer = null;
 let serverSearchTimer = null;
 let serverSearchSequence = 0;
 const serverRecordPages = {
@@ -1061,6 +1185,7 @@ const els = {
   reportsContent: document.querySelector("#reportsContent"),
   reportExportButton: document.querySelector("#reportExportButton"),
   googleSheetsExportButton: document.querySelector("#googleSheetsExportButton"),
+  saveIndicator: document.querySelector("#saveIndicator"),
   companyDocumentCategory: document.querySelector("#companyDocumentCategory"),
   createCompanyDocumentFolderButton: document.querySelector("#createCompanyDocumentFolderButton"),
   uploadCompanyDocumentButton: document.querySelector("#uploadCompanyDocumentButton"),
@@ -1749,6 +1874,12 @@ function normalizeContact(contact, categories = defaultDocumentCategories, optio
   };
 }
 
+function stageBeforePaid(division = "roofing") {
+  const stages = typeof pipelineStagesFor === "function" ? pipelineStagesFor(division) : [];
+  const paidIndex = stages.indexOf("Paid");
+  return paidIndex > 0 ? stages[paidIndex - 1] : "Completed";
+}
+
 function normalizeJob(job, contact = {}) {
   // Relational and legacy payloads can contain a null placeholder in the jobs
   // array. Treat it like an empty job instead of letting one malformed row
@@ -1769,11 +1900,14 @@ function normalizeJob(job, contact = {}) {
   );
   const paidAmount = Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
   const contractValue = number(job.contractValue ?? job.value ?? contact.value);
-  // Old records created before the payment gate can claim to be Paid without
-  // any confirmed money. Display and persist those at Completed until the
-  // ledger actually covers the contract so reports never overstate revenue.
+  // A job cannot stay Paid without confirmed money covering the contract (old
+  // records, or a payment removed afterwards). It drops back to the stage
+  // before Paid in its own division's pipeline. This used to be "Completed"
+  // for every division, which is not a Construction stage: the database then
+  // refused the save, so a mistaken payment on a Paid Construction job could
+  // never be deleted.
   const normalizedStatus = status === "Paid" && !(contractValue > 0 && paidAmount + 0.005 >= contractValue)
-    ? "Completed"
+    ? (typeof stageBeforePaid === "function" ? stageBeforePaid(job.division || contact.division || "roofing") : "Completed")
     : status;
   const closedDate =
     job.closedDate || (soldJobStatuses.includes(normalizedStatus) ? contact.closedDate || contact.lastContact || todayISO() : "");
@@ -1903,7 +2037,11 @@ function normalizeCostItem(item = {}) {
 }
 
 function normalizeDocument(document, { leadId = "", categoryId = "", categories = defaultDocumentCategories } = {}) {
-  const resolvedLeadId = document.leadId || document.contactId || leadId;
+  // Company library files are stored under the placeholder lead id "company".
+  // That is not a lead: treating it as one wiped the file's folder and re-filed
+  // it under "Other" whenever the live-sync echo of an upload or move arrived.
+  const rawLeadId = document.leadId || document.contactId || leadId;
+  const resolvedLeadId = rawLeadId === COMPANY_DOCUMENT_LEAD_ID ? "" : rawLeadId;
   const isLeadDocument = Boolean(resolvedLeadId);
   const category =
     isLeadDocument
@@ -2253,9 +2391,9 @@ function showPreviousDraftRecovery(entries) {
   const reviewed = document.createElement("button");
   reviewed.type = "button";
   reviewed.textContent = "I have kept the recovery file";
-  reviewed.addEventListener("click", () => {
+  reviewed.addEventListener("click", async () => {
     if (!downloaded) { message.textContent = "Download the recovery file first, then confirm it is safely saved. No earlier edits will be reapplied automatically."; return; }
-    if (!window.confirm("Has the recovery file finished downloading and been saved securely? Remove only these exported device copies?")) return;
+    if (!(await appConfirm("Has the recovery file finished downloading and been saved securely? Only these exported device copies will be removed.", { title: "Remove device copies", confirmLabel: "Remove copies" }))) return;
     if (draftRecoveryStore.acknowledge(entries)) panel.remove();
     else message.textContent = "The browser could not remove the device copies. Keep your downloaded file secure.";
   });
@@ -2362,8 +2500,42 @@ function recordOwnedByCurrentUser(record = {}) {
   return ownerId === authSession.user.id || Boolean(ownerEmail && ownerEmail === signedInEmail);
 }
 
+// Archived leads are kept (with their jobs, files and payment history) but are
+// left out of every list, board and total. A lead with payments can never be
+// deleted, so archiving is how a test or mistaken record is put away.
 function visibleContacts() {
-  return state.contacts.filter(recordOwnedByCurrentUser);
+  return state.contacts.filter((contact) => recordOwnedByCurrentUser(contact) && !contact.archived);
+}
+
+function archivedContacts() {
+  return state.contacts.filter((contact) => recordOwnedByCurrentUser(contact) && contact.archived);
+}
+
+async function setContactArchived(contactId, archived) {
+  if (!requireAction("manageContacts")) return false;
+  if (!canManageTeamData()) { showToast("Ask a manager to archive or restore a lead."); return false; }
+  const contact = getContact(contactId);
+  if (!contact || Boolean(contact.archived) === archived) return false;
+  if (archived && !(await appConfirm(
+    `Archive ${contact.name}? The lead, its jobs, documents and payment history are kept, but it is hidden from every list, the pipeline, and all totals. You can restore it from Contacts > Archived.`,
+    { title: "Archive lead", confirmLabel: "Archive lead" },
+  ))) return false;
+  const updateId = uid("update");
+  updateContact(contactId, (current) => ({
+    ...current,
+    archived,
+    archivedAt: archived ? new Date().toISOString() : "",
+    updates: [{ id: updateId, author: currentActorName(), message: archived ? "Lead archived." : "Lead restored from the archive.", createdAt: new Date().toISOString() }, ...(current.updates || [])],
+  }));
+  if (archived && state.selectedContactId === contactId) {
+    state.selectedContactId = null;
+    if (state.view === "leadDetail") state.view = "contacts";
+  }
+  saveState();
+  if (typeof els.contactDialog?.close === "function" && els.contactDialog.open) els.contactDialog.close();
+  render();
+  showToast(archived ? `${contact.name} archived` : `${contact.name} restored`);
+  return true;
 }
 
 function visibleEstimates() {
@@ -3032,7 +3204,7 @@ function rememberDurableRows(rows = [], auditRows = []) {
   const normalizedRows = new Map(durableRowsFromState().map((row) => [durableRecordKey(row), row]));
   durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => {
     const normalized = normalizedRows.get(durableRecordKey(row));
-    const repairsInvalidPaidStatus = row.data?.status === "Paid" && normalized?.data?.status === "Completed";
+    const repairsInvalidPaidStatus = row.data?.status === "Paid" && Boolean(normalized?.data?.status) && normalized.data.status !== "Paid";
     // Keep only this invalid legacy state dirty so the ordinary conflict-safe
     // writer repairs it durably after startup. Other display defaults retain
     // their normalized fingerprint and never cause bulk background rewrites.
@@ -3173,6 +3345,84 @@ function showSavePausedNotice() {
   });
   notice.append(message, reload);
   document.body.appendChild(notice);
+}
+
+// The always-visible answer to "is my work saved?". Changes are saved a moment
+// after they are made, and until now the only sign of that was the browser's
+// "Leave site?" warning if you tried to leave too soon.
+let saveIndicatorPendingSince = 0;
+function saveIndicatorStatus(now = Date.now()) {
+  if (!canUseCloudSync()) {
+    saveIndicatorPendingSince = 0;
+    return { tone: "local", label: "Saved on this device", title: "This copy of the CRM is not connected to the shared database." };
+  }
+  if (durableWriteBlocked || localStateWriteBlocked) {
+    return { tone: "error", label: "Saving paused", title: "The last change could not be confirmed. Reload the page to sync before editing again." };
+  }
+  if (!durableRecordsReady) return { tone: "saving", label: "Loading…", title: "Loading your records." };
+  const inFlight = durableSaveInFlight || cloudSaveInFlight;
+  const pending = inFlight || hasPendingDurableChanges() || hasPendingCompanyChanges();
+  if (!pending) {
+    saveIndicatorPendingSince = 0;
+    return { tone: "saved", label: "All changes saved", title: "Everything you have entered is saved to the shared CRM." };
+  }
+  if (!saveIndicatorPendingSince) saveIndicatorPendingSince = now;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { tone: "warning", label: "Offline · not saved yet", title: "You are offline. Your changes are kept on this device and save when the connection returns." };
+  }
+  if (state.companyFormDraft && !inFlight && !hasPendingDurableChanges()) {
+    return { tone: "warning", label: "Unsaved settings", title: "Settings have changes that have not been saved. Open Settings and choose Save." };
+  }
+  // Normal saves finish in a second or two. Say so when one is taking longer.
+  if (now - saveIndicatorPendingSince > 20000) {
+    return { tone: "warning", label: "Still saving…", title: "A change has not been confirmed yet. The CRM keeps retrying; keep this page open." };
+  }
+  return { tone: "saving", label: "Saving…", title: "Your latest change is being saved." };
+}
+
+function renderSaveIndicator() {
+  const node = els.saveIndicator;
+  if (!node) return;
+  let status;
+  try { status = saveIndicatorStatus(); } catch { return; }
+  if (node.dataset.tone === status.tone && node.dataset.label === status.label) return;
+  node.dataset.tone = status.tone;
+  node.dataset.label = status.label;
+  node.title = status.title || "";
+  node.textContent = status.label;
+}
+
+let saveIndicatorTimer = null;
+function startSaveIndicator() {
+  renderSaveIndicator();
+  if (saveIndicatorTimer) return;
+  saveIndicatorTimer = window.setInterval(renderSaveIndicator, 1000);
+  window.addEventListener("online", renderSaveIndicator);
+  window.addEventListener("offline", renderSaveIndicator);
+}
+
+// Recovery copies written when a save was blocked are for manual recovery only.
+// Nothing ever removed them, so each one (about half a megabyte) stayed in the
+// browser for good. Keep the five newest from the last 30 days.
+function pruneBlockedSaveRecoveries(storage, now = Date.now()) {
+  try {
+    const prefix = "jobcrest-unsaved-recovery:";
+    const entries = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      let createdAt = 0;
+      try { createdAt = new Date(JSON.parse(storage.getItem(key))?.createdAt || 0).getTime() || 0; } catch { createdAt = 0; }
+      entries.push({ key, createdAt });
+    }
+    entries.sort((a, b) => b.createdAt - a.createdAt);
+    const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+    const stale = entries.filter((entry, index) => index >= 5 || entry.createdAt < cutoff);
+    stale.forEach((entry) => storage.removeItem(entry.key));
+    return stale.length;
+  } catch {
+    return 0;
+  }
 }
 
 function preserveBlockedDurableWrite({ error, payload }) {
@@ -3502,11 +3752,12 @@ function ensureServerRecordPage(kind) {
 
 function invalidateServerRecordPages() {
   Object.values(serverRecordPages).forEach((page) => { page.queryKey = ""; });
-  dashboardAggregateTotals = null;
+  // Keep the previous server totals until the refreshed ones arrive. Clearing
+  // them here made the dashboard fall back to whatever was in memory.
   if (recordPageClient) {
     void recordPageClient.aggregates().then((totals) => {
       dashboardAggregateTotals = totals;
-      if (state.view === "dashboard") renderDashboard();
+      if (state.view === "dashboard" && coreRecordsArePartial()) renderDashboard();
     }).catch((error) => console.warn("Dashboard totals could not be refreshed", error));
   }
 }
@@ -3633,20 +3884,61 @@ async function ensureCompleteCoreRecordsLoaded() {
     rememberDurableRows(rows, auditRows);
     applyingCloudState = false;
     completeCoreRecordsLoaded = true;
+    completeCoreRecordsAttempts = 0;
     saveState({ localOnly: true });
-    render();
+    // Never redraw over a field the user is typing in.
+    renderDurableUpdateWhenIdle();
     return true;
-  })().catch((error) => {
+  })().then((loaded) => {
+    // The load is skipped while a save is in flight. Try again shortly rather
+    // than leaving every total on this screen computed from a partial set.
+    if (!loaded) scheduleCompleteCoreRecordsRetry();
+    return loaded;
+  }).catch((error) => {
     applyingCloudState = false;
     console.warn("The complete CRM workspace could not be loaded", error);
-    showToast("This workspace could not finish loading. Your current records were kept.");
+    if (!scheduleCompleteCoreRecordsRetry()) showToast("This workspace could not finish loading. Your current records were kept.");
     return false;
   }).finally(() => { completeCoreRecordsLoad = null; });
   return completeCoreRecordsLoad;
 }
 
+function scheduleCompleteCoreRecordsRetry() {
+  if (completeCoreRecordsLoaded || completeCoreRecordsRetryTimer) return true;
+  if (completeCoreRecordsAttempts >= 8) return false;
+  completeCoreRecordsAttempts += 1;
+  completeCoreRecordsRetryTimer = window.setTimeout(() => {
+    completeCoreRecordsRetryTimer = null;
+    void ensureCompleteCoreRecordsLoaded();
+  }, Math.min(2000 * completeCoreRecordsAttempts, 10000));
+  return true;
+}
+
+// True while only the first page of leads and jobs is in memory. A
+// company-wide total computed from that partial set is simply wrong (it made
+// the dashboard, billing and report figures change from one visit to the
+// next), so screens that show totals wait for the complete set.
+function coreRecordsArePartial() {
+  return canUseCloudSync() && !completeCoreRecordsLoaded;
+}
+
 function viewNeedsCompleteCoreRecords(view) {
-  return ["contacts", "pipeline", "projects", "estimates", "reviews", "reports"].includes(view);
+  return ["contacts", "pipeline", "projects", "estimates", "reviews", "reports", "dashboard", "invoices", "calendar"].includes(view);
+}
+
+// Shown at the top of a screen whose totals are still loading.
+function renderPartialDataNotice(view) {
+  const host = els.views?.[view];
+  if (!host?.querySelector) return;
+  const existing = host.querySelector(":scope > .partial-data-notice");
+  const needed = coreRecordsArePartial() && viewNeedsCompleteCoreRecords(view);
+  if (!needed) { existing?.remove(); return; }
+  if (existing) return;
+  const notice = document.createElement("div");
+  notice.className = "partial-data-notice";
+  notice.setAttribute("role", "status");
+  notice.textContent = "Loading all records. Totals on this page appear once every lead and job has loaded.";
+  host.prepend(notice);
 }
 
 async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = false, force = false } = {}) {
@@ -4369,6 +4661,115 @@ async function updateJobOperation(table, id, patch) {
   saveState({ localOnly: true });
 }
 
+// Permits, inspections and selections entered by mistake could only have their
+// status changed, never be removed. Change orders and billing draws are money
+// records and are voided through their status instead of deleted.
+const deletableOperationTables = { crm_permits: "permit", crm_inspections: "inspection", crm_job_selections: "selection" };
+async function deleteJobOperation(table, id) {
+  const stateKey = operationsTableStateMap[table];
+  if (!stateKey || !deletableOperationTables[table]) throw new Error("This record type cannot be deleted");
+  if (canUseCloudSync()) {
+    // Ask for the deleted row back: when the database refuses a delete it does
+    // so silently, by deleting nothing.
+    const { data, error } = await cloudClient.from(table).delete().eq("company_state_id", supabaseStateId()).eq("id", id).select("id");
+    if (error) throw error;
+    if (!Array.isArray(data) || !data.length) throw new Error("The record was not deleted. Only the person who created it, or a manager, can delete it.");
+    if (!(await initializeJobOperations())) throw new Error("The record was deleted, but the operations view could not be refreshed");
+    return;
+  }
+  state[stateKey] = (state[stateKey] || []).filter((item) => item.id !== id);
+  saveState({ localOnly: true });
+}
+
+async function confirmDeleteJobOperation(table, id) {
+  if (!requireAction("manageJobs")) return;
+  const kind = deletableOperationTables[table];
+  const row = (state[operationsTableStateMap[table]] || []).find((item) => item.id === id);
+  if (!kind || !row) return;
+  if (table === "crm_permits") {
+    const linked = (state.inspections || []).filter((item) => (item.permitId || item.permit_id) === id).length;
+    if (linked) return setOperationsStatus(`This permit has ${linked} inspection${linked === 1 ? "" : "s"} linked to it. Delete ${linked === 1 ? "it" : "them"} first.`, "error");
+  }
+  const label = operationValue(row, "permitType", "permit_type") || operationValue(row, "inspectionType", "inspection_type") || operationValue(row, "itemName", "item_name") || kind;
+  if (!(await appConfirm(`Delete the ${kind} "${label}"? This cannot be undone.`, { title: `Delete ${kind}`, confirmLabel: `Delete ${kind}`, danger: true }))) return;
+  try {
+    await deleteJobOperation(table, id);
+    renderLeadOperations(getSelectedContact());
+    setOperationsStatus(`${kind[0].toUpperCase()}${kind.slice(1)} deleted`);
+  } catch (error) {
+    renderLeadOperations(getSelectedContact());
+    setOperationsStatus(error.message || "The record could not be deleted", "error");
+  }
+}
+
+function operationDeleteButton(table, id, label) {
+  return canAction("manageJobs")
+    ? `<button class="mini-button" type="button" title="Delete" aria-label="Delete ${escapeHtml(label || "record")}" data-operation-delete="${escapeHtml(table)}" data-operation-id="${escapeHtml(id)}"><span aria-hidden="true" data-icon="trash"></span></button>`
+    : "";
+}
+
+// An approved change order changes what the customer owes. The job's contract
+// value did not move, so the balance due stayed wrong by the change amount.
+// Ask each time: some change orders are billed separately. The job remembers
+// which change orders it has absorbed so none is applied twice.
+function changeOrderCountsTowardContract(status) {
+  return ["approved", "signed"].includes(String(status || ""));
+}
+
+async function reconcileChangeOrderWithContract(changeOrderId, previousStatus, nextStatus) {
+  const order = (state.changeOrders || []).find((item) => item.id === changeOrderId);
+  const contactId = order && (order.contactId || order.leadId || order.lead_id);
+  const jobId = order && (order.jobId || order.job_id);
+  const contact = contactId && getContact(contactId);
+  const job = contact && contactJobs(contact).find((item) => item.id === jobId);
+  if (!order || !job || !canAction("manageJobs")) return false;
+  const applied = Array.isArray(job.appliedChangeOrders) ? job.appliedChangeOrders : [];
+  const existing = applied.find((item) => item.id === changeOrderId);
+  const nowCounts = changeOrderCountsTowardContract(nextStatus);
+  const amount = Math.round(number(order.amount) * 100) / 100;
+  const contractValue = number(job.contractValue) || number(job.value);
+  const orderLabel = `${operationValue(order, "changeOrderNumber", "change_order_number")} (${money.format(amount)})`;
+  let delta = 0;
+  let nextApplied = applied;
+  if (nowCounts && !existing && amount !== 0) {
+    const newTotal = Math.round((contractValue + amount) * 100) / 100;
+    const add = await appConfirm(
+      `Change order ${orderLabel} is now ${nextStatus}. ${amount > 0 ? "Add it to" : "Take it off"} the contract value of ${job.name}? The contract would go from ${money.format(contractValue)} to ${money.format(newTotal)}.`,
+      { title: "Update the contract value?", confirmLabel: `Make it ${money.format(newTotal)}`, cancelLabel: "Leave the contract as is" },
+    );
+    if (!add) return false;
+    delta = amount;
+    nextApplied = [...applied, { id: changeOrderId, amount }];
+  } else if (!nowCounts && existing && changeOrderCountsTowardContract(previousStatus)) {
+    const newTotal = Math.round((contractValue - number(existing.amount)) * 100) / 100;
+    const remove = await appConfirm(
+      `Change order ${orderLabel} is no longer approved, and it was added to the contract value of ${job.name}. Take it back off? The contract would go from ${money.format(contractValue)} to ${money.format(newTotal)}.`,
+      { title: "Update the contract value?", confirmLabel: `Make it ${money.format(newTotal)}`, cancelLabel: "Leave the contract as is" },
+    );
+    if (!remove) return false;
+    delta = -number(existing.amount);
+    nextApplied = applied.filter((item) => item.id !== changeOrderId);
+  } else {
+    return false;
+  }
+  const newContract = Math.max(0, Math.round((contractValue + delta) * 100) / 100);
+  const updateId = uid("update");
+  updateContact(contact.id, (current) => {
+    const jobs = contactJobs(current).map((item) => item.id === jobId ? { ...item, value: newContract, contractValue: newContract, appliedChangeOrders: nextApplied } : item);
+    return {
+      ...current,
+      ...summarizeContactJobs(current, jobs),
+      updates: [{ id: updateId, author: currentActorName(), jobId, message: `Contract value ${delta >= 0 ? "increased" : "reduced"} by ${money.format(Math.abs(delta))} to ${money.format(newContract)} for change order ${operationValue(order, "changeOrderNumber", "change_order_number")}.`, createdAt: new Date().toISOString() }, ...(current.updates || [])],
+    };
+  });
+  saveState({ localOnly: true });
+  let saved = !canUseCloudSync();
+  try { if (canUseCloudSync()) saved = await persistLeadJobRecord(jobId, updateId); } catch (error) { console.warn("Contract value could not be confirmed", error); }
+  if (!saved) queueDurableRecordsSave();
+  showToast(`Contract value is now ${money.format(newContract)}.`);
+  return true;
+}
+
 async function initializeLeadOrganization() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return true;
   const tables=["crm_lead_sources","crm_tags","crm_record_tags","crm_custom_fields","crm_custom_field_values","crm_saved_filters","crm_divisions","crm_services","crm_pipeline_stages"];
@@ -4409,7 +4810,15 @@ async function initializeDocumentOperations() {
 async function createDailyRecoveryBackup() {
   if (!canManageTeamData() || !durableRecordsReady || !authSession?.user?.id) return;
   try {
-    const { rows, auditRows } = await fetchDurableRows();
+    // One backup per day. Check before building it: every page load used to
+    // assemble and upload the whole payload only for the database to refuse it
+    // as a duplicate (the 409 seen in the browser's network log).
+    const existing = await cloudClient.from("crm_backups").select("backup_date", { count: "exact", head: true })
+      .eq("company_state_id", supabaseStateId()).eq("backup_date", todayISO());
+    if (!existing.error && number(existing.count) > 0) return;
+    // The backup must hold every record. fetchDurableRows() returns only the
+    // first page of leads and jobs when the workspace loads in pages.
+    const { rows, auditRows } = await fetchCompleteDurableSnapshot();
     const conversationMessages = await fetchAllCompanyRows("crm_conversation_messages", ["created_at", "id"]);
     const payload = {
       schemaVersion: 2,
@@ -4755,8 +5164,10 @@ function normalizeLeadSearch(value) {
 }
 
 function contactSearchFields(contact, jobs = contactJobs(contact)) {
+  // Estimate numbers too: "EST-1093" should find the lead it belongs to.
+  const estimateNumbers = (state.estimates || []).filter((estimate) => estimate.contactId === contact.id).map((estimate) => estimate.estimateNumber);
   return [contact.name, contact.leadNumber, contact.type, contact.status, contact.source,
-    contact.salesRep, contact.email, contact.phone, contact.address, contact.notes,
+    contact.salesRep, contact.email, contact.phone, contact.address, contact.notes, ...estimateNumbers,
     ...jobs.flatMap((job) => [job.name, job.projectNumber, job.address, job.status, job.salesRep, job.notes, money.format(number(job.value))])]
     .filter(Boolean).map(normalizeLeadSearch);
 }
@@ -4879,7 +5290,13 @@ function liveLeadSearchMatches(query = state.search, limit = 8) {
       const phoneDigits = phone.replace(/\D/g, "");
       if (!contactMatchesSearch(contact, query)) return null;
       let score = 50;
-      if (name === normalizedQuery || leadNumber === normalizedQuery) score = 0;
+      const rawQuery = String(query || "").trim().toLowerCase();
+      const queryDigits = rawQuery.replace(/\D/g, "");
+      // An exact match on any identifying field always comes first. (An exact
+      // email used to rank below a lead whose name merely contained the text.)
+      const exactEstimate = (state.estimates || []).some((estimate) => estimate.contactId === contact.id && normalizeLeadSearch(estimate.estimateNumber) === normalizedQuery);
+      if (name === normalizedQuery || leadNumber === normalizedQuery || (email && email === rawQuery)
+        || (queryDigits.length >= 7 && phoneDigits === queryDigits) || exactEstimate) score = 0;
       else if (name.startsWith(normalizedQuery)) score = 5;
       else if (leadNumber.startsWith(normalizedQuery)) score = 8;
       else if (name.split(/\s+/).some((part) => part.startsWith(normalizedQuery))) score = 10;
@@ -5064,10 +5481,51 @@ function staleClass(contact) {
   return "";
 }
 
+// Phone numbers typed or imported without punctuation ("2393516922") are shown
+// in the same (239) 351-6922 form as the rest. Anything that is not a standard
+// US number is shown exactly as it was entered.
+function displayPhone(phone = "") {
+  const text = String(phone || "").trim();
+  const digits = text.replace(/\D/g, "");
+  return digits.length === 10 || (digits.length === 11 && digits.startsWith("1")) ? formatPhoneNumber(digits) : text;
+}
+
 function telLink(phone = "") {
   if (!phone) return "";
   const digits = phone.replace(/\D/g, "");
-  return `<a class="tel-link" href="tel:${digits}">${escapeHtml(phone)}</a>`;
+  return `<a class="tel-link" href="tel:${digits}">${escapeHtml(displayPhone(phone))}</a>`;
+}
+
+// Leads that look like the same person: same phone number, same email, or the
+// same name at the same address. Used to warn before saving a new lead and to
+// list possible duplicates on the Contacts page.
+function contactIdentityKeys(contact = {}) {
+  const keys = [];
+  const digits = String(contact.phone || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+  if (digits.length >= 10) keys.push(`phone:${digits}`);
+  const email = String(contact.email || "").trim().toLowerCase();
+  if (email) keys.push(`email:${email}`);
+  const name = normalizeLeadSearch(contact.name);
+  const address = normalizeLeadSearch(String(contact.address || "").split("\n")[0]);
+  if (name && address) keys.push(`name-address:${name}|${address}`);
+  return keys;
+}
+
+function findDuplicateContacts(candidate = {}, contacts = state.contacts) {
+  const keys = new Set(contactIdentityKeys(candidate));
+  if (!keys.size) return [];
+  return contacts.filter((contact) => contact.id !== candidate.id && contactIdentityKeys(contact).some((key) => keys.has(key)));
+}
+
+function duplicateContactIds(contacts = state.contacts) {
+  const byKey = new Map();
+  contacts.forEach((contact) => contactIdentityKeys(contact).forEach((key) => {
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(contact.id);
+  }));
+  const ids = new Set();
+  byKey.forEach((group) => { if (group.length > 1) group.forEach((id) => ids.add(id)); });
+  return ids;
 }
 
 function escapeHtml(value = "") {
@@ -5142,6 +5600,10 @@ function formatDate(value) {
 
 function formatDateTime(value) {
   if (!value) return "Not set";
+  // A date with no time ("2026-11-21") is a calendar day, not midnight UTC.
+  // Parsing it as a timestamp showed the previous evening ("Nov 20, 7:00 PM")
+  // for anything created on Nov 21 in Florida. Show the day, with no made-up time.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return formatDate(value);
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return formatDate(value);
   return new Intl.DateTimeFormat("en-US", {
@@ -5213,8 +5675,16 @@ function applySalesRepAssignment(contact) {
   return { ...contact, ...owner, salesRep: member.name, jobs };
 }
 
+// A person's name has at least two letters and no digits. Stray keystrokes
+// saved as a sales rep ("6y") otherwise become a rep in every list and report.
+function isPlausiblePersonName(value = "") {
+  const name = normalizePersonName(value);
+  return (name.match(/\p{L}/gu) || []).length >= 2 && !/\d/.test(name);
+}
+
 function uniqueSalesReps() {
   const unique = new Map();
+  const teamNames = new Set(assignableTeam.map((member) => canonicalRepresentativeName(member.name).toLocaleLowerCase()));
   [
     ...assignableTeam.map((member) => member.name),
     ...visibleContacts().map((contact) => contact.salesRep),
@@ -5224,9 +5694,18 @@ function uniqueSalesReps() {
   ].forEach((value) => {
     const name = canonicalRepresentativeName(value);
     const key = name.toLocaleLowerCase();
+    // Team members are always offered; names found on records must look like names.
+    if (!teamNames.has(key) && !isPlausiblePersonName(name)) return;
     if (name && name !== "Unassigned" && !unique.has(key)) unique.set(key, name);
   });
   return [...unique.values()].sort((a, b) => a.localeCompare(b));
+}
+
+// Used when a lead or job is saved: refuses a sales rep that is not a name.
+function salesRepNameProblem(value = "") {
+  const name = normalizePersonName(value);
+  if (!name || name === "Unassigned") return "";
+  return isPlausiblePersonName(name) ? "" : `"${name}" does not look like a sales representative's name. Enter the rep's name, or leave it blank for Unassigned.`;
 }
 
 function renderSalesRepOptions() {
@@ -5234,6 +5713,20 @@ function renderSalesRepOptions() {
   els.salesRepOptions.innerHTML = uniqueSalesReps()
     .map((rep) => `<option value="${escapeHtml(rep)}"></option>`)
     .join("");
+  // Offer the sources already in use, so the same source is not typed five ways.
+  const sourceField = els.contactForm?.elements?.source;
+  if (!sourceField || typeof document.createElement !== "function") return;
+  let sourceOptions = document.getElementById("leadSourceOptions");
+  if (!sourceOptions) {
+    sourceOptions = document.createElement("datalist");
+    sourceOptions.id = "leadSourceOptions";
+    els.salesRepOptions.after(sourceOptions);
+    sourceField.setAttribute("list", "leadSourceOptions");
+  }
+  const sources = [...new Set(["Website", "Referral", "Google", "Facebook", "Repeat customer", "Door knock", "Yard sign",
+    ...state.contacts.map((contact) => contact.source).filter(Boolean)].map(leadSourceLabel))]
+    .filter((source) => source !== "No source").sort((a, b) => a.localeCompare(b));
+  sourceOptions.innerHTML = sources.map((source) => `<option value="${escapeHtml(source)}"></option>`).join("");
 }
 
 function taskDueTime(task) {
@@ -5465,9 +5958,35 @@ function estimateTotal(estimate) {
   return totalsFor(estimate).total;
 }
 
+// Where company-wide figures come from. One source per number:
+//   "local"   every lead and job is in memory, so totals are computed here and
+//             update the moment a record changes;
+//   "pending" only the first page has loaded: show nothing rather than a
+//             partial total;
+//   "server"  the complete set could not be loaded after several attempts, so
+//             the database's own totals are shown instead.
+function dashboardDataSource() {
+  if (!coreRecordsArePartial()) return "local";
+  return completeCoreRecordsAttempts >= 8 && dashboardAggregateTotals ? "server" : "pending";
+}
+
+// One money ledger for the dashboard, Billing and Reports: job payments
+// (manual and Square), invoice payments, refunds, expenses and credits.
+function ledgerTotals(entries = financialLedgerEntries()) {
+  const sum = (kind) => entries.filter((entry) => entry.kind === kind).reduce((total, entry) => total + number(entry.amount), 0);
+  const payments = sum("Payment");
+  const refunds = sum("Refund");
+  return { payments, refunds, collected: Math.max(payments - refunds, 0), expenses: sum("Expense"), credits: sum("Credit") };
+}
+
 function dashboardMetrics() {
-  if (dashboardAggregateTotals) {
+  const source = dashboardDataSource();
+  if (source === "pending") {
+    return { source, pending: true, leads: 0, openLeads: 0, totalJobs: 0, estimatesSent: 0, openContracts: 0, openValue: 0, closedJobs: 0, closedValue: 0, pipelineValue: 0 };
+  }
+  if (source === "server") {
     return {
+      source,
       leads: number(dashboardAggregateTotals.leads),
       openLeads: number(dashboardAggregateTotals.openLeads),
       totalJobs: number(dashboardAggregateTotals.totalJobs),
@@ -5493,6 +6012,7 @@ function dashboardMetrics() {
     .filter((job) => job.status !== "Lost")
     .reduce((sum, job) => sum + number(job.value), 0);
   return {
+    source,
     leads,
     openLeads,
     totalJobs: jobs.length,
@@ -5500,9 +6020,25 @@ function dashboardMetrics() {
     openContracts: openContracts.length,
     openValue: openContracts.reduce((sum, job) => sum + number(job.value), 0),
     closedJobs: closedJobs.length,
-    closedValue: closedJobs.reduce((sum, job) => sum + number(job.paidAmount), 0),
+    // Every confirmed payment, from the same ledger Billing and Reports use.
+    // This used to count only the money on jobs that were paid in full, so the
+    // dashboard showed far less than Billing for the same records.
+    closedValue: ledgerTotals().collected,
     pipelineValue,
   };
+}
+
+// Payments received per calendar month, by the date each payment was made.
+function collectedByMonth(months, entries = financialLedgerEntries()) {
+  entries.filter((entry) => entry.kind === "Payment" || entry.kind === "Refund").forEach((entry) => {
+    const stamp = activityTimestamp(entry.at);
+    if (!Number.isFinite(stamp) || !stamp) return;
+    const date = new Date(stamp);
+    const bucket = months.find((month) => month.year === date.getFullYear() && month.month === date.getMonth());
+    if (bucket) bucket.value += entry.kind === "Refund" ? -number(entry.amount) : number(entry.amount);
+  });
+  months.forEach((month) => { month.value = Math.max(0, Math.round(month.value * 100) / 100); });
+  return months;
 }
 
 function aggregateCounts(items, keyGetter, valueGetter = () => 1) {
@@ -5517,13 +6053,23 @@ function aggregateCounts(items, keyGetter, valueGetter = () => 1) {
   return [...groups.values()].sort((a, b) => b.count - a.count || b.value - a.value);
 }
 
-function jobType(job) {
-  const text = `${job.name || ""} ${job.notes || ""}`.toLowerCase();
-  if (text.includes("repair")) return "Roof Repair";
-  if (text.includes("storm") || text.includes("damage")) return "Storm Damage";
-  if (text.includes("gutter")) return "Gutters";
-  if (text.includes("maintenance")) return "Maintenance";
-  return "Roof Replacement";
+// A job's type is the service chosen for it. This used to guess from words in
+// the job name and called everything else "Roof Replacement", so Construction
+// and Home Services jobs were all counted as roof replacements.
+function jobType(job = {}) {
+  const services = state.services?.length ? state.services : defaultServices;
+  const service = services.find((item) => item.id === job.service && (!job.division || item.divisionId === job.division))
+    || services.find((item) => item.id === job.service);
+  if (service?.name) return service.name;
+  const division = activeDivisions().find((item) => item.id === (job.division || "roofing"));
+  return job.service ? String(job.service) : `${division?.name || "Other"} (no service chosen)`;
+}
+
+// Keeps a chart readable: the largest groups, then one "Other" slice.
+function topGroupsWithOther(groups, limit = 5) {
+  if (groups.length <= limit) return groups;
+  const rest = groups.slice(limit - 1);
+  return [...groups.slice(0, limit - 1), { label: "Other", count: rest.reduce((sum, item) => sum + item.count, 0), value: rest.reduce((sum, item) => sum + number(item.value), 0) }];
 }
 
 function dashboardActivityItems(limit = 6) {
@@ -5820,7 +6366,7 @@ async function importZohoCsv(file) {
     else summary.added += 1;
     return summary;
   }, { added: 0, updated: 0 });
-  if (!window.confirm(`Import ${preview.added} new lead${preview.added === 1 ? "" : "s"} and update ${preview.updated} matched lead${preview.updated === 1 ? "" : "s"}? Existing jobs, documents, stages, ownership, and financial history will be preserved; new leads start in the New stage with their Zoho status noted.`)) return;
+  if (!(await appConfirm(`Import ${preview.added} new lead${preview.added === 1 ? "" : "s"} and update ${preview.updated} matched lead${preview.updated === 1 ? "" : "s"}? Existing jobs, documents, stages, ownership, and financial history will be preserved; new leads start in the New stage with their Zoho status noted.`, { title: "Import from Zoho", confirmLabel: "Import" }))) return;
   let added = 0;
   let updated = 0;
 
@@ -5843,14 +6389,36 @@ async function importZohoCsv(file) {
   showToast(`Zoho import complete: ${added} added, ${updated} updated`);
 }
 
-function addContactUpdate(contactId, { author = "Local user", message, status = "", jobId = "" }) {
+// Authors are stored as whatever was known when an entry was written: a name,
+// an email address, or the old placeholder "Local user". Show the person's
+// name wherever the CRM knows it, so one person does not appear under three
+// different labels in the same timeline.
+function actorDisplayName(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (!text.includes("@")) return text;
+  const lower = text.toLowerCase();
+  let owners = [];
+  try { owners = [...cloudKnownOwners.values(), currentOwner()].filter(Boolean); } catch { owners = []; }
+  const owner = owners.find((item) => String(item.email || "").trim().toLowerCase() === lower);
+  if (owner?.name && !String(owner.name).includes("@")) return normalizePersonName(owner.name);
+  // No saved name: "pat.lee@example.com" reads better as "Pat Lee".
+  return lower.split("@")[0].split(/[._-]+/).filter(Boolean).map((part) => part[0].toUpperCase() + part.slice(1)).join(" ") || text;
+}
+
+// Who to credit for a change made in this session.
+function currentActorName() {
+  return actorDisplayName(state.currentUser?.name || state.currentUser?.email || "") || "CRM user";
+}
+
+function addContactUpdate(contactId, { author = "", message, status = "", jobId = "" }) {
   if (!message?.trim() && !status) return null;
   return updateContact(contactId, (contact) => ({
     ...contact,
     updates: [
       {
         id: uid("update"),
-        author: author.trim() || "Local user",
+        author: author.trim() || currentActorName(),
         message: message?.trim() || "",
         status,
         jobId,
@@ -5861,7 +6429,7 @@ function addContactUpdate(contactId, { author = "Local user", message, status = 
   }));
 }
 
-function applyStatusUpdate(contactId, nextStatus, author = "Local user", message = "") {
+function applyStatusUpdate(contactId, nextStatus, author = "", message = "") {
   let contact = getContact(contactId);
   const currentJob = contact ? contactJobs(contact)[0] : null;
   const currentJobStatus = currentJob?.status || contact?.status || "";
@@ -5893,7 +6461,7 @@ function applyStatusUpdate(contactId, nextStatus, author = "Local user", message
       updates: [
         {
           id: uid("update"),
-          author: author.trim() || "Local user",
+          author: author.trim() || currentActorName(),
           status: nextStatus,
           jobId: nextJobs[0]?.id || "",
           message: message || `Status changed from ${wasStatus} to ${nextStatus}.`,
@@ -5922,19 +6490,21 @@ function render() {
   if (!canView(state.view)) {
     state.view = firstAllowedView();
   }
+  // Page titles match the menu labels, so the page you land on is named what
+  // you clicked.
   const titles = {
     dashboard: "Dashboard",
-    leads: "Leads",
+    leads: "Lead Intake",
     pipeline: "Sales Pipeline",
     contacts: "Contacts",
     jobs: "Jobs",
-    projects: "Projects",
+    projects: "Sold Jobs & Production",
     leadDetail: "Lead Detail",
     estimates: "Estimates",
-    companyDocuments: "Company Documents",
+    companyDocuments: "Documents",
     calendar: "Calendar",
     tasks: "Tasks",
-    invoices: "Invoices",
+    invoices: "Billing & Payments",
     reviews: "Reviews",
     reports: "Reports",
     company: "Settings",
@@ -5953,6 +6523,7 @@ function render() {
   });
   renderBrandLogo();
   renderSalesRepOptions();
+  if (state.view !== "pipeline") document.body?.classList?.remove("pipeline-drawer-open");
   els.summaryStrip.classList.toggle("hidden", state.view !== "dashboard");
   els.workspace?.classList.toggle("dashboard-watermark", state.view === "dashboard");
   renderTopbarProfile();
@@ -5982,9 +6553,35 @@ function render() {
     reports: renderReportsView,
     company: renderCompanyForm,
   };
-  activeRenderer[state.view]?.();
+  try {
+    activeRenderer[state.view]?.();
+    clearViewRenderError(state.view);
+    renderPartialDataNotice(state.view);
+  } catch (error) {
+    // One failing screen must never blank the page or stop the rest of the
+    // shell (navigation, search, permissions) from being drawn.
+    console.error(`The ${state.view} view could not be drawn`, error);
+    showViewRenderError(state.view, error);
+  }
   renderLiveSearchResults();
   applyPermissionsToDom();
+}
+
+function showViewRenderError(view, error) {
+  const host = els.views?.[view];
+  if (!host?.querySelector) return;
+  let banner = host.querySelector(":scope > .view-render-error");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.className = "view-render-error";
+    banner.setAttribute("role", "alert");
+    host.prepend(banner);
+  }
+  banner.textContent = `This page could not be fully displayed (${error?.message || "unexpected error"}). Your saved data is not affected. Reload the page, and report this message if it keeps happening.`;
+}
+
+function clearViewRenderError(view) {
+  els.views?.[view]?.querySelector?.(":scope > .view-render-error")?.remove?.();
 }
 
 function renderBrandLogo() {
@@ -6000,16 +6597,21 @@ function renderTopbarProfile() {
     const start = rangeStart("week");
     const end = new Date(start);
     end.setDate(start.getDate() + 6);
+    // This is a label, not a filter: it names the current week. It looked like
+    // a date picker and did nothing when clicked, so say what it is.
     els.dashboardDateRange.innerHTML = `
       <span aria-hidden="true" data-icon="calendar"></span>
-      <span>${formatDate(localDateISO(start))} - ${formatDate(localDateISO(end))}</span>
+      <span>This week · ${formatDate(localDateISO(start))} - ${formatDate(localDateISO(end))}</span>
     `;
+    els.dashboardDateRange.title = "The current week. Totals on each page say which period they cover.";
     hydrateIcons(els.dashboardDateRange);
   }
 
   const followUps = followUpSummary();
   const pendingTasks = followUps.overdue.length + followUps.today.length + followUps.estimates.length;
-  document.querySelectorAll(".notification-dot").forEach((node) => {
+  // Only the bell's badge. This used to write the reminder count into every
+  // badge in the header, including the @ mentions one.
+  document.querySelectorAll(".notification-button .notification-dot").forEach((node) => {
     node.textContent = pendingTasks;
     node.classList.toggle("hidden", pendingTasks === 0);
   });
@@ -6118,13 +6720,17 @@ function applyPermissionsToDom() {
 
 function renderSummary() {
   const metrics = dashboardMetrics();
+  // While the full record set is still loading there is no honest number to
+  // show, so the cards say so instead of showing a partial total.
+  const shown = (value) => (metrics.pending ? "…" : value);
+  const note = (caption) => (metrics.pending ? "Loading all records" : caption);
 
   const cards = [
-    ["Total Leads", metrics.leads, `${metrics.openLeads} open sales opportunities`, "user", "blue"],
-    ["Estimates Sent", metrics.estimatesSent, "Sent or won estimates", "file", "green"],
-    ["Jobs Paid", metrics.closedJobs, "Contracts paid in full", "check", "purple"],
-    ["Revenue Collected", money.format(metrics.closedValue), "Confirmed payments received", "dollar", "orange"],
-    ["Pipeline Value", money.format(metrics.pipelineValue), "All non-lost job value", "bar-chart", "cyan"],
+    ["Total Leads", shown(metrics.leads), note(`${metrics.openLeads} with open jobs · all time`), "user", "blue"],
+    ["Estimates Sent", shown(metrics.estimatesSent), note("Sent or won estimates · all time"), "file", "green"],
+    ["Jobs Paid", shown(metrics.closedJobs), note("Contracts paid in full · all time"), "check", "purple"],
+    ["Revenue Collected", shown(money.format(metrics.closedValue)), note("All confirmed payments · all time"), "dollar", "orange"],
+    ["Pipeline Value", shown(money.format(metrics.pipelineValue)), note("Value of all jobs not lost"), "bar-chart", "cyan"],
   ];
 
   els.summaryStrip.innerHTML = cards
@@ -6463,7 +7069,9 @@ function renderDashboard() {
     )}`;
   }
 
-  if (els.leaderboardTableBody) {
+  if (els.leaderboardTableBody && dashboardDataSource() === "pending") {
+    els.leaderboardTableBody.innerHTML = '<tr><td colspan="5"><div class="empty-state">Loading all records…</div></td></tr>';
+  } else if (els.leaderboardTableBody) {
     els.leaderboardTableBody.innerHTML = rows.length
       ? rows
           .map(
@@ -6507,24 +7115,43 @@ function renderDashboardTasks() {
 
 function renderPipelineOverview() {
   if (!els.pipelineOverview) return;
+  const source = dashboardDataSource();
+  if (source === "pending") {
+    els.pipelineOverview.innerHTML = '<div class="empty-state compact-empty">Loading all records…</div>';
+    return;
+  }
   const jobs = allJobs();
-  const aggregateStages = dashboardAggregateTotals && window.JobCrestDashboardData
+  const aggregateStages = source === "server" && window.JobCrestDashboardData
     ? window.JobCrestDashboardData.stageGroups(dashboardAggregateTotals, statuses)
     : null;
-  const totalValue = dashboardAggregateTotals ? number(dashboardAggregateTotals.pipelineValue) : jobs.reduce((sum, job) => sum + number(job.value), 0);
+  // The same figure as the Pipeline Value card above: every job that is not Lost.
+  const totalValue = dashboardMetrics().pipelineValue;
   const stages = aggregateStages || statuses.map((status) => {
     const stageJobs = jobs.filter((job) => job.status === status);
     const stageLeadIds = new Set(stageJobs.map((job) => job.contactId));
     return { status, count: stageLeadIds.size, value: stageJobs.reduce((sum, job) => sum + number(job.value), 0) };
   });
+  // Stages used by Construction and Home Services jobs are not roofing stages;
+  // show them as one group so the ribbon accounts for every job.
+  if (!aggregateStages) {
+    const otherJobs = jobs.filter((job) => !statuses.includes(job.status));
+    if (otherJobs.length) {
+      stages.splice(Math.max(stages.length - 1, 0), 0, {
+        status: "__other__",
+        label: "Other division stages",
+        count: new Set(otherJobs.map((job) => job.contactId)).size,
+        value: otherJobs.reduce((sum, job) => sum + number(job.value), 0),
+      });
+    }
+  }
 
   els.pipelineOverview.innerHTML = `
     <div class="pipeline-ribbon">
       ${stages
         .map(
           (stage, index) => `
-            <button class="pipeline-stage stage-${index}" type="button" data-dashboard-stage="${escapeHtml(stage.status)}" aria-label="View ${stage.count} ${escapeHtml(stage.status)} lead${stage.count === 1 ? "" : "s"}">
-              <span>${escapeHtml(leadStatusLabel(stage.status))}</span>
+            <button class="pipeline-stage stage-${index}" type="button" ${stage.status === "__other__" ? 'data-view="pipeline"' : `data-dashboard-stage="${escapeHtml(stage.status)}"`} aria-label="View ${stage.count} ${escapeHtml(stage.label || stage.status)} lead${stage.count === 1 ? "" : "s"}">
+              <span>${escapeHtml(stage.label || leadStatusLabel(stage.status))}</span>
               <strong>${stage.count}</strong>
               <small>${stage.count === 1 ? "1 lead" : `${stage.count} leads`} · ${money.format(stage.value)}</small>
             </button>
@@ -6532,7 +7159,7 @@ function renderPipelineOverview() {
         )
         .join("")}
     </div>
-    <div class="pipeline-total">Total Pipeline Value: <strong>${money.format(totalValue)}</strong></div>
+    <div class="pipeline-total">Total Pipeline Value: <strong>${money.format(totalValue)}</strong> <small>· leads per stage; a lead with jobs in two stages is counted in both</small></div>
   `;
 }
 
@@ -6541,7 +7168,12 @@ function renderRevenueOverview() {
 
   // Build last 6 months of real closed revenue
   const now = new Date();
-  const months = dashboardAggregateTotals && window.JobCrestDashboardData
+  const source = dashboardDataSource();
+  if (source === "pending") {
+    els.revenueChart.innerHTML = '<div class="empty-state compact-empty">Loading all records…</div>';
+    return;
+  }
+  const months = source === "server" && window.JobCrestDashboardData
     ? window.JobCrestDashboardData.revenueMonths(dashboardAggregateTotals, now)
     : Array.from({ length: 6 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
@@ -6553,11 +7185,10 @@ function renderRevenueOverview() {
     };
   });
 
-  if (!dashboardAggregateTotals) allJobs().filter(jobHasFullPayment).forEach((job) => {
-    const d = new Date(job.lastPaymentAt || job.closedDate || job.updatedAt);
-    const bucket = months.find((m) => m.year === d.getFullYear() && m.month === d.getMonth());
-    if (bucket) bucket.value += number(job.paidAmount);
-  });
+  // Each payment lands in the month it was received. The chart used to place a
+  // job's whole paid amount in the month of its latest payment, and only for
+  // jobs paid in full, so money moved between months as jobs were updated.
+  if (source === "local") collectedByMonth(months);
 
   const max = Math.max(...months.map((m) => m.value), 1);
   const W = 390, H = 180, padL = 48, padR = 16, padT = 16, padB = 28;
@@ -6607,18 +7238,27 @@ function renderDashboardDonuts() {
   const leadContacts = visibleContacts().filter((contact) =>
     contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
   );
-  const aggregateData = dashboardAggregateTotals && window.JobCrestDashboardData;
-  const sources = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "leadSources") : aggregateCounts(leadContacts, (contact) => contact.source || "Other");
-  const jobsByType = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "jobTypes") : aggregateCounts(allJobs(), jobType);
-  const productionJobs = allJobs().filter((job) => soldJobStatuses.includes(job.status));
-  const projectStatus = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "projectStatuses") : aggregateCounts(productionJobs, (job) => job.status);
-  renderDonutWidget(els.leadSourcesChart, sources, dashboardAggregateTotals ? number(dashboardAggregateTotals.openLeads) : leadContacts.length, "Total Leads");
+  const source = dashboardDataSource();
+  if (source === "pending") {
+    [els.leadSourcesChart, els.jobsByTypeChart, els.projectStatusChart].forEach((container) => {
+      if (container) container.innerHTML = '<div class="empty-state compact-empty">Loading all records…</div>';
+    });
+    return;
+  }
+  const aggregateData = source === "server" && window.JobCrestDashboardData;
+  const sources = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "leadSources") : topGroupsWithOther(aggregateCounts(leadContacts, (contact) => leadSourceLabel(contact.source)));
+  const jobsByType = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "jobTypes") : topGroupsWithOther(aggregateCounts(allJobs(), jobType));
+  // Sold and still being delivered: after the sale, before the job is closed.
+  const productionJobs = allJobs().filter(jobIsInProduction);
+  const projectStatus = aggregateData ? window.JobCrestDashboardData.groups(dashboardAggregateTotals, "projectStatuses") : topGroupsWithOther(aggregateCounts(productionJobs, (job) => job.status));
+  // The donut shows leads that still have an open job, so it is labelled that way.
+  renderDonutWidget(els.leadSourcesChart, sources, aggregateData ? number(dashboardAggregateTotals.openLeads) : leadContacts.length, "Open Leads");
   renderDonutWidget(els.jobsByTypeChart, jobsByType, dashboardMetrics().totalJobs, "Total Jobs");
   renderDonutWidget(
     els.projectStatusChart,
     projectStatus,
-    dashboardAggregateTotals ? projectStatus.reduce((sum, item) => sum + item.count, 0) : productionJobs.length,
-    "Active Projects",
+    aggregateData ? projectStatus.reduce((sum, item) => sum + item.count, 0) : productionJobs.length,
+    "Jobs in Production",
   );
 }
 
@@ -6933,10 +7573,14 @@ function pipelineLifecycleStatusFor(division, salesStage, currentStatus) {
   if (salesStage === "Lost") return "Lost";
   if (division === "services") {
     if (salesStage === "Scheduled/Quoted" || salesStage === "Approved") return "Scheduled";
-    if (salesStage === "Operations Handoff") return currentStatus === "Invoiced" ? "Invoiced" : "Completed";
+    // Handing a sold service job to operations does not mean the work is done:
+    // it stays Scheduled until the job itself is moved to Completed.
+    if (salesStage === "Operations Handoff") return ["Completed", "Invoiced", "Paid"].includes(currentStatus) ? currentStatus : "Scheduled";
+    if (salesStage === "New Request" && currentStatus === "New") return "New";
     return "Request";
   }
   if (division === "construction") {
+    if (salesStage === "New" && currentStatus === "New") return "New";
     if (["New", "Contacted", "Consultation Scheduled"].includes(salesStage)) return "Consultation";
     if (["Site Visit & Measurements", "Design & Selections"].includes(salesStage)) return "Design & Selections";
     if (["Proposal Sent", "Revisions/Decision", "Bid Preparation", "Bid Submitted", "Management Review", "Board Approval"].includes(salesStage)) return "Estimate";
@@ -6948,6 +7592,34 @@ function pipelineLifecycleStatusFor(division, salesStage, currentStatus) {
   if (["Estimate Sent", "Follow-Up/Decision", "Bid Preparation", "Bid Submitted", "Management Review", "Board Approval"].includes(salesStage)) return "Estimate Sent";
   if (["Contract & Deposit", "Production Handoff"].includes(salesStage)) return "Won";
   return currentStatus;
+}
+
+// Checklist items that must be complete before a card leaves a board column
+// when the job's production stage stays the same. Ids match the production
+// stage checklists in workflow-checklists-v65.js.
+const salesStageExitRequirements = {
+  roofing: {
+    "Inspection Scheduled": ["inspection-complete", "photos-measurements", "findings-documented"],
+    "Estimate Sent": ["estimate-sent", "estimate-reviewed", "follow-up-scheduled"],
+    "Contract & Deposit": ["signed-contract", "deposit-terms"],
+  },
+  construction: {
+    "Site Visit & Measurements": ["site-measured", "existing-photos"],
+    "Proposal Sent": ["estimate-created", "estimate-sent", "estimate-reviewed"],
+    "Contract & Deposit": ["signed-contract", "deposit-terms"],
+  },
+  services: {
+    "Scheduled/Quoted": ["price-approved"],
+  },
+};
+
+// Commercial and HOA opportunities pass through four bid-approval stages that
+// residential ones do not have. Show those columns whenever such an
+// opportunity is on the board; without them the card vanished for four stages.
+function pipelineBoardStages(division, accountFilter, rows) {
+  if (accountFilter !== "all" || division === "services") return salesPipelineStagesFor(division, accountFilter);
+  const hasCommercial = rows.some(({ contact, job }) => ["commercial", "hoa"].includes(String(job.propertyType || contact.propertyType || "").toLowerCase()));
+  return salesPipelineStagesFor(division, hasCommercial ? "commercial" : "all");
 }
 
 function pipelineOptionMarkup(values, selected, allLabel) {
@@ -6971,7 +7643,7 @@ function pipelineRowAttention(row, now = Date.now()) {
   };
 }
 
-function pipelineFilteredRows() {
+function pipelineFilteredRows({ ignoreAttention = false } = {}) {
   const now = Date.now();
   const cutoffDays = number(state.pipelineDateRange);
   return pipelineOpportunityRows().filter(({ contact, job, ...row }) => {
@@ -6985,9 +7657,8 @@ function pipelineFilteredRows() {
       const created = localTimestamp(job.createdAt || contact.createdAt);
       if (!Number.isFinite(created) || created < now - cutoffDays * 86400000) return false;
     }
-    const attention = pipelineRowAttention({ contact, job, ...row }, now);
-    if (state.pipelineAttention !== "all" && !attention[state.pipelineAttention]) return false;
-    return true;
+    if (ignoreAttention || state.pipelineAttention === "all") return true;
+    return Boolean(pipelineRowAttention({ contact, job, ...row }, now)[state.pipelineAttention]);
   });
 }
 
@@ -7070,11 +7741,11 @@ function renderPipeline() {
   const division = activeDivisions().some((item) => item.id === state.pipelineDivision) ? state.pipelineDivision : "roofing";
   state.pipelineDivision = division;
   const accountFilter = state.pipelinePropertyType;
-  const stages = salesPipelineStagesFor(division, accountFilter);
   const allRows = pipelineOpportunityRows(division).map((row) => ({
     ...row,
     job: { ...row.job, salesStage: normalizeSalesStage(row.job, row.contact, division, row.job.propertyType) },
   }));
+  const stages = pipelineBoardStages(division, accountFilter, allRows);
   const rows = pipelineFilteredRows().map((row) => ({
     ...row,
     job: { ...row.job, salesStage: normalizeSalesStage(row.job, row.contact, division, row.job.propertyType) },
@@ -7094,7 +7765,10 @@ function renderPipeline() {
   const reps = [...new Set(allRows.map(({ contact, job }) => job.salesRep || contact.salesRep || "Unassigned"))].sort();
   const sources = [...new Set(allRows.map(({ contact }) => contact.source || "No source"))].sort();
   const services = activeServices(division);
-  const attentionRows = allRows.map((row) => ({ row, attention: pipelineRowAttention(row) }));
+  // "Needs attention" counts follow the same filters as the board (everything
+  // except the attention filter itself), so a count and its column agree.
+  const attentionBaseRows = pipelineFilteredRows({ ignoreAttention: true });
+  const attentionRows = attentionBaseRows.map((row) => ({ row, attention: pipelineRowAttention(row) }));
   const attentionDefinitions = [
     ["unassigned", "Unassigned website requests"], ["uncontacted", "New leads not contacted"], ["overdue", "Overdue follow-ups"],
     ["inactive", `Inactive ${state.pipelineStaleDays}+ days`], ["noDecision", "Estimates without decision date"], ["stuck", "Stuck beyond stage target"],
@@ -7112,7 +7786,7 @@ function renderPipeline() {
         <label>Sales rep<select data-pipeline-control="pipelineRep">${pipelineOptionMarkup(reps, state.pipelineRep, "All representatives")}</select></label>
         <label>Service<select data-pipeline-control="pipelineService"><option value="all">All services</option>${services.map((service) => `<option value="${escapeHtml(service.id)}" ${service.id === state.pipelineService ? "selected" : ""}>${escapeHtml(service.name)}</option>`).join("")}</select></label>
         <label>Source<select data-pipeline-control="pipelineSource">${pipelineOptionMarkup(sources, state.pipelineSource, "All sources")}</select></label>
-        <label>Urgency<select data-pipeline-control="pipelineUrgency"><option value="all">All urgency</option><option value="normal" ${state.pipelineUrgency === "normal" ? "selected" : ""}>Normal</option><option value="urgent" ${state.pipelineUrgency === "urgent" ? "selected" : ""}>Urgent</option><option value="emergency" ${state.pipelineUrgency === "emergency" ? "selected" : ""}>Emergency</option></select></label>
+        <label>Urgency<select data-pipeline-control="pipelineUrgency"><option value="all">All urgency</option><option value="normal" ${state.pipelineUrgency === "normal" ? "selected" : ""}>Normal</option><option value="priority" ${state.pipelineUrgency === "priority" ? "selected" : ""}>Priority</option><option value="emergency" ${state.pipelineUrgency === "emergency" ? "selected" : ""}>Emergency</option></select></label>
         <label>Created<select data-pipeline-control="pipelineDateRange"><option value="all">All dates</option><option value="30" ${state.pipelineDateRange === "30" ? "selected" : ""}>Last 30 days</option><option value="90" ${state.pipelineDateRange === "90" ? "selected" : ""}>Last 90 days</option><option value="365" ${state.pipelineDateRange === "365" ? "selected" : ""}>Last year</option></select></label>
       </div>
       <div class="sales-pipeline-metrics">
@@ -7123,7 +7797,7 @@ function renderPipeline() {
       </div>
       <section class="pipeline-attention-strip" aria-label="Opportunities needing attention">
         <div class="pipeline-attention-title"><span data-icon="alert-triangle"></span><div><strong>Needs attention</strong><label>Inactive after <input type="number" min="1" max="90" value="${state.pipelineStaleDays}" data-pipeline-stale-days/> days</label></div></div>
-        <div class="pipeline-attention-items"><button type="button" data-pipeline-attention="all" class="${state.pipelineAttention === "all" ? "active" : ""}"><strong>${allRows.length}</strong><span>All opportunities</span></button>${attentionDefinitions.map(([key, label]) => `<button type="button" data-pipeline-attention="${key}" class="${state.pipelineAttention === key ? "active" : ""}"><strong>${attentionRows.filter((item) => item.attention[key]).length}</strong><span>${escapeHtml(label)}</span></button>`).join("")}</div>
+        <div class="pipeline-attention-items"><button type="button" data-pipeline-attention="all" class="${state.pipelineAttention === "all" ? "active" : ""}"><strong>${attentionBaseRows.length}</strong><span>All opportunities</span></button>${attentionDefinitions.map(([key, label]) => `<button type="button" data-pipeline-attention="${key}" class="${state.pipelineAttention === key ? "active" : ""}"><strong>${attentionRows.filter((item) => item.attention[key]).length}</strong><span>${escapeHtml(label)}</span></button>`).join("")}</div>
       </section>
       <section class="sales-pipeline-board-wrap" aria-label="Sales opportunity board">
         <div class="sales-pipeline-board" style="--pipeline-columns:${stages.length}">${stages.map((stage, index) => {
@@ -7139,6 +7813,9 @@ function renderPipeline() {
     </section>
     ${pipelineSidePanel(selectedRow, selectedRow ? salesPipelineStagesFor(division, selectedRow.job.propertyType) : stages)}
     ${selectedRow ? '<button class="pipeline-drawer-backdrop" type="button" data-pipeline-close aria-label="Close opportunity details"></button>' : ""}`;
+  // The top bar sits in a higher layer than the board and covered the
+  // drawer's title and close button; step it back while the drawer is open.
+  document.body?.classList?.toggle("pipeline-drawer-open", Boolean(selectedRow));
   hydrateIcons(els.pipelineBoard);
 }
 
@@ -7154,7 +7831,13 @@ async function movePipelineOpportunity(contactId, jobId, targetStage) {
   const currentIndex = stages.indexOf(currentStage);
   const targetIndex = stages.indexOf(targetStage);
   if (targetStage !== "Lost") {
-    if (targetIndex < 0) return false;
+    if (targetIndex < 0) {
+      // A refused drop used to do nothing at all; say why.
+      showToast(commercialApprovalStages.includes(targetStage)
+        ? `${targetStage} applies to commercial and HOA accounts only. The next stage for this opportunity is ${stages[currentIndex + 1] || currentStage}.`
+        : `${targetStage} is not a stage in this opportunity's pipeline.`);
+      return false;
+    }
     if (targetIndex < currentIndex && !canManageTeamData()) {
       showToast("Ask a manager to move this opportunity back to an earlier stage.");
       return false;
@@ -7167,16 +7850,22 @@ async function movePipelineOpportunity(contactId, jobId, targetStage) {
 
   const nextLifecycleStatus = pipelineLifecycleStatusFor(division, targetStage, job.status);
   if (targetIndex === currentIndex + 1 && nextLifecycleStatus === job.status) {
-    const checklist = pipelineChecklist(contact, job);
-    if (checklist.items.length && !checklist.ready) {
+    // Both columns belong to one production stage. Only the items that belong
+    // to the column being left are required here; the production stage's full
+    // checklist is enforced below when a move changes that stage. (Requiring
+    // the whole checklist asked for an estimate before an inspection could be
+    // marked complete.)
+    const requiredIds = salesStageExitRequirements[division]?.[currentStage] || [];
+    const missing = pipelineChecklist(contact, job).items.filter((item) => requiredIds.includes(item.id) && !item.complete);
+    if (missing.length) {
       state.pipelineSelectedOpportunity = pipelineOpportunityKey(contactId, jobId);
       saveUiState();
       renderPipeline();
-      showToast(`Complete before moving to ${targetStage}: ${checklist.missing.map((item) => item.label).join(", ")}.`);
+      showToast(`Complete before moving to ${targetStage}: ${missing.map((item) => item.label).join(", ")}.`);
       return false;
     }
   }
-  if (nextLifecycleStatus !== job.status && division === "roofing") {
+  if (nextLifecycleStatus !== job.status) {
     const transition = window.RooflineWorkflowChecklist?.transitionCheck?.(contact, job, nextLifecycleStatus);
     if (transition && !transition.allowed) {
       state.pipelineSelectedOpportunity = pipelineOpportunityKey(contactId, jobId);
@@ -7208,7 +7897,7 @@ async function movePipelineOpportunity(contactId, jobId, targetStage) {
       ...current,
       jobs: nextJobs,
       status: primary?.status || current.status,
-      type: ["Contract & Deposit", "Production Handoff"].includes(targetStage) ? "Customer" : current.type,
+      type: ["Contract & Deposit", "Production Handoff", "Approved", "Operations Handoff"].includes(targetStage) ? "Customer" : current.type,
       closedDate: targetStage === "Contract & Deposit" ? current.closedDate || todayISO() : current.closedDate,
       updates: [{ id: updateId, author: state.currentUser.name || currentOwner().name, status: nextLifecycleStatus, jobId, message: `Sales pipeline moved from ${currentStage} to ${targetStage}.`, createdAt: now }, ...(current.updates || [])],
     };
@@ -7236,6 +7925,7 @@ async function movePipelineOpportunity(contactId, jobId, targetStage) {
   }
   queueCloudSave();
   showToast(`Moved to ${targetStage}.`);
+  void afterJobStageChange(contactId, jobId, job.status, nextLifecycleStatus);
   return true;
 }
 
@@ -7291,8 +7981,80 @@ function renderLeadCard(contact) {
   `;
 }
 
+// Contacts page controls. The page used to be one unsorted, unpaged list of
+// every record with no way to narrow it.
+let contactsSort = "name";
+let contactsTypeFilter = "all";
+let contactsDisplayLimit = 50;
+const CONTACTS_PAGE_SIZE = 50;
+const contactsSorters = {
+  name: (a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }),
+  newest: (a, b) => activityTimestamp(createdMoment(b)) - activityTimestamp(createdMoment(a)),
+  updated: (a, b) => leadActivityTimestamp(b) - leadActivityTimestamp(a),
+  value: (a, b) => contactJobs(b).reduce((sum, job) => sum + number(job.value), 0) - contactJobs(a).reduce((sum, job) => sum + number(job.value), 0),
+};
+
+function contactsForCurrentFilters() {
+  const archived = contactsTypeFilter === "archived";
+  const pool = archived ? archivedContacts() : visibleContacts();
+  const searched = !state.search.trim() ? pool : pool.filter((contact) => contactMatchesSearch(contact, state.search));
+  const duplicateIds = contactsTypeFilter === "duplicates" ? duplicateContactIds(visibleContacts()) : null;
+  const filtered = searched.filter((contact) => {
+    if (contactsTypeFilter === "leads") return contact.type !== "Customer";
+    if (contactsTypeFilter === "customers") return contact.type === "Customer";
+    if (duplicateIds) return duplicateIds.has(contact.id);
+    return true;
+  });
+  // Possible duplicates are listed side by side.
+  const sorter = duplicateIds
+    ? (a, b) => String(contactIdentityKeys(a)[0] || "").localeCompare(String(contactIdentityKeys(b)[0] || "")) || contactsSorters.name(a, b)
+    : contactsSorters[contactsSort] || contactsSorters.name;
+  return [...filtered].sort(sorter);
+}
+
+function renderContactsControls(total, shown) {
+  const table = els.contactsTableBody.closest?.(".table-wrap");
+  if (!table?.parentElement) return;
+  let controls = table.parentElement.querySelector(":scope > .contacts-controls");
+  if (!controls) {
+    controls = document.createElement("div");
+    controls.className = "contacts-controls";
+    table.before(controls);
+    controls.addEventListener("change", (event) => {
+      if (event.target.matches("[data-contacts-sort]")) contactsSort = event.target.value;
+      if (event.target.matches("[data-contacts-filter]")) contactsTypeFilter = event.target.value;
+      contactsDisplayLimit = CONTACTS_PAGE_SIZE;
+      renderContacts();
+    });
+  }
+  const archivedCount = archivedContacts().length;
+  const duplicateCount = duplicateContactIds(visibleContacts()).size;
+  const option = (value, label, selected) => `<option value="${value}" ${selected === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  controls.innerHTML = `
+    <label>Show
+      <select data-contacts-filter aria-label="Filter contacts">
+        ${option("all", "Leads and customers", contactsTypeFilter)}
+        ${option("leads", "Leads only", contactsTypeFilter)}
+        ${option("customers", "Customers only", contactsTypeFilter)}
+        ${option("duplicates", `Possible duplicates (${duplicateCount})`, contactsTypeFilter)}
+        ${archivedCount || contactsTypeFilter === "archived" ? option("archived", `Archived (${archivedCount})`, contactsTypeFilter) : ""}
+      </select>
+    </label>
+    <label>Sort by
+      <select data-contacts-sort aria-label="Sort contacts" ${contactsTypeFilter === "duplicates" ? "disabled" : ""}>
+        ${option("name", "Name A–Z", contactsSort)}
+        ${option("newest", "Newest first", contactsSort)}
+        ${option("updated", "Recently updated", contactsSort)}
+        ${option("value", "Highest job value", contactsSort)}
+      </select>
+    </label>
+    <span class="contacts-count" role="status">${coreRecordsArePartial() ? "Loading all records…" : `Showing ${shown} of ${total}`}</span>`;
+}
+
 function renderContacts() {
-  const contacts = filteredContacts();
+  const allMatching = contactsForCurrentFilters();
+  const contacts = allMatching.slice(0, contactsDisplayLimit);
+  renderContactsControls(allMatching.length, contacts.length);
   const query = state.search.trim().toLowerCase();
   els.contactsTableBody.innerHTML = contacts.length
     ? contacts
@@ -7325,12 +8087,13 @@ function renderContacts() {
           <td><span class="status-pill">${escapeHtml(leadStatusLabel(contact.status))}</span></td>
           <td>${escapeHtml(contact.salesRep || "Unassigned")}</td>
           <td class="contact-lines">
-            <span>${escapeHtml(contact.phone || "No phone")}</span>
+            <span>${escapeHtml(displayPhone(contact.phone) || "No phone")}</span>
             <span>${escapeHtml(contact.email || "No email")}</span>
           </td>
           <td>${money.format(totalValue)}</td>
           <td>
             <div class="row-actions">
+              ${contact.archived ? `<button class="secondary-button" type="button" data-contact-restore="${escapeHtml(contact.id)}">Restore</button>` : `
               <button class="mini-button" type="button" title="Edit contact" aria-label="Edit ${escapeHtml(
                 contact.name,
               )}" data-action="edit-contact" data-contact-id="${contact.id}">
@@ -7341,13 +8104,20 @@ function renderContacts() {
               )}" data-action="estimate-contact" data-contact-id="${contact.id}">
                 <span aria-hidden="true" data-icon="file"></span>
               </button>
+              ${canManageTeamData() ? `<button class="mini-button" type="button" title="Archive lead" aria-label="Archive ${escapeHtml(contact.name)}" data-contact-archive="${escapeHtml(contact.id)}"><span aria-hidden="true" data-icon="folder"></span></button>` : ""}`}
             </div>
           </td>
         </tr>
       `;
         })
         .join("")
-    : '<tr><td colspan="7"><div class="empty-state">No matching contacts</div></td></tr>';
+    : `<tr><td colspan="7"><div class="empty-state">${contactsTypeFilter === "duplicates" ? "No possible duplicates found" : contactsTypeFilter === "archived" ? "No archived leads" : "No matching contacts"}</div></td></tr>`;
+  if (allMatching.length > contacts.length) {
+    els.contactsTableBody.insertAdjacentHTML("beforeend", `<tr><td colspan="7"><div class="server-page-footer"><span>Showing ${contacts.length} of ${allMatching.length}</span><button class="secondary-button" type="button" data-contacts-more>Show ${Math.min(CONTACTS_PAGE_SIZE, allMatching.length - contacts.length)} more</button></div></td></tr>`);
+  }
+  els.contactsTableBody.querySelector("[data-contacts-more]")?.addEventListener("click", () => { contactsDisplayLimit += CONTACTS_PAGE_SIZE; renderContacts(); });
+  els.contactsTableBody.querySelectorAll("[data-contact-archive]").forEach((button) => button.addEventListener("click", () => void setContactArchived(button.dataset.contactArchive, true)));
+  els.contactsTableBody.querySelectorAll("[data-contact-restore]").forEach((button) => button.addEventListener("click", () => void setContactArchived(button.dataset.contactRestore, false)));
   hydrateIcons(els.contactsTableBody);
 }
 
@@ -7358,16 +8128,19 @@ function renderLeadsView() {
   const stage = stageOptions.includes(state.leadStageFilter) ? state.leadStageFilter : "";
   const activeTag = (state.leadTags || []).some((tag) => tag.id === state.leadTagFilter) ? state.leadTagFilter : "";
   if (els.leadStageFilter) {
+    // Counts are only shown once every lead is in memory. Counting the first
+    // page gave "117 open" on one visit and "207" on the next.
+    const countsReady = !coreRecordsArePartial();
     const openLeadCount = visibleContacts().filter((contact) =>
       contactJobs(contact).some((job) => !["Paid", "Lost"].includes(job.status)),
     ).length;
     els.leadStageFilter.innerHTML = [
-      `<option value="">All open leads (${openLeadCount})</option>`,
+      `<option value="">All open leads${countsReady ? ` (${openLeadCount})` : ""}</option>`,
       ...stageOptions.map((pipelineStage) => {
         const count = visibleContacts().filter((contact) =>
           contactJobs(contact).some((job) => job.status === pipelineStage),
         ).length;
-        return `<option value="${escapeHtml(pipelineStage)}">${escapeHtml(leadStatusLabel(pipelineStage))} (${count})</option>`;
+        return `<option value="${escapeHtml(pipelineStage)}">${escapeHtml(leadStatusLabel(pipelineStage))}${countsReady ? ` (${count})` : ""}</option>`;
       }),
     ].join("");
     els.leadStageFilter.value = stage;
@@ -7383,7 +8156,7 @@ function renderLeadsView() {
   const serverPage = serverRecordPages.leads;
   const useServerPage = Boolean(recordPageClient && serverPage.queryKey === serverPageQueryKey("leads") && !serverPage.error && !activeTag);
   const leads = useServerPage
-    ? serverPage.items.map(normalizeServerLeadItem)
+    ? serverPage.items.map(normalizeServerLeadItem).filter((contact) => !contact.archived && !getContact(contact.id)?.archived)
     : sortLeadIntakeChronologically(filteredContacts().filter((contact) =>
       (stage
         ? contactJobs(contact).some((job) => job.status === stage)
@@ -7413,7 +8186,7 @@ function renderLeadsView() {
 }
 
 async function saveCurrentLeadFilter() {
-  const name = String(window.prompt("Name this lead view:", "My lead view") || "").trim().slice(0,120);
+  const name = String((await appPrompt("Save this lead view", "My lead view", { label: "View name", confirmLabel: "Save view", maxLength: 120 })) || "").trim().slice(0,120);
   if (!name) return;
   const filter={id:uid("filter"),name,viewName:"leads",criteria:{stage:state.leadStageFilter||"",tagId:state.leadTagFilter||"",search:state.search||""}};
   try {
@@ -7438,7 +8211,7 @@ function renderJobsView() {
   const query = state.search.trim().toLowerCase();
   const serverPage = serverRecordPages.jobs;
   const useServerPage = Boolean(recordPageClient && serverPage.queryKey === serverPageQueryKey("jobs") && !serverPage.error);
-  const jobs = useServerPage ? serverPage.items.map(normalizeServerJobItem) : allJobs().filter((job) =>
+  const jobs = useServerPage ? serverPage.items.map(normalizeServerJobItem).filter((job) => !getContact(job.contactId)?.archived) : allJobs().filter((job) =>
     query
       ? [job.projectNumber, job.name, job.address, job.status, job.salesRep, job.contactName]
           .filter(Boolean)
@@ -7485,18 +8258,47 @@ function renderJobsView() {
   hydrateIcons(els.jobsTableBody);
 }
 
+// Sold Jobs & Production. A job belongs here from the moment it is sold in its
+// own division (Won, Contract, Scheduled) until it is paid in full. Jobs still
+// being delivered and jobs already paid are separate lists, so "production"
+// never shows finished work and no division is left out.
+let projectsPhaseFilter = "production";
+let projectsDivisionFilter = "all";
 function renderProjectsView() {
   if (!els.projectsGrid) return;
-  const projects = allJobs().filter((job) => !["New", "Contacted", "Lost"].includes(job.status));
-  els.projectsGrid.innerHTML = projects.length
+  const soldJobs = allJobs().filter(jobIsSold);
+  const divisions = activeDivisions();
+  if (projectsDivisionFilter !== "all" && !divisions.some((item) => item.id === projectsDivisionFilter)) projectsDivisionFilter = "all";
+  const inDivision = soldJobs.filter((job) => projectsDivisionFilter === "all" || (job.division || "roofing") === projectsDivisionFilter);
+  const production = inDivision.filter(jobIsInProduction);
+  const closed = inDivision.filter((job) => !jobIsInProduction(job));
+  const projects = projectsPhaseFilter === "closed" ? closed : projectsPhaseFilter === "all" ? inDivision : production;
+  const phases = [["production", "In production", production.length], ["closed", "Paid in full", closed.length], ["all", "All sold jobs", inDivision.length]];
+  const toolbar = `
+    <div class="projects-filter-bar">
+      <div class="finance-tabs" role="tablist" aria-label="Sold job lists">
+        ${phases.map(([key, label, count]) => `<button type="button" role="tab" class="finance-tab ${projectsPhaseFilter === key ? "active" : ""}" aria-selected="${projectsPhaseFilter === key}" data-projects-phase="${key}">${label} (${count})</button>`).join("")}
+      </div>
+      <label class="projects-division-filter">Division
+        <select data-projects-division>
+          <option value="all">All divisions</option>
+          ${divisions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === projectsDivisionFilter ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+        </select>
+      </label>
+    </div>`;
+  const emptyMessage = projectsPhaseFilter === "closed"
+    ? "Jobs appear here once they are paid in full."
+    : "Sold jobs appear here from the moment they are won until they are paid in full.";
+  els.projectsGrid.innerHTML = toolbar + (projects.length
     ? projects
         .map(
           (job) => `
           <article class="record-card">
-            <span class="status-pill">${escapeHtml(leadStatusLabel(job.status))}</span>
+            <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(leadStatusLabel(job.status))}</span>
             ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
             <strong>${escapeHtml(job.name)}</strong>
             <span>${escapeHtml(job.contactName)} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
+            <span class="record-card-meta">${escapeHtml(divisions.find((item) => item.id === (job.division || "roofing"))?.name || "Roofing")} · ${escapeHtml(jobType(job))}</span>
             <p>${escapeHtml((job.address || "No address").split("\n")[0])}</p>
             ${(number(job.contractValue) || number(job.paidAmount)) ? paymentProgressMarkup(jobPaymentMetrics(job), { compact: true }) : ""}
             <div class="row-actions">
@@ -7509,7 +8311,14 @@ function renderProjectsView() {
         `,
         )
         .join("")
-    : '<div class="empty-state">Projects will appear here when jobs move past contacted status</div>';
+    : `<div class="empty-state">${emptyMessage}</div>`);
+  els.projectsGrid.querySelectorAll("[data-projects-phase]").forEach((button) => {
+    button.addEventListener("click", () => { projectsPhaseFilter = button.dataset.projectsPhase; renderProjectsView(); });
+  });
+  els.projectsGrid.querySelector("[data-projects-division]")?.addEventListener("change", (event) => {
+    projectsDivisionFilter = event.target.value || "all";
+    renderProjectsView();
+  });
   hydrateIcons(els.projectsGrid);
 }
 
@@ -7533,7 +8342,7 @@ function renderRecordCard(contact) {
         <div class="lead-card-avatar ${avatarClass}">${escapeHtml(initials)}</div>
         <div class="lead-intake-person-copy">
           <button class="link-button lead-intake-name" type="button" data-action="open-contact" data-contact-id="${contact.id}">${escapeHtml(contact.name)}</button>
-          <span>${escapeHtml(contact.leadNumber || "Lead not numbered yet")}</span>
+          <span>${escapeHtml(contact.leadNumber || "Numbered at its first estimate or sale")}</span>
           <small>${activityLabel} ${escapeHtml(activityDate)}</small>
           ${tags.length ? `<span class="lead-tag-row">${tags.map((tag) => `<span class="lead-tag" style="--tag-color:${escapeHtml(tag.color || "#2563eb")}">${escapeHtml(tag.name)}</span>`).join("")}</span>` : ""}
         </div>
@@ -7661,13 +8470,18 @@ function renderLeadDetail() {
 
   const jobs = contactJobs(contact);
   const jobValue = jobs.reduce((sum, job) => sum + number(job.value), 0);
-  const openJobs = jobs.filter((job) => !["Won", "Lost"].includes(job.status)).length;
+  // Open = not paid in full and not lost. (This excluded Won jobs, so a job in
+  // production counted as closed while a Paid job counted as open.)
+  const openJobs = jobs.filter(jobIsOpen).length;
   const payments = contactPaymentMetrics(contact);
   const paidPercentage = payments.contractValue ? (payments.paidAmount / payments.contractValue) * 100 : 0;
+  // The header follows the job that is selected on this page, not always the
+  // lead's first job.
+  const headerJob = jobs.find((job) => job.id === state.selectedLeadJobId) || jobs[0];
   els.leadDetailStats.innerHTML = [
-    ["Status", leadStatusLabel(contact.status), "Current job stage"],
-    ["Sales Rep", contact.salesRep || "Unassigned", "Owner"],
-    ["Jobs", jobs.length, `${openJobs} open`],
+    ["Stage", leadStatusLabel(headerJob?.status || contact.status), jobs.length > 1 ? `Stage of ${headerJob?.name || "the selected job"}` : "Current job stage"],
+    ["Sales Rep", headerJob?.salesRep || contact.salesRep || "Unassigned", "Owner"],
+    ["Jobs", jobs.length, `${openJobs} open · ${jobs.length - openJobs} closed or lost`],
     ["Contract Value", money.format(payments.contractValue || jobValue), contact.leadNumber || "Assigned at estimate"],
     ["Payments", money.format(payments.paidAmount), `${paidPercentage.toFixed(0)}% paid`],
   ]
@@ -7701,7 +8515,7 @@ function renderLeadDetail() {
       ${contact.email ? `<button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="email"><span aria-hidden="true" data-icon="mail"></span> Email</button>` : ""}
       ${(contact.email || contact.phone) ? `<button class="secondary-button" type="button" data-action="sync-google-contact" data-contact-id="${contact.id}"><span aria-hidden="true" data-icon="user"></span>${contact.googleContactResourceName ? "Update Google Contact" : "Save to Google Contacts"}</button>` : ""}
       <button class="secondary-button" type="button" data-action="estimate-contact" data-contact-id="${contact.id}"><span aria-hidden="true" data-icon="file"></span> Estimate</button>
-      <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="conversation"><span aria-hidden="true" data-icon="message"></span> Log Note</button>
+      <button class="secondary-button" type="button" data-action="open-contact-tab" data-contact-id="${contact.id}" data-tab="conversation"><span aria-hidden="true" data-icon="message"></span> Post Update</button>
     </div>
     <div class="overview-info-grid">
       <div class="overview-info-box">
@@ -7722,7 +8536,7 @@ function renderLeadDetail() {
                 <strong>${escapeHtml(job.name)}</strong>
                 <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(leadStatusLabel(job.status))}</span>
               </span>
-              ${job.projectNumber ? `<span class="project-number-inline">${escapeHtml(job.projectNumber)}</span>` : ""}
+              ${jobDisplayNumber(job) ? `<span class="project-number-inline">${escapeHtml(jobDisplayNumber(job))}</span>` : ""}
               <span class="overview-job-address">${nl2br(job.address || "No address saved")}</span>
               <span class="overview-job-open">Open this job <span aria-hidden="true">→</span></span>
             </button>
@@ -7774,10 +8588,27 @@ async function syncLeadToGoogleContacts(contactId) {
   }
 }
 
+// The number to show for a job. A lead's first job is often numbered through
+// its first estimate, and the number then lived only on the estimate, so that
+// job's card showed no number while the lead's later jobs did.
+function jobDisplayNumber(job = {}) {
+  return job.projectNumber
+    || (state.estimates || []).find((estimate) => estimate.jobId === job.id && estimate.projectNumber)?.projectNumber
+    || "";
+}
+
 function renderLeadJobs(contact) {
   const jobs = contactJobs(contact);
   if (!jobs.some((job) => job.id === state.selectedLeadJobId)) {
     state.selectedLeadJobId = jobs[0]?.id || "";
+  }
+  // The job form is static markup. Fill it the first time a lead is shown and
+  // whenever the lead changes, so Division and Service are never empty and a
+  // half-entered job (or its hidden job id) never carries over to another lead.
+  // A form already filled for this lead is left alone: re-renders must not
+  // discard what the user is typing.
+  if (els.leadJobForm?.elements && (els.leadJobForm.dataset.contactId !== contact.id || !els.leadJobForm.elements.division?.options?.length)) {
+    fillJobForm();
   }
   els.leadJobsList.innerHTML = contactJobs(contact)
     .map(
@@ -7787,7 +8618,7 @@ function renderLeadJobs(contact) {
           <button class="job-select-button" type="button" data-action="open-job" data-contact-id="${contact.id}" data-job-id="${job.id}">
             <span class="job-status-row">
               <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(leadStatusLabel(job.status))}</span>
-              ${job.projectNumber ? `<span class="project-number-pill">${escapeHtml(job.projectNumber)}</span>` : ""}
+              ${jobDisplayNumber(job) ? `<span class="project-number-pill">${escapeHtml(jobDisplayNumber(job))}</span>` : ""}
             </span>
             <strong>${escapeHtml(job.name)}</strong>
             <span>${escapeHtml(job.salesRep || "Unassigned")} - Contract ${money.format(number(job.contractValue) || number(job.value))}</span>
@@ -7906,14 +8737,14 @@ function renderLeadOperations(contact) {
 
   els.inspectionPermitSelect.innerHTML = '<option value="">No linked permit</option>' + permits.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(operationValue(item, "permitNumber", "permit_number") || item.permit_type || "Permit")}</option>`).join("");
   const complianceRows = [
-    ...permits.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "permitType", "permit_type"))}</strong><span>${escapeHtml(operationValue(item, "permitNumber", "permit_number") || "Number pending")} · ${escapeHtml(item.authority || "Authority not set")}</span></div><div class="workflow-meta"><span>${item.expires_on ? `Expires ${formatDate(item.expires_on)}` : item.submitted_on ? `Submitted ${formatDate(item.submitted_on)}` : "Not submitted"}</span>${operationStatusControl("crm_permits", item.id, "status", item.status, [["planned","Planned"],["submitted","Submitted"],["corrections","Corrections"],["approved","Approved"],["issued","Issued"],["closed","Closed"],["expired","Expired"]])}</div></article>`),
-    ...inspections.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.result)}">${escapeHtml(item.result)}</span><strong>${escapeHtml(operationValue(item, "inspectionType", "inspection_type"))}</strong><span>${item.scheduled_at ? formatDateTime(item.scheduled_at) : "Date pending"}${item.reinspection_required ? " · Reinspection required" : ""}</span></div><div class="workflow-meta">${operationStatusControl("crm_inspections", item.id, "result", item.result, [["scheduled","Scheduled"],["passed","Passed"],["failed","Failed"],["reschedule","Reschedule"],["cancelled","Cancelled"]])}</div></article>`),
+    ...permits.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "permitType", "permit_type"))}</strong><span>${escapeHtml(operationValue(item, "permitNumber", "permit_number") || "Number pending")} · ${escapeHtml(item.authority || "Authority not set")}</span></div><div class="workflow-meta"><span>${item.expires_on ? `Expires ${formatDate(item.expires_on)}` : item.submitted_on ? `Submitted ${formatDate(item.submitted_on)}` : "Not submitted"}</span>${operationStatusControl("crm_permits", item.id, "status", item.status, [["planned","Planned"],["submitted","Submitted"],["corrections","Corrections"],["approved","Approved"],["issued","Issued"],["closed","Closed"],["expired","Expired"]])}${operationDeleteButton("crm_permits", item.id, operationValue(item, "permitType", "permit_type"))}</div></article>`),
+    ...inspections.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.result)}">${escapeHtml(item.result)}</span><strong>${escapeHtml(operationValue(item, "inspectionType", "inspection_type"))}</strong><span>${item.scheduled_at ? formatDateTime(item.scheduled_at) : "Date pending"}${item.reinspection_required ? " · Reinspection required" : ""}</span></div><div class="workflow-meta">${operationStatusControl("crm_inspections", item.id, "result", item.result, [["scheduled","Scheduled"],["passed","Passed"],["failed","Failed"],["reschedule","Reschedule"],["cancelled","Cancelled"]])}${operationDeleteButton("crm_inspections", item.id, operationValue(item, "inspectionType", "inspection_type"))}</div></article>`),
   ];
   els.permitsInspectionsList.innerHTML = complianceRows.length ? complianceRows.join("") : operationEmpty("No permits or inspections recorded for this job.");
 
   const contractRows = [
-    ...selections.map((item) => { const variance = number(operationValue(item, "selectedAmount", "selected_amount")) - number(operationValue(item, "allowanceAmount", "allowance_amount")); return `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "itemName", "item_name"))}</strong><span>${escapeHtml(operationValue(item, "selectedProduct", "selected_product") || "Selection pending")}</span></div><div class="workflow-meta"><span>Allowance ${money.format(number(operationValue(item, "allowanceAmount", "allowance_amount")))}</span><strong class="${variance > 0 ? "negative-value" : "positive-value"}">${variance >= 0 ? "+" : ""}${money.format(variance)}</strong>${operationStatusControl("crm_job_selections", item.id, "status", item.status, [["pending","Pending"],["selected","Selected"],["approved","Approved"],["ordered","Ordered"],["installed","Installed"],["declined","Declined"]])}</div></article>`; }),
-    ...changeOrders.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "changeOrderNumber", "change_order_number"))} · ${escapeHtml(item.title)}</strong><span>${escapeHtml(item.description || "No description")}</span></div><div class="workflow-meta"><strong>${money.format(number(item.amount))}</strong><span>${number(operationValue(item, "scheduleDays", "schedule_days"))} schedule days</span>${operationStatusControl("crm_change_orders", item.id, "status", item.status, [["draft","Draft"],["pending","Pending"],["approved","Approved"],["signed","Signed"],["rejected","Rejected"],["void","Void"]])}</div></article>`),
+    ...selections.map((item) => { const variance = number(operationValue(item, "selectedAmount", "selected_amount")) - number(operationValue(item, "allowanceAmount", "allowance_amount")); return `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "itemName", "item_name"))}</strong><span>${escapeHtml(operationValue(item, "selectedProduct", "selected_product") || "Selection pending")}</span></div><div class="workflow-meta"><span>Allowance ${money.format(number(operationValue(item, "allowanceAmount", "allowance_amount")))}</span><strong class="${variance > 0 ? "negative-value" : "positive-value"}">${variance >= 0 ? "+" : ""}${money.format(variance)}</strong>${operationStatusControl("crm_job_selections", item.id, "status", item.status, [["pending","Pending"],["selected","Selected"],["approved","Approved"],["ordered","Ordered"],["installed","Installed"],["declined","Declined"]])}${operationDeleteButton("crm_job_selections", item.id, operationValue(item, "itemName", "item_name"))}</div></article>`; }),
+    ...changeOrders.map((item) => `<article class="workflow-item"><div><span class="status-pill ${statusPillClass(item.status)}">${escapeHtml(item.status)}</span><strong>${escapeHtml(operationValue(item, "changeOrderNumber", "change_order_number"))} · ${escapeHtml(item.title)}</strong><span>${escapeHtml(item.description || "No description")}</span></div><div class="workflow-meta"><strong>${money.format(number(item.amount))}</strong><span>${number(operationValue(item, "scheduleDays", "schedule_days"))} schedule days${(job.appliedChangeOrders || []).some((applied) => applied.id === item.id) ? " · in contract value" : ""}</span>${operationStatusControl("crm_change_orders", item.id, "status", item.status, [["draft","Draft"],["pending","Pending"],["approved","Approved"],["signed","Signed"],["rejected","Rejected"],["void","Void"]])}</div></article>`),
   ];
   els.selectionsChangeOrdersList.innerHTML = contractRows.length ? contractRows.join("") : operationEmpty("No selections, allowances, or change orders yet.");
 
@@ -7946,60 +8777,80 @@ function setOperationsStatus(message, kind = "success") {
   if (els.operationsSaveStatus) setSaveState(els.operationsSaveStatus, message, kind);
 }
 
+// Wraps an async form handler. The browser clears event.currentTarget once the
+// handler awaits, so handlers keep their own reference to the form; this guard
+// also holds the form while a save is in flight, so a second click or Enter
+// cannot create a duplicate row.
+function guardedSubmit(handler) {
+  return async function guardedSubmitHandler(event) {
+    const form = event.currentTarget;
+    if (!form || form.dataset.submitting === "true") { event.preventDefault(); return; }
+    form.dataset.submitting = "true";
+    const buttons = [...form.querySelectorAll('button[type="submit"], button:not([type])')].filter((button) => !button.disabled);
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      await handler.call(this, event);
+    } finally {
+      delete form.dataset.submitting;
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  };
+}
+
 async function savePermit(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const permitType = String(data.get("permitType") || "").trim();
   if (!permitType) return;
   const row = { ...operationBaseRow("permit", contact, job), permit_type: permitType, permit_number: String(data.get("permitNumber") || "").trim(), authority: String(data.get("authority") || "").trim(), status: String(data.get("status") || "planned"), submitted_on: data.get("submittedOn") || null, expires_on: data.get("expiresOn") || null, notes: String(data.get("notes") || "").trim() };
-  try { await insertJobOperation("crm_permits", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Permit saved to this job"); } catch (error) { setOperationsStatus(error.message || "Permit could not be saved", "error"); }
+  try { await insertJobOperation("crm_permits", row); form.reset(); renderLeadOperations(contact); setOperationsStatus("Permit saved to this job"); } catch (error) { setOperationsStatus(error.message || "Permit could not be saved", "error"); }
 }
 
 async function saveInspection(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const inspectionType = String(data.get("inspectionType") || "").trim();
   if (!inspectionType || !data.get("scheduledAt")) return;
   const row = { ...operationBaseRow("inspection", contact, job), permit_id: String(data.get("permitId") || ""), inspection_type: inspectionType, scheduled_at: new Date(String(data.get("scheduledAt"))).toISOString(), result: String(data.get("result") || "scheduled"), notes: String(data.get("notes") || "").trim() };
-  try { await insertJobOperation("crm_inspections", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Inspection saved to this job"); } catch (error) { setOperationsStatus(error.message || "Inspection could not be saved", "error"); }
+  try { await insertJobOperation("crm_inspections", row); form.reset(); renderLeadOperations(contact); setOperationsStatus("Inspection saved to this job"); } catch (error) { setOperationsStatus(error.message || "Inspection could not be saved", "error"); }
 }
 
 async function saveSelection(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const itemName = String(data.get("itemName") || "").trim();
   if (!itemName) return;
   const row = { ...operationBaseRow("selection", contact, job), item_name: itemName, category: String(data.get("category") || "Finish").trim(), allowance_amount: number(data.get("allowanceAmount")), selected_amount: number(data.get("selectedAmount")), selected_product: String(data.get("selectedProduct") || "").trim(), selected_vendor: String(data.get("selectedVendor") || "").trim(), status: String(data.get("status") || "pending") };
-  try { await insertJobOperation("crm_job_selections", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Selection and allowance saved"); } catch (error) { setOperationsStatus(error.message || "Selection could not be saved", "error"); }
+  try { await insertJobOperation("crm_job_selections", row); form.reset(); renderLeadOperations(contact); setOperationsStatus("Selection and allowance saved"); } catch (error) { setOperationsStatus(error.message || "Selection could not be saved", "error"); }
 }
 
 async function saveChangeOrder(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const numberValue = String(data.get("changeOrderNumber") || "").trim();
   const title = String(data.get("title") || "").trim();
   if (!numberValue || !title) return;
   const row = { ...operationBaseRow("change", contact, job), change_order_number: numberValue, title, description: String(data.get("description") || "").trim(), amount: number(data.get("amount")), schedule_days: Math.round(number(data.get("scheduleDays"))), status: String(data.get("status") || "draft"), requested_by_name: state.currentUser?.name || "" };
-  try { await insertJobOperation("crm_change_orders", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Change order saved"); } catch (error) { setOperationsStatus(error.message || "Change order could not be saved", "error"); }
+  try { await insertJobOperation("crm_change_orders", row); form.reset(); renderLeadOperations(contact); setOperationsStatus("Change order saved"); } catch (error) { setOperationsStatus(error.message || "Change order could not be saved", "error"); }
 }
 
 async function saveProgressBilling(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   if (!canManageManualPayments()) return showToast("Only an administrator can create billing draws");
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const row = { ...operationBaseRow("draw", contact, job), draw_number: Math.round(number(data.get("drawNumber"))), name: String(data.get("name") || "").trim(), scheduled_percent: number(data.get("scheduledPercent")), amount: number(data.get("amount")), paid_amount: 0, due_on: data.get("dueOn") || null, status: String(data.get("status") || "planned"), invoice_id: "" };
   if (!row.draw_number || !row.name || row.amount < 0) return;
-  try { await insertJobOperation("crm_progress_billings", row); event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Progress billing draw saved"); } catch (error) { setOperationsStatus(error.message || "Billing draw could not be saved", "error"); }
+  try { await insertJobOperation("crm_progress_billings", row); form.reset(); renderLeadOperations(contact); setOperationsStatus("Progress billing draw saved"); } catch (error) { setOperationsStatus(error.message || "Billing draw could not be saved", "error"); }
 }
 
 async function createOperationalInvoice(contact, job, { id, invoiceNumber, description, amount, issueDate = todayISO(), dueDate = "", notes = "" }) {
@@ -8045,10 +8896,10 @@ async function createProgressDrawInvoice(drawId) {
 }
 
 async function saveMaintenancePlan(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const autoInvoice = data.get("autoInvoice") === "on";
   if (autoInvoice && !canManageManualPayments()) return showToast("Only an administrator can enable recurring invoices");
   const planId = uid("maintenance");
@@ -8101,24 +8952,24 @@ async function saveMaintenancePlan(event) {
         } else state.invoiceSchedules.unshift(normalizeInvoiceSchedule(scheduleRow));
       } else showToast("The plan was saved. Automatic invoices support monthly, quarterly, or annual plans; this frequency remains scheduled without auto-billing.");
     }
-    event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Maintenance plan saved");
+    form.reset(); renderLeadOperations(contact); setOperationsStatus("Maintenance plan saved");
   } catch (error) { setOperationsStatus(error.message || "Maintenance plan could not be saved", "error"); }
 }
 
 async function saveCustomerAccount(event) {
-  event.preventDefault();
-  const data = new FormData(event.currentTarget);
+  event.preventDefault();const form=event.currentTarget;
+  const data = new FormData(form);
   const name = String(data.get("name") || "").trim();
   if (!name) return;
   const row = { id: uid("account"), name, account_type: String(data.get("accountType") || "commercial"), owner_user_id: authSession?.user?.id || "00000000-0000-4000-8000-000000000000", billing_email: String(data.get("billingEmail") || "").trim(), billing_phone: String(data.get("billingPhone") || "").trim(), billing_address: String(data.get("billingAddress") || "").trim(), payment_terms: String(data.get("paymentTerms") || "Due on receipt").trim(), active: true, notes: "" };
-  try { await insertJobOperation("crm_organization_accounts", row); event.currentTarget.reset(); renderLeadOperations(getSelectedContact()); setOperationsStatus("Customer account created"); } catch (error) { setOperationsStatus(error.message || "Account could not be created", "error"); }
+  try { await insertJobOperation("crm_organization_accounts", row); form.reset(); renderLeadOperations(getSelectedContact()); setOperationsStatus("Customer account created"); } catch (error) { setOperationsStatus(error.message || "Account could not be created", "error"); }
 }
 
 async function saveAccountPropertyLink(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact, job } = currentOperationsContext();
   if (!contact || !job) return showToast("Choose a job first");
-  const data = new FormData(event.currentTarget);
+  const data = new FormData(form);
   const accountId = String(data.get("accountId") || "");
   const propertyName = String(data.get("propertyName") || "").trim();
   const address = String(data.get("address") || "").trim();
@@ -8138,7 +8989,7 @@ async function saveAccountPropertyLink(event) {
       if (contactName) await insertJobOperation("crm_account_contacts", contactRow);
       await insertJobOperation("crm_account_record_links", linkRow);
     }
-    event.currentTarget.reset(); renderLeadOperations(contact); setOperationsStatus("Property and job linked to the account");
+    form.reset(); renderLeadOperations(contact); setOperationsStatus("Property and job linked to the account");
   } catch (error) { setOperationsStatus(error.message || "Property could not be linked", "error"); }
 }
 
@@ -8319,23 +9170,23 @@ function renderProjectDelivery(contact) {
 }
 
 async function saveProjectMember(event) {
-  event.preventDefault();
+  event.preventDefault();const form=event.currentTarget;
   const { contact,job } = projectDeliveryContext(); if(!contact||!job)return;
-  const data=new FormData(event.currentTarget);
+  const data=new FormData(form);
   const item=normalizeProjectMember({id:uid("member"),contactId:contact.id,jobId:job.id,memberName:data.get("memberName"),memberEmail:data.get("memberEmail"),roleName:data.get("roleName"),active:true});
-  try { await insertProjectDeliveryRow("crm_project_members",{id:item.id,lead_id:contact.id,job_id:job.id,member_name:item.memberName,member_email:item.memberEmail,role_name:item.roleName,active:true}); if(!canUseCloudSync())state.projectMembers.unshift(item); event.currentTarget.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Project member added"); } catch(error){console.error(error);showToast(error?.message||"Project member could not be added");}
+  try { await insertProjectDeliveryRow("crm_project_members",{id:item.id,lead_id:contact.id,job_id:job.id,member_name:item.memberName,member_email:item.memberEmail,role_name:item.roleName,active:true}); if(!canUseCloudSync())state.projectMembers.unshift(item); form.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Project member added"); } catch(error){console.error(error);showToast(error?.message||"Project member could not be added");}
 }
 
 async function saveProjectNote(event) {
-  event.preventDefault(); const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
-  const data=new FormData(event.currentTarget); const item=normalizeProjectNote({id:uid("projectnote"),contactId:contact.id,jobId:job.id,body:data.get("body"),pinned:data.get("pinned")==="on"});
-  try { await insertProjectDeliveryRow("crm_project_notes",{id:item.id,lead_id:contact.id,job_id:job.id,body:item.body,pinned:item.pinned}); if(!canUseCloudSync())state.projectNotes.unshift(item); event.currentTarget.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Internal note added"); } catch(error){console.error(error);showToast(error?.message||"Note could not be added");}
+  event.preventDefault();const form=event.currentTarget; const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
+  const data=new FormData(form); const item=normalizeProjectNote({id:uid("projectnote"),contactId:contact.id,jobId:job.id,body:data.get("body"),pinned:data.get("pinned")==="on"});
+  try { await insertProjectDeliveryRow("crm_project_notes",{id:item.id,lead_id:contact.id,job_id:job.id,body:item.body,pinned:item.pinned}); if(!canUseCloudSync())state.projectNotes.unshift(item); form.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Internal note added"); } catch(error){console.error(error);showToast(error?.message||"Note could not be added");}
 }
 
 async function saveProjectDiscussion(event) {
-  event.preventDefault(); const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
-  const data=new FormData(event.currentTarget); const item=normalizeProjectDiscussion({id:uid("discussion"),contactId:contact.id,jobId:job.id,body:data.get("body"),visibility:data.get("visibility")});
-  try { await insertProjectDeliveryRow("crm_project_discussions",{id:item.id,lead_id:contact.id,job_id:job.id,body:item.body,visibility:item.visibility}); if(!canUseCloudSync())state.projectDiscussions.unshift(item); event.currentTarget.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Project update posted"); } catch(error){console.error(error);showToast(error?.message||"Update could not be posted");}
+  event.preventDefault();const form=event.currentTarget; const {contact,job}=projectDeliveryContext(); if(!contact||!job)return;
+  const data=new FormData(form); const item=normalizeProjectDiscussion({id:uid("discussion"),contactId:contact.id,jobId:job.id,body:data.get("body"),visibility:data.get("visibility")});
+  try { await insertProjectDeliveryRow("crm_project_discussions",{id:item.id,lead_id:contact.id,job_id:job.id,body:item.body,visibility:item.visibility}); if(!canUseCloudSync())state.projectDiscussions.unshift(item); form.reset(); saveState({localOnly:true}); renderProjectDelivery(contact); showToast("Project update posted"); } catch(error){console.error(error);showToast(error?.message||"Update could not be posted");}
 }
 
 async function toggleJobDeliveryTimer() {
@@ -8358,8 +9209,16 @@ async function applySelectedProjectTemplate() {
 }
 
 function activityTimestamp(value) {
-  const time = new Date(value || 0).getTime();
+  // Date-only values are local calendar days (see formatDateTime).
+  const time = localTimestamp(value || 0);
   return Number.isFinite(time) ? time : 0;
+}
+
+// When something was created, to the minute where that is known. Records store
+// createdAt as a calendar day; createdTimestamp (added for new records) keeps
+// the exact moment so the activity timeline can sort and label it correctly.
+function createdMoment(record = {}) {
+  return record.createdTimestamp || record.createdAt;
 }
 
 function renderLeadActivity(contact) {
@@ -8369,7 +9228,7 @@ function renderLeadActivity(contact) {
   const events = [];
   events.push({
     id: `lead-${contact.id}`,
-    at: contact.createdAt,
+    at: createdMoment(contact),
     type: "lead",
     title: "Lead created",
     detail: `${contact.name} entered the CRM${contact.source ? ` from ${contact.source}` : ""}.`,
@@ -8383,7 +9242,7 @@ function renderLeadActivity(contact) {
     actor: update.author,
   }));
   jobs.forEach((job) => {
-    events.push({ id: `job-${job.id}`, at: job.createdAt, type: "job", title: `Job created: ${job.name}`, detail: job.address || "No address saved" });
+    events.push({ id: `job-${job.id}`, at: createdMoment(job), type: "job", title: `Job created: ${job.name}`, detail: job.address || "No address saved" });
     (job.manualPayments || []).forEach((payment) => events.push({
       id: payment.id,
       at: payment.createdAt || payment.date,
@@ -8479,7 +9338,7 @@ function renderLeadActivity(contact) {
               <time>${escapeHtml(formatDateTime(event.at))}</time>
             </div>
             <p>${escapeHtml(event.detail || "")}</p>
-            ${event.actor ? `<small>${escapeHtml(event.actor)}</small>` : ""}
+            ${event.actor ? `<small>${escapeHtml(actorDisplayName(event.actor))}</small>` : ""}
           </div>
         </article>
       `).join("")
@@ -8708,6 +9567,18 @@ async function saveManualPayment(event) {
   const paymentId = formData.get("paymentId") || uid("payment");
   const previousPayments = [...(job.manualPayments || [])];
   const existing = previousPayments.find((payment) => payment.id === paymentId);
+  // A payment larger than what is owed is usually a typing mistake (a $20,000
+  // payment on a $13,500 balance was accepted without a word). Ask first.
+  const contractTotal = number(job.contractValue) || number(job.value);
+  const collectedAfter = Math.round((number(job.paidAmount) - number(existing?.amount) + amount) * 100) / 100;
+  if (contractTotal > 0 && collectedAfter > contractTotal + 0.005) {
+    const over = Math.round((collectedAfter - contractTotal) * 100) / 100;
+    const proceed = await appConfirm(
+      `This brings the total collected on ${job.name} to ${money.format(collectedAfter)}, which is ${money.format(over)} more than the contract value of ${money.format(contractTotal)}. Record it anyway? The extra shows as a customer credit.`,
+      { title: "Payment is more than the balance", confirmLabel: "Record payment", cancelLabel: "Go back" },
+    );
+    if (!proceed) return;
+  }
   const now = new Date().toISOString();
   const payment = normalizeManualPayment({
     ...(existing || { id: paymentId, createdAt: now }),
@@ -8787,7 +9658,14 @@ async function deleteManualPayment(paymentId) {
   const job = selectedLeadJob(contact);
   const payment = (job?.manualPayments || []).find((item) => item.id === paymentId);
   if (!contact || !job || !payment) return;
-  if (!window.confirm(`Delete the ${money.format(payment.amount)} ${payment.method} payment from ${job.name}?`)) return;
+  const remaining = Math.round((number(job.paidAmount) - number(payment.amount)) * 100) / 100;
+  const contractTotal = number(job.contractValue) || number(job.value);
+  const reopens = job.status === "Paid" && !(contractTotal > 0 && remaining + 0.005 >= contractTotal);
+  const confirmed = await appConfirm(
+    `Delete the ${money.format(payment.amount)} ${payment.method} payment from ${job.name}?${reopens ? `\n\nThe job will no longer be paid in full, so it moves back from Paid to ${stageBeforePaid(job.division)}.` : ""}`,
+    { title: "Delete payment", confirmLabel: "Delete payment", danger: true },
+  );
+  if (!confirmed) return;
 
   const previousPayments = [...(job.manualPayments || [])];
   updateSelectedProfitJob((currentJob) => ({
@@ -8818,6 +9696,9 @@ async function deleteManualPayment(paymentId) {
     }));
     saveState({ localOnly: true });
     renderLeadDetail();
+    // Say so where the user is looking as well as in the toast: this failure
+    // was easy to miss and looked like the Delete button did nothing.
+    setSaveState(els.manualPaymentSaveStatus, "Payment was not deleted. The shared CRM did not confirm the change; reload the page and try again.", "error");
     showToast("Payment was not deleted because the shared CRM did not confirm the change");
     return;
   }
@@ -8944,12 +9825,14 @@ function editCostItem(costId) {
   fillProfitCostForm({ ...item, costId: item.id });
 }
 
-function deleteCostItem(costId) {
+async function deleteCostItem(costId) {
   if (!requireAction("manageJobFinancials")) return;
   const contact = getSelectedContact();
   const job = selectedProfitJob(contact);
   if (!contact || !job) return;
   const item = (job.costItems || []).find((cost) => cost.id === costId);
+  if (!item) return;
+  if (!(await appConfirm(`Delete the ${money.format(item.amount)} ${item.category || "cost"}${item.vendor ? ` from ${item.vendor}` : ""} on ${job.name}?`, { title: "Delete cost", confirmLabel: "Delete cost", danger: true }))) return;
   updateSelectedProfitJob((currentJob) => ({
     ...currentJob,
     costItems: (currentJob.costItems || []).filter((cost) => cost.id !== costId),
@@ -9018,6 +9901,7 @@ function fillJobForm(job = {}) {
     ...job,
   };
   populateDivisionFields(els.leadJobForm, data);
+  els.leadJobForm.dataset.contactId = contact?.id || "";
   Object.entries(data).forEach(([key, value]) => {
     const field = els.leadJobForm.elements[key];
     if (field?.type === "checkbox") field.checked = Boolean(value);
@@ -9075,6 +9959,12 @@ async function saveLeadJob(event) {
   const formData = new FormData(els.leadJobForm);
   const jobId = formData.get("jobId") || uid("job");
   const existing = contactJobs(contact).find((job) => job.id === jobId);
+  const repProblem = salesRepNameProblem(formData.get("salesRep"));
+  if (repProblem && normalizePersonName(formData.get("salesRep")) !== normalizePersonName(existing?.salesRep)) {
+    setSaveState(els.jobSaveStatus, repProblem, "error");
+    showToast(repProblem);
+    return;
+  }
   let reservedProjectNumber = existing?.projectNumber || "";
   if (!existing && contact.leadNumber && canUseCloudSync()) {
     try {
@@ -9088,7 +9978,7 @@ async function saveLeadJob(event) {
   }
   const job = normalizeJob(
     {
-      ...(existing || { id: jobId, createdAt: todayISO() }),
+      ...(existing || { id: jobId, createdAt: todayISO(), createdTimestamp: new Date().toISOString() }),
       id: jobId,
       projectNumber: existing?.projectNumber || reservedProjectNumber || (contact.leadNumber ? nextProjectNumber(contact) : ""),
       name: formData.get("name").trim(),
@@ -9124,9 +10014,11 @@ async function saveLeadJob(event) {
     const divisionStages = pipelineStagesFor(job.division);
     const currentIndex = divisionStages.indexOf(existing.status);
     const nextIndex = divisionStages.indexOf(job.status);
-    const transition = job.division === "roofing"
-      ? window.RooflineWorkflowChecklist?.transitionCheck?.(contact, existing, job.status)
-      : { allowed: job.status === "Lost" || nextIndex === currentIndex + 1, reason: `Move this job one ${job.division} stage at a time.` };
+    // One rule set for every division. The old inline rule for Construction
+    // and Home Services had no way for a manager to step a job back a stage.
+    const transition = window.RooflineWorkflowChecklist?.transitionCheck
+      ? window.RooflineWorkflowChecklist.transitionCheck(contact, existing, job.status)
+      : { allowed: job.status === "Lost" || nextIndex === currentIndex + 1 || (canManageTeamData() && nextIndex >= 0 && nextIndex < currentIndex), reason: "Move this job one stage at a time." };
     if (transition && !transition.allowed) {
       setSaveState(els.jobSaveStatus, transition.reason, "error");
       showToast(transition.reason);
@@ -9141,7 +10033,8 @@ async function saveLeadJob(event) {
 
   const jobUpdate = {
     id: uid("update"),
-    author: job.salesRep || "Local user",
+    // The person making the change, not the job's sales rep.
+    author: currentActorName(),
     status: job.status,
     jobId: job.id,
     message: `${existing ? "Updated" : "Added"} job: ${job.name}. Status: ${job.status}.`,
@@ -9186,6 +10079,7 @@ async function saveLeadJob(event) {
   queueCloudSave();
   fillJobForm({ ...job, jobId: job.id });
   showToast(`${job.name} saved to the shared CRM`);
+  if (existing) void afterJobStageChange(contact.id, job.id, existing.status, job.status);
 }
 
 function editLeadJob(jobId) {
@@ -9230,7 +10124,7 @@ function deleteLeadJob(jobId) {
       updates: [
         {
           id: uid("update"),
-          author: primary.salesRep || "Local user",
+          author: currentActorName(),
           message: `Removed job: ${job?.name || "job"}.`,
           createdAt: new Date().toISOString(),
         },
@@ -9244,8 +10138,12 @@ function deleteLeadJob(jobId) {
   showToast("Job removed");
 }
 
+// Text in a template that the sender is meant to replace before sending.
+const EMAIL_PLACEHOLDER_PATTERN = /\[(?:Add|Insert|Enter)\b[^\]]*\]/i;
+
 function leadEmailTemplate(contact, job = selectedLeadJob(contact), template = "follow-up") {
-  const projectLabel = job?.projectNumber ? `${job.projectNumber} - ${job.name}` : job?.name || "your project";
+  // The customer sees this text: use the job's name, not the internal job number.
+  const projectLabel = job?.name || "your project";
   const firstName = String(contact.name || "there").trim().split(/\s+/)[0] || "there";
   const company = state.company.name || "our team";
   const sender = state.currentUser.name || company;
@@ -9376,6 +10274,14 @@ async function submitLeadEmail(event) {
     return;
   }
   if (!payload.subject || !payload.message) { showToast("Add an email subject and message first"); return; }
+  // Never send the template's own instructions ("[Add the current production
+  // status here.]") to a customer.
+  const unfilled = `${payload.subject}\n${payload.message}`.match(EMAIL_PLACEHOLDER_PATTERN);
+  if (unfilled) {
+    setSaveState(els.leadEmailSaveStatus, `Replace the placeholder text ${unfilled[0]} before sending.`, "error");
+    showToast(`This message still contains placeholder text: ${unfilled[0]}. Replace it before sending.`);
+    return;
+  }
   let providerResult = null;
   if (googleIntegrationState.gmailSend) {
     setSaveState(els.leadEmailSaveStatus, "Sending securely through Gmail…", "saving");
@@ -9414,7 +10320,7 @@ async function submitLeadEmail(event) {
     ),
   }));
   const emailUpdateContact = addContactUpdate(payload.contact.id, {
-    author: state.currentUser.name || "Local user",
+    author: currentActorName(),
     jobId: payload.job.id,
     message: `${providerResult ? "Sent Gmail message" : "Opened email draft"}: ${payload.subject || "Client email"}.`,
   });
@@ -9734,44 +10640,59 @@ async function managedPhotoPreviewUrl(photo) {
   return url;
 }
 
+// Shows one photo's thumbnail in its card. The <img> stays hidden until it has
+// loaded, so it must load eagerly: a hidden image marked loading="lazy" never
+// starts loading at all, which is why no thumbnail ever appeared.
+async function showLeadPhotoPreview(image, photo, stillCurrent = () => true) {
+  if (!image || !photo || image.dataset.previewRequested === "true") return false;
+  image.dataset.previewRequested = "true";
+  try {
+    const url = await managedPhotoPreviewUrl(photo);
+    if (!url || !stillCurrent() || image.isConnected === false) return false;
+    const placeholder = image.closest(".job-photo-preview")?.querySelector("[data-photo-placeholder]");
+    image.addEventListener("load", () => {
+      image.classList.remove("hidden");
+      placeholder?.classList.add("hidden");
+    }, { once: true });
+    image.addEventListener("error", () => {
+      image.classList.add("hidden");
+      placeholder?.classList.remove("hidden");
+    }, { once: true });
+    image.loading = "eager";
+    image.src = url;
+    return true;
+  } catch (error) {
+    console.warn(`Photo ${photo.id} preview could not be loaded`, error);
+    return false;
+  }
+}
+
+// Thumbnails are requested as their cards come into view, not all at once.
+let photoPreviewObserver = null;
 async function hydrateLeadPhotoPreviews(contactId, jobId, displayLimit = PHOTO_PAGE_SIZE) {
   const contact = getContact(contactId);
   if (!contact || state.selectedContactId !== contactId || state.selectedLeadJobId !== jobId) return;
-  const photos = photosForJob(contact, jobId).slice(0, displayLimit);
-  for (let offset = 0; offset < photos.length; offset += 6) {
-    await Promise.all(
-      photos.slice(offset, offset + 6).map(async (photo) => {
-      try {
-        const url = await managedPhotoPreviewUrl(photo);
-        if (!url || state.selectedContactId !== contactId || state.selectedLeadJobId !== jobId) return;
-        const image = [...document.querySelectorAll("[data-photo-preview]")].find(
-          (element) => element.dataset.photoPreview === photo.id,
-        );
-        if (!image) return;
-        const placeholder = image.closest(".job-photo-preview")?.querySelector("[data-photo-placeholder]");
-        image.addEventListener(
-          "load",
-          () => {
-            image.classList.remove("hidden");
-            placeholder?.classList.add("hidden");
-          },
-          { once: true },
-        );
-        image.addEventListener(
-          "error",
-          () => {
-            image.classList.add("hidden");
-            placeholder?.classList.remove("hidden");
-          },
-          { once: true },
-        );
-        image.src = url;
-      } catch (error) {
-        console.warn(`Photo ${photo.id} preview could not be loaded`, error);
-      }
-      }),
-    );
+  const photos = new Map(photosForJob(contact, jobId).slice(0, displayLimit).map((photo) => [photo.id, photo]));
+  const stillCurrent = () => state.selectedContactId === contactId && state.selectedLeadJobId === jobId;
+  const images = [...document.querySelectorAll("[data-photo-preview]")].filter((image) => photos.has(image.dataset.photoPreview));
+  photoPreviewObserver?.disconnect();
+  if (typeof IntersectionObserver !== "function") {
+    for (let offset = 0; offset < images.length; offset += 6) {
+      await Promise.all(images.slice(offset, offset + 6).map((image) => showLeadPhotoPreview(image, photos.get(image.dataset.photoPreview), stillCurrent)));
+    }
+    return;
   }
+  photoPreviewObserver = new IntersectionObserver((entries, observer) => {
+    entries.filter((entry) => entry.isIntersecting).forEach((entry) => {
+      observer.unobserve(entry.target);
+      const image = entry.target.querySelector("[data-photo-preview]");
+      if (image) void showLeadPhotoPreview(image, photos.get(image.dataset.photoPreview), stillCurrent);
+    });
+  }, { rootMargin: "300px 0px" });
+  images.forEach((image) => {
+    const card = image.closest(".job-photo-preview");
+    if (card) photoPreviewObserver.observe(card);
+  });
 }
 
 function renderLeadPhotos(contact) {
@@ -9805,7 +10726,7 @@ function renderLeadPhotos(contact) {
             (photo) => `
               <article class="job-photo-card">
                 <button class="job-photo-preview" type="button" data-action="download-document" data-document-id="${escapeHtml(photo.id)}" aria-label="Open ${escapeHtml(photo.name)}">
-                  <img class="hidden" data-photo-preview="${escapeHtml(photo.id)}" alt="${escapeHtml(photo.name)}" loading="lazy" decoding="async" />
+                  <img class="hidden" data-photo-preview="${escapeHtml(photo.id)}" alt="${escapeHtml(photo.name)}" decoding="async" />
                   <span class="job-photo-placeholder" data-photo-placeholder>
                     <span aria-hidden="true" data-icon="image"></span>
                     <strong>Open photo</strong>
@@ -9849,7 +10770,7 @@ function renderLeadConversation(contact) {
           (update) => `
         <article class="conversation-item">
           <div class="conversation-meta">
-            <strong>${escapeHtml(update.author || "Local user")}</strong>
+            <strong>${escapeHtml(actorDisplayName(update.author) || "CRM user")}</strong>
             <span>${escapeHtml(formatDateTime(update.createdAt))}</span>
           </div>
           ${update.status ? `<span class="status-pill">${escapeHtml(update.status)}</span>` : ""}
@@ -9868,6 +10789,116 @@ function readFileAsDataUrl(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+// When a job is sold, its contract value should be what the customer accepted.
+// The job often still carries the rough figure typed when the lead came in and
+// the accepted estimate stayed "Sent", so the balance due was worked out from
+// the wrong number. Ask rather than guess when the two figures differ.
+async function reconcileSoldJobWithEstimate(contactId, jobId) {
+  const contact = getContact(contactId);
+  const job = contact && contactJobs(contact).find((item) => item.id === jobId);
+  if (!contact || !job || !canAction("manageJobs")) return false;
+  const candidates = state.estimates.filter((estimate) => estimate.contactId === contactId
+    && (estimate.jobId === jobId || (!estimate.jobId && primaryJob(contact)?.id === jobId))
+    && ["Sent", "Won", "Approved"].includes(estimate.status));
+  const accepted = candidates.filter((estimate) => estimate.status !== "Sent");
+  const estimate = accepted.length === 1 ? accepted[0] : candidates.length === 1 ? candidates[0] : null;
+  if (!estimate) {
+    if (candidates.length > 1) showToast(`${job.name} has ${candidates.length} sent estimates. Mark the accepted one as Won on the Estimates page so the contract value follows it.`);
+    return false;
+  }
+  const total = Math.round(totalsFor(estimate).total * 100) / 100;
+  const contractValue = number(job.contractValue) || number(job.value);
+  let useEstimateTotal = false;
+  if (total > 0 && Math.abs(total - contractValue) >= 0.01) {
+    useEstimateTotal = await appConfirm(
+      `${estimate.estimateNumber} totals ${money.format(total)}, but ${job.name} has a contract value of ${money.format(contractValue)}. Which is the agreed contract value?`,
+      { title: "Contract value", confirmLabel: `Use ${money.format(total)}`, cancelLabel: `Keep ${money.format(contractValue)}` },
+    );
+  }
+  const markWon = estimate.status === "Sent" && canAction("manageEstimates");
+  if (!useEstimateTotal && !markWon) return false;
+  if (markWon) {
+    estimate.status = "Won";
+    queueEstimateVerifiedSave(estimate.id, { immediate: true });
+  }
+  if (useEstimateTotal) {
+    const updateId = uid("update");
+    updateContact(contactId, (current) => {
+      const jobs = contactJobs(current).map((item) => item.id === jobId ? { ...item, value: total, contractValue: total } : item);
+      return {
+        ...current,
+        ...summarizeContactJobs(current, jobs),
+        updates: [{ id: updateId, author: currentActorName(), jobId, message: `Contract value set to ${money.format(total)} from ${estimate.estimateNumber}.`, createdAt: new Date().toISOString() }, ...(current.updates || [])],
+      };
+    });
+    saveState({ localOnly: true });
+    let saved = !canUseCloudSync();
+    try { if (canUseCloudSync()) saved = await persistLeadJobRecord(jobId, updateId); } catch (error) { console.warn("Contract value could not be confirmed", error); }
+    if (!saved) queueDurableRecordsSave();
+    showToast(`Contract value updated to ${money.format(total)}.`);
+  }
+  if (state.view === "leadDetail") renderLeadDetail();
+  return true;
+}
+
+// Why a job was lost, kept on the job so lost work can be reported by reason.
+const lostReasonOptions = ["Price", "Chose another contractor", "Insurance claim denied", "Financing", "Timing", "No response", "Not a fit", "Duplicate or test"];
+async function recordLostReason(contactId, jobId) {
+  const job = contactJobs(getContact(contactId) || {}).find((item) => item.id === jobId);
+  if (!job || job.lostReason || !canAction("manageJobs")) return false;
+  const reason = String((await appPrompt("Why was this job lost?", "", {
+    label: `Reason (for example: ${lostReasonOptions.slice(0, 4).join(", ")})`,
+    confirmLabel: "Save reason",
+    cancelLabel: "Skip",
+    maxLength: 200,
+  })) || "").trim();
+  if (!reason) return false;
+  const updateId = uid("update");
+  updateContact(contactId, (current) => {
+    const jobs = contactJobs(current).map((item) => item.id === jobId ? { ...item, lostReason: reason, lostAt: item.lostAt || new Date().toISOString() } : item);
+    return { ...current, jobs, updates: [{ id: updateId, author: currentActorName(), jobId, message: `Lost reason for ${job.name}: ${reason}.`, createdAt: new Date().toISOString() }, ...(current.updates || [])] };
+  });
+  saveState({ localOnly: true });
+  let saved = !canUseCloudSync();
+  try { if (canUseCloudSync()) saved = await persistLeadJobRecord(jobId, updateId); } catch (error) { console.warn("Lost reason could not be confirmed", error); }
+  if (!saved) queueDurableRecordsSave();
+  if (state.view === "leadDetail") renderLeadDetail();
+  return true;
+}
+
+// A lead and its jobs get their numbers with the first estimate. A job sold
+// without one (common for Home Services) went all the way to Paid showing
+// "not numbered". Number it at the moment it is sold.
+async function ensureSoldJobNumbered(contactId, jobId) {
+  const contact = getContact(contactId);
+  const job = contact && contactJobs(contact).find((item) => item.id === jobId);
+  if (!contact || !job || (contact.leadNumber && job.projectNumber)) return false;
+  try {
+    if (canUseCloudSync()) await reserveSharedSalesNumbers(contactId, jobId);
+    else if (!ensureLeadProjectNumbers(contactId, jobId)) return false;
+  } catch (error) {
+    console.warn("A sold job could not be numbered", error);
+    return false;
+  }
+  saveState({ localOnly: true });
+  if (canUseCloudSync()) queueDurableRecordsSave();
+  else saveState();
+  if (state.view === "leadDetail") renderLeadDetail();
+  return true;
+}
+
+// Called after a job's stage change has been saved.
+async function afterJobStageChange(contactId, jobId, previousStatus, nextStatus) {
+  if (previousStatus === nextStatus) return;
+  const job = contactJobs(getContact(contactId) || {}).find((item) => item.id === jobId);
+  if (!job) return;
+  if (nextStatus === "Lost") { await recordLostReason(contactId, jobId); return; }
+  if (nextStatus === (soldStageStartByDivision[job.division || "roofing"] || "Won")) {
+    await ensureSoldJobNumbered(contactId, jobId);
+    await reconcileSoldJobWithEstimate(contactId, jobId);
+  }
 }
 
 function syncEstimatePipelineStage(estimate, estimateStatus = estimate?.status) {
@@ -10358,7 +11389,7 @@ async function uploadLeadDocuments(files) {
           jobId: job.id,
           categoryId: category.id,
           category: category.name,
-          uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+          uploadedBy: currentActorName(),
           versionNumber: 1,
         }, { leadId: contact.id, categoryId: category.id, categories: state.company.documentCategories });
       },
@@ -10563,13 +11594,13 @@ function normalizeDocumentRename(value = "", originalName = "") {
   return extension && !documentExtension(trimmed) ? `${trimmed}${extension}` : trimmed;
 }
 
-function renameLeadDocument(documentId) {
+async function renameLeadDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
   if (!contact) return;
   const document = contact.documents.find((item) => item.id === documentId);
   if (!document) return;
-  const nextName = normalizeDocumentRename(window.prompt("Rename document", document.name), document.name);
+  const nextName = normalizeDocumentRename(await appPrompt("Rename document", document.name, { label: "Document name", confirmLabel: "Rename" }), document.name);
   if (!nextName || nextName === document.name) return;
   updateContact(contact.id, (current) => ({
     ...current,
@@ -10592,7 +11623,7 @@ async function submitLeadConversation(event) {
   const job = selectedLeadJob(contact);
   if (!job) return;
   const formData = new FormData(els.leadConversationForm);
-  const author = formData.get("author") || "Local user";
+  const author = formData.get("author") || currentActorName();
   const status = formData.get("status");
   const message = formData.get("message").trim();
 
@@ -10697,6 +11728,10 @@ function renderCompanyDocuments() {
     els.companyDocumentsList.innerHTML = `<div class="company-document-folder-toolbar">
       <button class="ghost-button" type="button" data-action="close-company-document-folder"><span aria-hidden="true" data-icon="arrow-left"></span>All folders</button>
       <div><span class="company-folder-icon" aria-hidden="true" data-icon="folder"></span><div><strong>${escapeHtml(activeFolder.name)}</strong><span>${folderDocuments.length} document${folderDocuments.length === 1 ? "" : "s"}</span></div></div>
+      ${canAction("manageCompany") ? `<div class="row-actions company-folder-actions">
+        <button class="secondary-button" type="button" data-action="rename-company-document-folder" data-folder-id="${escapeHtml(activeFolder.id)}"><span aria-hidden="true" data-icon="edit"></span>Rename folder</button>
+        <button class="secondary-button" type="button" data-action="delete-company-document-folder" data-folder-id="${escapeHtml(activeFolder.id)}" ${folderDocuments.length ? 'title="Move or remove the documents in this folder first"' : ""}><span aria-hidden="true" data-icon="trash"></span>Delete folder</button>
+      </div>` : ""}
     </div><div class="company-document-list-header"><span>Document</span><span>Uploaded</span><span>Size</span><span>Actions</span></div>
     <div class="company-document-file-list">${visibleDocuments.map((document) => renderCompanyDocumentRow(document, folders)).join("") || '<div class="empty-state">This folder is empty. Choose it above and upload documents.</div>'}</div>
     ${folderDocuments.length > visibleDocuments.length ? `<button class="secondary-button" type="button" data-action="show-more-company-documents" data-folder-id="${escapeHtml(activeFolder.id)}">Show ${Math.min(DOCUMENT_PAGE_SIZE, folderDocuments.length - visibleDocuments.length)} more documents</button>` : ""}`;
@@ -10704,9 +11739,9 @@ function renderCompanyDocuments() {
   hydrateIcons(els.companyDocumentsList);
 }
 
-function createCompanyDocumentFolder() {
+async function createCompanyDocumentFolder() {
   if (!requireAction("manageCompany")) return;
-  const name = String(window.prompt("New folder name", "") || "").trim().slice(0, 120);
+  const name = String((await appPrompt("New folder", "", { label: "Folder name", confirmLabel: "Create folder", maxLength: 120 })) || "").trim().slice(0, 120);
   if (!name) return;
   const folders = companyDocumentFolders();
   if (folders.some((folder) => documentCategoryNameKey(folder.name) === documentCategoryNameKey(name))) return showToast("A folder with that name already exists");
@@ -10716,6 +11751,47 @@ function createCompanyDocumentFolder() {
   selectedCompanyDocumentFolderId = folder.id;
   saveState();
   renderCompanyDocuments();
+}
+
+function companyDocumentsInFolder(folderId, folders = companyDocumentFolders()) {
+  return state.companyDocuments.filter((document) => companyDocumentFolderFor(document, folders)?.id === folderId);
+}
+
+async function renameCompanyDocumentFolder(folderId) {
+  if (!requireAction("manageCompany")) return;
+  const folders = companyDocumentFolders();
+  const folder = folders.find((item) => item.id === folderId);
+  if (!folder) return;
+  const name = String((await appPrompt("Rename folder", folder.name, { label: "Folder name", confirmLabel: "Rename", maxLength: 120 })) || "").trim().slice(0, 120);
+  if (!name || name === folder.name) return;
+  if (folders.some((item) => item.id !== folder.id && documentCategoryNameKey(item.name) === documentCategoryNameKey(name))) return showToast("A folder with that name already exists");
+  // Files matched to this folder only by its old name must carry the folder id
+  // and the new name, or they would reappear in a folder with the old name.
+  const memberIds = new Set(companyDocumentsInFolder(folder.id, folders).map((document) => document.id));
+  state.company.companyDocumentFolders = folders.map((item) => item.id === folder.id ? { ...item, name, updatedAt: new Date().toISOString() } : item);
+  state.companyDocuments = state.companyDocuments.map((document) => memberIds.has(document.id) ? { ...document, folderId: folder.id, category: name } : document);
+  saveState();
+  renderCompanyDocuments();
+  if (memberIds.size && canUseCloudSync() && !(await persistCompanyDocumentRecords([...memberIds]))) queueDurableRecordsSave();
+  showToast(`Folder renamed to ${name}`);
+}
+
+async function deleteCompanyDocumentFolder(folderId) {
+  if (!requireAction("manageCompany")) return;
+  const folders = companyDocumentFolders();
+  const folder = folders.find((item) => item.id === folderId);
+  if (!folder) return;
+  const count = companyDocumentsInFolder(folder.id, folders).length;
+  if (count) {
+    return showToast(`${folder.name} still holds ${count} document${count === 1 ? "" : "s"}. Move or remove ${count === 1 ? "it" : "them"} before deleting the folder.`);
+  }
+  if (!(await appConfirm(`Delete the empty folder "${folder.name}"?`, { title: "Delete folder", confirmLabel: "Delete folder", danger: true }))) return;
+  state.company.companyDocumentFolders = folders.filter((item) => item.id !== folder.id);
+  if (selectedCompanyDocumentFolderId === folder.id) selectedCompanyDocumentFolderId = "";
+  companyDocumentDisplayLimits.delete(folder.id);
+  saveState();
+  renderCompanyDocuments();
+  showToast(`Folder ${folder.name} deleted`);
 }
 
 async function moveCompanyDocumentToFolder(documentId, folderId) {
@@ -10771,7 +11847,7 @@ async function uploadCompanyDocuments(files) {
           size: file.size,
           ...stored,
           uploadedAt: new Date().toISOString(),
-          uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+          uploadedBy: currentActorName(),
           ownerUserId: authSession?.user?.id || "",
           versionNumber: 1,
         });
@@ -10833,6 +11909,8 @@ async function removeCompanyDocument(documentId) {
     showToast("Only the person who uploaded this company file, or a manager, can change it.");
     return;
   }
+  if (!document) return;
+  if (!(await appConfirm(`Remove "${document.name}" from the company library? Everyone on the team loses access to it.`, { title: "Remove document", confirmLabel: "Remove document", danger: true }))) return;
   if (!(await archiveDocumentRecord(document))) {
     showToast("Document was not removed. Check the shared-saving status and try again.");
     return;
@@ -10843,7 +11921,7 @@ async function removeCompanyDocument(documentId) {
   showToast("Company document removed");
 }
 
-function renameCompanyDocument(documentId) {
+async function renameCompanyDocument(documentId) {
   if (!requireAction("manageDocuments")) return;
   const document = state.companyDocuments.find((item) => item.id === documentId);
   if (document && !canChangeCompanyDocument(document)) {
@@ -10851,7 +11929,7 @@ function renameCompanyDocument(documentId) {
     return;
   }
   if (!document) return;
-  const nextName = normalizeDocumentRename(window.prompt("Rename company document", document.name), document.name);
+  const nextName = normalizeDocumentRename(await appPrompt("Rename company document", document.name, { label: "Document name", confirmLabel: "Rename" }), document.name);
   if (!nextName || nextName === document.name) return;
   state.companyDocuments = state.companyDocuments.map((item) =>
     item.id === documentId ? { ...item, name: nextName } : item,
@@ -11974,6 +13052,61 @@ function renderCalendarCanvas() {
   else if (calendarViewMode === "schedule") renderCalendarSchedule();
   else renderCalendarTimeGrid(calendarViewMode === "day" ? 1 : 7);
   hydrateIcons(els.calMonthGrid);
+  renderCalendarJobDates();
+}
+
+// Dates entered on a job's Operations tab: inspections, permit expirations and
+// billing draws. They were recorded on the job but never appeared anywhere a
+// person looks for "what is coming up", so they are listed under the calendar.
+function calendarJobDates(now = new Date()) {
+  const from = new Date(now); from.setDate(from.getDate() - 14); from.setHours(0, 0, 0, 0);
+  const to = new Date(now); to.setDate(to.getDate() + 60); to.setHours(23, 59, 59, 999);
+  const items = [];
+  const add = (row, at, kind, title) => {
+    const stamp = localTimestamp(at);
+    if (!Number.isFinite(stamp) || stamp < from.getTime() || stamp > to.getTime()) return;
+    const contactId = row.contactId || row.leadId || row.lead_id || "";
+    const jobId = row.jobId || row.job_id || "";
+    const contact = getContact(contactId);
+    if (!contact || contact.archived) return;
+    const job = contactJobs(contact).find((item) => item.id === jobId);
+    items.push({ at, stamp, kind, title, contact, job, overdue: stamp < now.getTime() });
+  };
+  (state.inspections || []).forEach((row) => {
+    if (["passed", "failed", "cancelled"].includes(String(row.result || ""))) return;
+    add(row, operationValue(row, "scheduledAt", "scheduled_at"), "Inspection", operationValue(row, "inspectionType", "inspection_type") || "Inspection");
+  });
+  (state.permits || []).forEach((row) => {
+    if (["closed", "expired", "void"].includes(String(row.status || ""))) return;
+    add(row, operationValue(row, "expiresOn", "expires_on"), "Permit expires", `${operationValue(row, "permitType", "permit_type") || "Permit"}${operationValue(row, "permitNumber", "permit_number") ? ` #${operationValue(row, "permitNumber", "permit_number")}` : ""}`);
+  });
+  (state.progressBillings || []).forEach((row) => {
+    if (["paid", "void"].includes(String(row.status || ""))) return;
+    add(row, operationValue(row, "dueOn", "due_on"), "Billing draw due", `${row.name || "Draw"} · ${money.format(number(row.amount))}`);
+  });
+  return items.sort((a, b) => a.stamp - b.stamp);
+}
+
+function renderCalendarJobDates() {
+  const host = els.calMonthGrid?.parentElement;
+  if (!host || typeof document.createElement !== "function") return;
+  let section = document.getElementById("calendarJobDates");
+  const items = calendarJobDates();
+  if (!items.length) { section?.remove(); return; }
+  if (!section) {
+    section = document.createElement("section");
+    section.id = "calendarJobDates";
+    section.className = "calendar-job-dates";
+    host.append(section);
+  }
+  section.innerHTML = `
+    <div class="calendar-job-dates-heading"><p class="eyebrow">From job Operations</p><h3>Inspections, permit expirations and billing draws</h3><span>Next 60 days</span></div>
+    <div class="calendar-job-dates-list">${items.map((item) => `
+      <button class="calendar-job-date ${item.overdue ? "is-overdue" : ""}" type="button" data-action="open-contact-tab" data-contact-id="${escapeHtml(item.contact.id)}" data-job-id="${escapeHtml(item.job?.id || "")}" data-tab="operations">
+        <time>${escapeHtml(/^\d{4}-\d{2}-\d{2}$/.test(String(item.at)) ? formatDate(item.at) : formatDateTime(item.at))}</time>
+        <span><strong>${escapeHtml(item.kind)}${item.overdue ? " · past due" : ""}</strong><small>${escapeHtml(item.title)}</small></span>
+        <span><small>${escapeHtml(item.contact.name)}</small><small>${escapeHtml(item.job?.name || "")}</small></span>
+      </button>`).join("")}</div>`;
 }
 
 function renderCalendar() {
@@ -12307,9 +13440,11 @@ function renderTaskCard(task, options = {}) {
               <button class="mini-button" type="button" title="Edit task" aria-label="Edit task" data-action="edit-calendar-task" data-task-id="${task.id}">
                 <span aria-hidden="true" data-icon="edit"></span>
               </button>
-              <button class="mini-button" type="button" title="Mark complete" aria-label="Mark task complete" data-action="complete-calendar-task" data-task-id="${task.id}" ${task.completed ? "disabled" : ""}>
+              ${task.completed
+                ? `<button class="secondary-button" type="button" title="Reopen task" data-action="reopen-calendar-task" data-task-id="${task.id}">Reopen</button>`
+                : `<button class="mini-button" type="button" title="Mark complete" aria-label="Mark task complete" data-action="complete-calendar-task" data-task-id="${task.id}">
                 <span aria-hidden="true" data-icon="check"></span>
-              </button>
+              </button>`}
               <button class="mini-button" type="button" title="Delete task" aria-label="Delete task" data-action="delete-calendar-task" data-task-id="${task.id}">
                 <span aria-hidden="true" data-icon="trash"></span>
               </button>`
@@ -12515,6 +13650,36 @@ async function toggleTaskTimer(taskId) {
   await persistTaskWorkflowUpdate(taskId);
 }
 
+// The next due date of a repeating task: the first occurrence after now. A
+// daily task finished three weeks late used to create the day after its old
+// due date, which was already overdue, and so on one day at a time.
+function nextRecurrenceDate(dueAt, recurrence, now = new Date()) {
+  const next = new Date(dueAt);
+  if (Number.isNaN(next.getTime())) return new Date(now);
+  const step = () => {
+    if (recurrence === "daily") next.setDate(next.getDate() + 1);
+    else if (recurrence === "weekly") next.setDate(next.getDate() + 7);
+    else if (recurrence === "monthly") next.setMonth(next.getMonth() + 1);
+    else if (recurrence === "yearly") next.setFullYear(next.getFullYear() + 1);
+    else return false;
+    return true;
+  };
+  if (!step()) return next;
+  for (let guard = 0; next <= now && guard < 5000; guard += 1) step();
+  return next;
+}
+
+async function reopenCalendarTask(taskId) {
+  if (!requireAction("manageTasks")) return;
+  const existing = state.calendarTasks.find((task) => task.id === taskId);
+  if (!existing?.completed) return;
+  state.calendarTasks = state.calendarTasks.map((task) => task.id === taskId
+    ? normalizeCalendarTask({ ...task, completed: false, workflowStatus: "in_progress", updatedAt: new Date().toISOString(), googleSyncStatus: "pending" })
+    : task);
+  await persistTaskWorkflowUpdate(taskId);
+  showToast("Task reopened");
+}
+
 async function completeCalendarTask(taskId) {
   if (!requireAction("manageTasks")) return;
   const existing = state.calendarTasks.find((task) => task.id === taskId);
@@ -12536,11 +13701,7 @@ async function completeCalendarTask(taskId) {
   );
   let nextTask = null;
   if (existing.recurrence && existing.recurrence !== "none") {
-    const nextDue = new Date(existing.dueAt);
-    if (existing.recurrence === "daily") nextDue.setDate(nextDue.getDate() + 1);
-    if (existing.recurrence === "weekly") nextDue.setDate(nextDue.getDate() + 7);
-    if (existing.recurrence === "monthly") nextDue.setMonth(nextDue.getMonth() + 1);
-    if (existing.recurrence === "yearly") nextDue.setFullYear(nextDue.getFullYear() + 1);
+    const nextDue = nextRecurrenceDate(existing.dueAt, existing.recurrence);
     nextTask = normalizeCalendarTask({
       ...existing,
       id: uid("task"),
@@ -12574,6 +13735,7 @@ async function deleteCalendarTask(taskId) {
   if (!requireAction("manageTasks")) return;
   const task = state.calendarTasks.find((item) => item.id === taskId);
   if (!task) return;
+  if (!(await appConfirm(`Delete the task "${task.title}"?${task.googleEventId || task.googleTaskId ? " It is also removed from Google." : ""}`, { title: "Delete task", confirmLabel: "Delete task", danger: true }))) return;
   if (!(await removeCalendarTaskFromGoogle(task))) return;
   if (!(await removeTaskFromGoogleTasks(task))) return;
   state.calendarTasks = state.calendarTasks.filter((task) => task.id !== taskId);
@@ -13289,8 +14451,34 @@ function invoiceCreditTotal(invoiceId) {
     .reduce((sum, credit) => sum + number(credit.amount), 0);
 }
 
+// Payments recorded on the job itself (the job's Payments tab, or Square) are
+// money received for that job's contract, so they are applied to the job's
+// invoices, oldest first. Without this an invoice kept showing its full
+// balance on a job that was already paid in full, which invited recording the
+// same money a second time.
+function jobPaymentsAppliedToInvoice(invoice) {
+  if (!invoice?.jobId || invoice.status === "void") return 0;
+  const contact = state.contacts.find((item) => item.id === invoice.contactId);
+  const job = contact && contactJobs(contact).find((item) => item.id === invoice.jobId);
+  let pool = number(job?.paidAmount);
+  if (!(pool > 0)) return 0;
+  const siblings = (state.invoices || [])
+    .filter((item) => item.jobId === invoice.jobId && item.contactId === invoice.contactId && item.status !== "void")
+    .sort((a, b) => activityTimestamp(a.issueDate) - activityTimestamp(b.issueDate) || String(a.id).localeCompare(String(b.id)));
+  for (const sibling of siblings) {
+    const owed = Math.max(number(sibling.totalAmount) - number(sibling.amountPaid) - invoiceCreditTotal(sibling.id), 0);
+    const applied = Math.min(pool, owed);
+    if (sibling.id === invoice.id) return Math.round(applied * 100) / 100;
+    pool -= applied;
+    if (pool <= 0) return 0;
+  }
+  return 0;
+}
+
 function invoiceOutstanding(invoice) {
-  return Math.max(number(invoice.totalAmount) - number(invoice.amountPaid) - invoiceCreditTotal(invoice.id), 0);
+  if (invoice?.status === "void") return 0;
+  const owed = number(invoice.totalAmount) - number(invoice.amountPaid) - invoiceCreditTotal(invoice.id) - jobPaymentsAppliedToInvoice(invoice);
+  return Math.max(Math.round(owed * 100) / 100, 0);
 }
 
 function invoiceAging(invoice) {
@@ -13401,6 +14589,50 @@ async function applyInvoiceCredit(event) {
   } catch (error) {
     console.error("Invoice credit failed", error);
     showToast(error?.message || "The credit could not be applied");
+  }
+}
+
+// An invoice raised by mistake could not be removed in any way. Voiding keeps
+// the record (and its number) for the books but takes it out of every total.
+// Invoices with money recorded against them are corrected with a credit or a
+// refund instead, so payment history is never orphaned.
+async function voidInvoice(invoiceId) {
+  if (!canManageManualPayments()) return showToast("Only an administrator can void an invoice");
+  const invoice = (state.invoices || []).find((item) => item.id === invoiceId);
+  if (!invoice || invoice.status === "void") return;
+  if (number(invoice.amountPaid) > 0 || invoiceCreditTotal(invoice.id) > 0) {
+    return showToast("This invoice has payments or credits recorded. Refund or credit it instead of voiding it.");
+  }
+  const confirmed = await appConfirm(
+    `Void invoice ${invoice.invoiceNumber} for ${money.format(invoice.totalAmount)}? It stays on record as void and no longer counts as money owed.`,
+    { title: "Void invoice", confirmLabel: "Void invoice", danger: true },
+  );
+  if (!confirmed) return;
+  try {
+    if (canUseCloudSync()) {
+      const { error } = await cloudClient.from("crm_invoices")
+        .update({ status: "void", updated_by: authSession.user.id })
+        .eq("company_state_id", supabaseStateId()).eq("id", invoice.id);
+      if (error) throw error;
+      const schedule = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id && item.active);
+      if (schedule) {
+        const { error: scheduleError } = await cloudClient.from("crm_invoice_schedules")
+          .update({ active: false, updated_by: authSession.user.id })
+          .eq("company_state_id", supabaseStateId()).eq("id", schedule.id);
+        if (scheduleError) console.warn("The recurring schedule for a voided invoice could not be stopped", scheduleError);
+      }
+      if (!(await initializeFinancialLedger())) throw new Error("Invoice voided, but the ledger could not be refreshed");
+    } else {
+      invoice.status = "void";
+      invoice.updatedAt = new Date().toISOString();
+      (state.invoiceSchedules || []).forEach((item) => { if (item.templateInvoiceId === invoice.id) item.active = false; });
+      saveState({ localOnly: true });
+    }
+    renderInvoicesView();
+    showToast(`${invoice.invoiceNumber} voided`);
+  } catch (error) {
+    console.error("Invoice void failed", error);
+    showToast(error?.message || "The invoice could not be voided");
   }
 }
 
@@ -13584,39 +14816,47 @@ function renderInvoicesView() {
     .filter((estimate) => !convertedEstimateIds.has(estimate.id))
     .reduce((sum, estimate) => sum + (number(estimate.contractValue) || totalsFor(estimate).total), 0);
   const ledgerEntries = financialLedgerEntries();
-  const grossPaid = ledgerEntries.filter((entry) => entry.kind === "Payment").reduce((sum, entry) => sum + number(entry.amount), 0);
-  const totalRefunds = ledgerEntries.filter((entry) => entry.kind === "Refund").reduce((sum, entry) => sum + number(entry.amount), 0);
-  const totalPaid = Math.max(grossPaid - totalRefunds, 0);
-  const totalExpenses = ledgerEntries.filter((entry) => entry.kind === "Expense").reduce((sum, entry) => sum + number(entry.amount), 0);
-  const totalCredits = ledgerEntries.filter((entry) => entry.kind === "Credit").reduce((sum, entry) => sum + number(entry.amount), 0);
-  const totalPending = Math.max(totalInvoiced - totalPaid - totalCredits, 0);
+  const ledger = ledgerTotals(ledgerEntries);
+  const totalRefunds = ledger.refunds;
+  const totalPaid = ledger.collected;
+  const totalExpenses = ledger.expenses;
+  // What customers still owe on issued invoices: each invoice's own balance,
+  // plus the unpaid part of Square invoices. This used to be "invoiced minus
+  // everything ever collected", which is $0 as soon as job payments exceed the
+  // invoiced total, even with an invoice thousands of dollars overdue.
+  const totalPending = internalInvoices.filter((invoice) => invoice.status !== "void").reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + financialInvoices
+    .filter((estimate) => !convertedEstimateIds.has(estimate.id))
+    .reduce((sum, estimate) => sum + Math.max((number(estimate.contractValue) || totalsFor(estimate).total) - number(estimate.paidAmount), 0), 0);
   const overdueInvoices = internalInvoices.filter((invoice) => invoiceAging(invoice).key === "overdue");
+  // Totals wait for every job to load; half the jobs gives half the money.
+  const pendingTotals = coreRecordsArePartial();
+  const cash = (value) => (pendingTotals ? "…" : money.format(value));
 
   const summaryBar = `
     <div class="invoice-summary-bar">
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Invoiced</span>
-        <span class="invoice-summary-value">${money.format(totalInvoiced)}</span>
+        <span class="invoice-summary-label" title="Total of invoices issued from the CRM and through Square, all time">Invoices issued</span>
+        <span class="invoice-summary-value">${cash(totalInvoiced)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Collected</span>
-        <span class="invoice-summary-value" style="color:var(--green)">${money.format(totalPaid)}</span>
+        <span class="invoice-summary-label" title="Every confirmed payment on every job, with or without an invoice, less refunds. All time.">Collected</span>
+        <span class="invoice-summary-value" style="color:var(--green)">${cash(totalPaid)}</span>
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label">Refunded</span>
-        <span class="invoice-summary-value">${money.format(totalRefunds)}</span>
+        <span class="invoice-summary-value">${cash(totalRefunds)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Outstanding</span>
-        <span class="invoice-summary-value" style="color:var(--gold)">${money.format(totalPending)}</span>
+        <span class="invoice-summary-label" title="Unpaid balance on issued invoices">Owed on invoices</span>
+        <span class="invoice-summary-value" style="color:var(--gold)">${cash(totalPending)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Expenses</span>
-        <span class="invoice-summary-value">${money.format(totalExpenses)}</span>
+        <span class="invoice-summary-label" title="Job costs and recorded expenses, all time">Expenses</span>
+        <span class="invoice-summary-value">${cash(totalExpenses)}</span>
       </div>
       <div class="invoice-summary-stat">
-        <span class="invoice-summary-label">Gross cash margin</span>
-        <span class="invoice-summary-value">${money.format(totalPaid - totalExpenses)}</span>
+        <span class="invoice-summary-label" title="Collected minus expenses">Gross cash margin</span>
+        <span class="invoice-summary-value">${cash(totalPaid - totalExpenses)}</span>
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label">Overdue</span>
@@ -13631,19 +14871,22 @@ function renderInvoicesView() {
       <div class="invoice-section-heading"><div><p class="eyebrow">Customer invoices</p><h3>Created from won estimates</h3></div><span class="status-pill">${internalInvoices.length}</span></div>
       ${internalInvoices.length ? `<div class="invoice-list-table">${internalInvoices.map((invoice) => {
         const contact = state.contacts.find((item) => item.id === invoice.contactId);
+        const invoiceJob = contact && contactJobs(contact).find((item) => item.id === invoice.jobId);
         const outstanding = invoiceOutstanding(invoice);
+        const jobPaymentsApplied = jobPaymentsAppliedToInvoice(invoice);
         const aging = invoiceAging(invoice);
         const schedule = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id && item.active);
         const expenses = (state.financialExpenses || []).filter((item) => item.jobId === invoice.jobId).reduce((sum, item) => sum + number(item.amount), 0);
         const grossProfit = number(invoice.amountPaid) - expenses;
         return `<article class="invoice-list-row">
-          <div><strong>${escapeHtml(invoice.invoiceNumber)}</strong><small>${escapeHtml(contact?.name || "Unknown lead")} · ${escapeHtml(aging.label)}</small>${schedule ? `<small>Repeats ${escapeHtml(schedule.cadence)} · next ${escapeHtml(formatDate(schedule.nextIssueDate))}</small>` : ""}</div>
-          <span class="status-pill invoice-aging-${escapeHtml(aging.key)}">${escapeHtml(invoice.status)}</span>
-          <div class="invoice-row-amount"><strong>${money.format(invoice.totalAmount)}</strong><small>${money.format(outstanding)} outstanding · ${money.format(grossProfit)} cash margin</small></div>
+          <div><strong>${escapeHtml(invoice.invoiceNumber)}</strong><small>${escapeHtml(contact?.name || "Unknown lead")}${invoiceJob ? ` · ${escapeHtml(invoiceJob.name)}` : ""} · ${escapeHtml(aging.label)}</small>${schedule ? `<small>Repeats ${escapeHtml(schedule.cadence)} · next ${escapeHtml(formatDate(schedule.nextIssueDate))}</small>` : ""}</div>
+          <span class="status-pill invoice-aging-${escapeHtml(aging.key)}">${escapeHtml(invoice.status === "void" ? "void" : outstanding <= 0 && number(invoice.totalAmount) > 0 && !["paid", "credited"].includes(invoice.status) ? "paid on job" : invoice.status)}</span>
+          <div class="invoice-row-amount"><strong>${money.format(invoice.totalAmount)}</strong><small>${money.format(outstanding)} outstanding${jobPaymentsApplied > 0 ? ` · ${money.format(jobPaymentsApplied)} covered by payments on the job` : ""} · ${money.format(grossProfit)} cash margin</small></div>
           <div class="row-actions invoice-row-actions">
             ${outstanding > 0 && canManageManualPayments() ? `<button class="primary-button" type="button" data-record-invoice-payment="${escapeHtml(invoice.id)}">Payment</button><button class="secondary-button" type="button" data-apply-invoice-credit="${escapeHtml(invoice.id)}">Credit</button>` : ""}
-            ${canManageManualPayments() ? `<button class="secondary-button" type="button" data-schedule-invoice="${escapeHtml(invoice.id)}">${schedule ? "Edit recurring" : "Recurring"}</button>` : ""}
-            <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${escapeHtml(invoice.contactId)}">Open job</button>
+            ${canManageManualPayments() && invoice.status !== "void" ? `<button class="secondary-button" type="button" data-schedule-invoice="${escapeHtml(invoice.id)}">${schedule ? "Edit recurring" : "Recurring"}</button>` : ""}
+            ${canManageManualPayments() && invoice.status !== "void" && !(number(invoice.amountPaid) > 0) ? `<button class="secondary-button" type="button" data-void-invoice="${escapeHtml(invoice.id)}">Void</button>` : ""}
+            <button class="secondary-button" type="button" data-action="open-job" data-contact-id="${escapeHtml(invoice.contactId)}" data-job-id="${escapeHtml(invoice.jobId || "")}">Open job</button>
           </div>
         </article>`;
       }).join("")}</div>` : '<div class="empty-state compact-empty">No internal invoices yet. Convert a won estimate below.</div>'}
@@ -13673,8 +14916,12 @@ function renderInvoicesView() {
     </div>`;
   const billingQueueHeading = '<div class="invoice-section-heading billing-queue-heading"><div><p class="eyebrow">Billing queue</p><h3>Won estimates and Square delivery</h3></div></div>';
 
-  const invoiceWorkspace = internalInvoiceMarkup + billingQueueHeading + (estimates.length
-    ? estimates.map((estimate) => {
+  // The queue is what is ready to bill: won estimates, and anything already
+  // sent through Square or invoiced. It used to list every estimate, drafts
+  // and $0 ones included.
+  const billingQueue = estimates.filter((estimate) => estimate.status === "Won" || estimate.squareInvoiceId || internalInvoiceForEstimate(estimate.id));
+  const invoiceWorkspace = internalInvoiceMarkup + billingQueueHeading + (billingQueue.length
+    ? billingQueue.map((estimate) => {
         const contact = getEstimateContact(estimate);
         const totals = totalsFor(estimate);
         const contractValue = number(estimate.contractValue) || totals.total;
@@ -13793,6 +15040,9 @@ function renderInvoicesView() {
   els.invoicesList.querySelectorAll("[data-schedule-invoice]").forEach((btn) => {
     btn.addEventListener("click", () => openInvoiceScheduleDialog(btn.dataset.scheduleInvoice));
   });
+  els.invoicesList.querySelectorAll("[data-void-invoice]").forEach((btn) => {
+    btn.addEventListener("click", () => voidInvoice(btn.dataset.voidInvoice));
+  });
   els.invoicesList.querySelector("[data-add-finance-expense]")?.addEventListener("click", openFinanceExpenseDialog);
   els.invoicesList.querySelector("[data-run-revenue-automation]")?.addEventListener("click", runRevenueAutomation);
 }
@@ -13810,9 +15060,43 @@ function reviewRequestEmail(contact) {
   };
 }
 
+// The stage at which a job's work has been delivered, so a review can be asked for.
+const deliveredStageByDivision = { roofing: "Completed", construction: "Final Walkthrough", services: "Completed" };
+function jobIsDelivered(job = {}) {
+  if (job.status === "Paid") return true;
+  if (job.status === "Lost") return false;
+  const division = job.division || "roofing";
+  const stages = pipelineStagesFor(division);
+  const deliveredFrom = stages.indexOf(deliveredStageByDivision[division] || "Completed");
+  const index = stages.indexOf(job.status);
+  return deliveredFrom >= 0 && index >= deliveredFrom;
+}
+
+// Remembers that a review was asked for, so nobody asks the same customer twice
+// by accident. The email itself opens in the user's own mail program.
+function markReviewRequested(contactId, jobId) {
+  const contact = getContact(contactId);
+  const job = contact && contactJobs(contact).find((item) => item.id === jobId);
+  if (!contact || !job) return;
+  const now = new Date().toISOString();
+  updateContact(contactId, (current) => ({
+    ...current,
+    jobs: contactJobs(current).map((item) => item.id === jobId ? { ...item, reviewRequestedAt: now, reviewRequestedBy: state.currentUser.name || state.currentUser.email || "" } : item),
+    updates: [{ id: uid("update"), author: state.currentUser.name || "CRM user", jobId, message: `Review request opened for ${job.name}.`, createdAt: now }, ...(current.updates || [])],
+  }));
+  saveState();
+  renderReviewsView();
+}
+
 function renderReviewsView() {
   if (!els.reviewsList) return;
-  const customers = visibleContacts().filter((c) => c.type === "Customer" || soldJobStatuses.includes(c.status));
+  // Only customers whose work has actually been delivered. This list used to
+  // include every customer record, so leads at New or Contacted were offered a
+  // review request.
+  const customers = visibleContacts()
+    .map((contact) => ({ contact, job: contactJobs(contact).filter(jobIsDelivered).sort((a, b) => activityTimestamp(b.closedDate || b.updatedAt) - activityTimestamp(a.closedDate || a.updatedAt))[0] }))
+    .filter((entry) => entry.job)
+    .sort((a, b) => Number(Boolean(a.job.reviewRequestedAt)) - Number(Boolean(b.job.reviewRequestedAt)) || activityTimestamp(b.job.closedDate || b.job.updatedAt) - activityTimestamp(a.job.closedDate || a.job.updatedAt));
   const hasReviewUrl = !!state.company.googleReviewUrl;
 
   const warningBanner = !hasReviewUrl ? `
@@ -13825,11 +15109,11 @@ function renderReviewsView() {
   ` : "";
 
   els.reviewsList.innerHTML = warningBanner + (customers.length
-    ? customers.map((contact) => {
+    ? customers.map(({ contact, job }) => {
         const initials = contactInitials(contact.name);
         const avatarClass = initialsColor(contact.name);
-        const job = primaryJob(contact);
         const email = contact.email || "";
+        const requested = job.reviewRequestedAt ? `Review requested ${formatDate(job.reviewRequestedAt)}${job.reviewRequestedBy ? ` by ${job.reviewRequestedBy}` : ""}` : "";
         return `
           <article class="record-card">
             <div class="record-card-top">
@@ -13837,22 +15121,24 @@ function renderReviewsView() {
               <div style="flex:1;min-width:0">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <strong>${escapeHtml(contact.name)}</strong>
-                  <span class="status-pill pill-won">Won</span>
+                  <span class="status-pill ${statusPillClass(job.status)}">${escapeHtml(leadStatusLabel(job.status))}</span>
                 </div>
                 <span style="font-size:12px;color:var(--muted)">${escapeHtml(job.name || "Completed job")} &middot; ${escapeHtml(email || "No email saved")}</span>
+                ${requested ? `<span style="display:block;font-size:12px;color:var(--green)">${escapeHtml(requested)}</span>` : ""}
               </div>
             </div>
             <div class="row-actions" style="margin-top:8px">
               ${email ? `
-                <a class="primary-button"
+                <a class="${requested ? "secondary-button" : "primary-button"}"
                   href="${mailtoUrl(email, reviewRequestEmail(contact).subject, reviewRequestEmail(contact).message)}"
+                  data-review-request
                   data-contact-id="${contact.id}"
                   data-job-id="${job.id}">
                   <span aria-hidden="true" data-icon="star"></span>
-                  Send Review Request
+                  ${requested ? "Send Again" : "Send Review Request"}
                 </a>
               ` : `<span style="font-size:12px;color:var(--muted)">No email address on file</span>`}
-              <button class="secondary-button" type="button" data-action="open-contact" data-contact-id="${contact.id}">
+              <button class="secondary-button" type="button" data-action="open-job" data-contact-id="${contact.id}" data-job-id="${job.id}">
                 <span aria-hidden="true" data-icon="open"></span>
                 Open
               </button>
@@ -13860,8 +15146,12 @@ function renderReviewsView() {
           </article>
         `;
       }).join("")
-    : '<div class="empty-state">Won customers will appear here for review follow-up</div>');
+    : '<div class="empty-state">Customers appear here once their job is completed, so you can ask for a review.</div>');
 
+  els.reviewsList.querySelectorAll("[data-review-request]").forEach((link) => {
+    // Let the mail program open first, then record the request.
+    link.addEventListener("click", () => window.setTimeout(() => markReviewRequested(link.dataset.contactId, link.dataset.jobId), 400));
+  });
   hydrateIcons(els.reviewsList);
 }
 
@@ -13869,30 +15159,39 @@ function renderReportsView() {
   if (!els.reportsContent) return;
   const metrics = dashboardMetrics();
   // Credit reps when a job is sold, not only once it is fully paid.
+  // Sold means sold in the job's own division (Won, Contract, Scheduled...),
+  // not only the roofing stage names.
   const repRows = aggregateCounts(
-    allJobs().filter((job) => soldJobStatuses.includes(job.status)),
+    allJobs().filter((job) => soldJobStatuses.includes(job.status) || jobIsSold(job)),
     (job) => canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned",
     (job) => number(job.contractValue) || number(job.value),
   );
-  const expenses=state.financialExpenses.reduce((sum,item)=>sum+number(item.amount),0);const refunds=state.financialRefunds.reduce((sum,item)=>sum+number(item.amount),0);const collected=state.financialPayments.reduce((sum,item)=>sum+number(item.amount),0)-refunds;const grossProfit=collected-expenses;
-  const sourceRows=aggregateCounts(visibleContacts(),(contact)=>contact.source||"Unspecified",(contact)=>contactJobs(contact).filter((job)=>soldJobStatuses.includes(job.status)).length);
-  const paymentMethodRows=aggregateCounts(state.financialPayments,(item)=>item.method||"Other",(item)=>number(item.amount));
-  const aging={current:0,days30:0,days60:0,days90:0};state.invoices.forEach((invoice)=>{const due=Math.max(0,invoiceBalance(invoice));if(!due)return;const days=Math.floor((Date.now()-new Date(invoice.dueDate||invoice.issueDate||Date.now()).getTime())/86400000);if(days<=0)aging.current+=due;else if(days<=30)aging.days30+=due;else if(days<=60)aging.days60+=due;else aging.days90+=due;});
+  // The same ledger Billing uses: job payments and costs as well as invoice
+  // payments and recorded expenses. Reports used to read only the invoice
+  // tables and showed $0 collected beside a Billing page showing six figures.
+  const ledgerEntries = financialLedgerEntries();
+  const ledger = ledgerTotals(ledgerEntries);
+  const expenses = ledger.expenses, refunds = ledger.refunds, collected = ledger.collected, grossProfit = collected - expenses;
+  const sourceRows=aggregateCounts(visibleContacts(),(contact)=>leadSourceLabel(contact.source),(contact)=>contactJobs(contact).filter((job)=>soldJobStatuses.includes(job.status) || jobIsSold(job)).length);
+  const paymentMethodRows=aggregateCounts(ledgerEntries.filter((entry)=>entry.kind==="Payment"),(entry)=>entry.label||"Other",(entry)=>number(entry.amount));
+  const aging={current:0,days30:0,days60:0,days90:0};state.invoices.forEach((invoice)=>{const due=Math.max(0,invoiceOutstanding(invoice));if(!due)return;const days=Math.floor((Date.now()-new Date(invoice.dueDate||invoice.issueDate||Date.now()).getTime())/86400000);if(days<=0)aging.current+=due;else if(days<=30)aging.days30+=due;else if(days<=60)aging.days60+=due;else aging.days90+=due;});
   const billableHours=state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60;const activeGoals=(state.crmGoals||[]).filter((goal)=>goal.status==="active");
+  // Company-wide figures wait for every record to load (see dashboardMetrics).
+  const shown = (value) => (metrics.pending ? "…" : value);
   els.reportsContent.innerHTML = `
     <article class="report-card">
       <span class="eyebrow">Pipeline</span>
-      <strong>${money.format(metrics.pipelineValue)}</strong>
-      <span>${metrics.openContracts} open jobs</span>
+      <strong>${shown(money.format(metrics.pipelineValue))}</strong>
+      <span>${metrics.pending ? "Loading all records" : `${metrics.openContracts} open jobs · value of all jobs not lost`}</span>
     </article>
     <article class="report-card">
-      <span class="eyebrow">Closed Revenue</span>
-      <strong>${money.format(metrics.closedValue)}</strong>
-      <span>${metrics.closedJobs} fully paid jobs</span>
+      <span class="eyebrow">Revenue Collected</span>
+      <strong>${shown(money.format(metrics.closedValue))}</strong>
+      <span>${metrics.pending ? "Loading all records" : `All confirmed payments · ${metrics.closedJobs} jobs paid in full`}</span>
     </article>
     <article class="report-card">
       <span class="eyebrow">Estimates Sent</span>
-      <strong>${metrics.estimatesSent}</strong>
+      <strong>${shown(metrics.estimatesSent)}</strong>
       <span>${visibleEstimates().length} total estimates</span>
     </article>
     <article class="report-card wide">
@@ -13926,7 +15225,7 @@ function renderReportsView() {
         </table>
       </div>
     </article>
-    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${money.format(grossProfit)}</strong><span>${money.format(collected)} collected · ${money.format(expenses)} expenses</span></article>
+    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${shown(money.format(grossProfit))}</strong><span>${metrics.pending ? "Loading all records" : `${money.format(collected)} collected · ${money.format(expenses)} expenses${refunds ? ` · ${money.format(refunds)} refunded` : ""}`}</span></article>
     <article class="report-card"><span class="eyebrow">Billable time</span><strong>${billableHours.toFixed(1)} hours</strong><span>${state.jobTimeEntries.length} time entries</span></article>
     <article class="report-card"><span class="eyebrow">Goals</span><strong>${activeGoals.length}</strong><span>active sales and production goals</span></article>
     <article class="report-card wide"><span class="eyebrow">Invoice aging</span><div class="report-metric-row"><span>Current <strong>${money.format(aging.current)}</strong></span><span>1–30 days <strong>${money.format(aging.days30)}</strong></span><span>31–60 days <strong>${money.format(aging.days60)}</strong></span><span>61+ days <strong>${money.format(aging.days90)}</strong></span></div></article>
@@ -13941,13 +15240,13 @@ async function initializeAdministration(){if(!cloudReady||!cloudClient||!authSes
 
 function renderAdministration(){if(!els.adminOperationsSettings)return;els.adminOperationsSettings.classList.toggle("hidden",!canManageTeamData());if(!canManageTeamData())return;els.adminTaxList.innerHTML=state.taxRates.length?state.taxRates.map((item)=>`<article><strong>${escapeHtml(item.name)}</strong><span>${(number(item.rate)*100).toFixed(3).replace(/\.?0+$/,"")}% · ${item.active===false?"Inactive":"Active"}</span></article>`).join(""):'<div class="empty-state">No tax rates configured.</div>';els.adminConfigurationSummary.innerHTML=`<article class="report-card"><span class="eyebrow">Payment methods</span><strong>${state.paymentMethods.filter((item)=>item.active!==false).length}</strong><span>${state.paymentMethods.filter((item)=>item.active!==false).map((item)=>escapeHtml(item.name)).join(", ")||"Defaults load after migration"}</span></article><article class="report-card"><span class="eyebrow">Role capabilities</span><strong>${state.roleCapabilities.length}</strong><span>granular permission rules</span></article><article class="report-card"><span class="eyebrow">Announcements</span><strong>${state.announcements.filter((item)=>item.active!==false).length}</strong><span>active team notices</span></article><article class="report-card"><span class="eyebrow">Templates</span><strong>${state.projectTemplates.length+state.documentTemplates.length}</strong><span>project and document templates</span></article>`;if(els.customerPortalLead)els.customerPortalLead.innerHTML=['<option value="">Choose lead</option>',...visibleContacts().map((contact)=>`<option value="${escapeHtml(contact.id)}">${escapeHtml(contact.name)} · ${escapeHtml(contact.email||"no email")}</option>`)].join("");}
 
-async function saveAdminTax(event){event.preventDefault();if(!requireAction("manageCompany"))return;const data=new FormData(event.currentTarget);const item={id:uid("tax"),name:String(data.get("name")||"").trim(),rate:number(data.get("rate"))/100,active:true};if(!item.name||item.rate<0||item.rate>1)return showToast("Enter a valid tax name and percentage");try{if(canUseCloudSync()){const {error}=await cloudClient.from("crm_tax_rates").insert({company_state_id:supabaseStateId(),id:item.id,name:item.name,rate:item.rate,active:true,created_by:authSession.user.id,updated_by:authSession.user.id});if(error)throw error;await initializeAdministration();}else{state.taxRates.push(item);saveState({localOnly:true});}event.currentTarget.reset();renderAdministration();showToast("Tax rate added");}catch(error){showToast(error?.message||"Tax rate could not be added");}}
+async function saveAdminTax(event){event.preventDefault();const form=event.currentTarget;if(!requireAction("manageCompany"))return;const data=new FormData(form);const item={id:uid("tax"),name:String(data.get("name")||"").trim(),rate:number(data.get("rate"))/100,active:true};if(!item.name||item.rate<0||item.rate>1)return showToast("Enter a valid tax name and percentage");try{if(canUseCloudSync()){const {error}=await cloudClient.from("crm_tax_rates").insert({company_state_id:supabaseStateId(),id:item.id,name:item.name,rate:item.rate,active:true,created_by:authSession.user.id,updated_by:authSession.user.id});if(error)throw error;await initializeAdministration();}else{state.taxRates.push(item);saveState({localOnly:true});}form.reset();renderAdministration();showToast("Tax rate added");}catch(error){showToast(error?.message||"Tax rate could not be added");}}
 
-async function saveAdminAnnouncement(event){event.preventDefault();if(!requireAction("manageCompany"))return;const data=new FormData(event.currentTarget);const item={id:uid("announcement"),title:String(data.get("title")||"").trim(),body:String(data.get("body")||"").trim(),audience_role:String(data.get("audience")||"all"),dismissible:data.get("dismissible")==="on",active:true};if(!item.title||!item.body)return;try{if(canUseCloudSync()){const {error}=await cloudClient.from("crm_announcements").insert({company_state_id:supabaseStateId(),...item,created_by:authSession.user.id,updated_by:authSession.user.id});if(error)throw error;await initializeAdministration();}else{state.announcements.unshift(item);saveState({localOnly:true});}event.currentTarget.reset();renderAdministration();showToast("Announcement published");}catch(error){showToast(error?.message||"Announcement could not be published");}}
+async function saveAdminAnnouncement(event){event.preventDefault();const form=event.currentTarget;if(!requireAction("manageCompany"))return;const data=new FormData(form);const item={id:uid("announcement"),title:String(data.get("title")||"").trim(),body:String(data.get("body")||"").trim(),audience_role:String(data.get("audience")||"all"),dismissible:data.get("dismissible")==="on",active:true};if(!item.title||!item.body)return;try{if(canUseCloudSync()){const {error}=await cloudClient.from("crm_announcements").insert({company_state_id:supabaseStateId(),...item,created_by:authSession.user.id,updated_by:authSession.user.id});if(error)throw error;await initializeAdministration();}else{state.announcements.unshift(item);saveState({localOnly:true});}form.reset();renderAdministration();showToast("Announcement published");}catch(error){showToast(error?.message||"Announcement could not be published");}}
 
-async function inviteCustomerPortal(event){event.preventDefault();if(!requireAction("manageCompany"))return;const data=new FormData(event.currentTarget);const leadId=String(data.get("leadId")||"");const contact=getContact(leadId);const email=String(data.get("email")||"").trim();if(!contact||!email)return;setSaveState(els.customerPortalInviteStatus,"Sending secure portal invitation…","saving");try{const headers=await squareApiHeaders();const response=await fetch("/api/admin/customer-invitations",{method:"POST",headers:{"Content-Type":"application/json",...headers},body:JSON.stringify({leadId,email,displayName:contact.name}),signal:AbortSignal.timeout(20000)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||"Invitation failed");setSaveState(els.customerPortalInviteStatus,`Portal invitation sent to ${email}`,"success");event.currentTarget.reset();renderAdministration();}catch(error){setSaveState(els.customerPortalInviteStatus,error?.message||"Portal invitation failed","error");}}
+async function inviteCustomerPortal(event){event.preventDefault();const form=event.currentTarget;if(!requireAction("manageCompany"))return;const data=new FormData(form);const leadId=String(data.get("leadId")||"");const contact=getContact(leadId);const email=String(data.get("email")||"").trim();if(!contact||!email)return;setSaveState(els.customerPortalInviteStatus,"Sending secure portal invitation…","saving");try{const headers=await squareApiHeaders();const response=await fetch("/api/admin/customer-invitations",{method:"POST",headers:{"Content-Type":"application/json",...headers},body:JSON.stringify({leadId,email,displayName:contact.name}),signal:AbortSignal.timeout(20000)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||"Invitation failed");setSaveState(els.customerPortalInviteStatus,`Portal invitation sent to ${email}`,"success");form.reset();renderAdministration();}catch(error){setSaveState(els.customerPortalInviteStatus,error?.message||"Portal invitation failed","error");}}
 
-async function exportPerformanceReport(){const rows=[["Report","Value"],["Pipeline",dashboardMetrics().pipelineValue],["Collected",state.financialPayments.reduce((sum,item)=>sum+number(item.amount),0)],["Expenses",state.financialExpenses.reduce((sum,item)=>sum+number(item.amount),0)],["Billable hours",(state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60).toFixed(2)]];const csv=rows.map((row)=>row.map((value)=>`"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`jobcrest-performance-${todayISO()}.csv`;link.click();URL.revokeObjectURL(url);if(canUseCloudSync())await cloudClient.from("crm_report_exports").insert({company_state_id:supabaseStateId(),id:uid("reportexport"),report_type:"performance",filters:{},row_count:rows.length-1,requested_by:authSession.user.id});}
+async function exportPerformanceReport(){if(coreRecordsArePartial()&&!(await ensureCompleteCoreRecordsLoaded()))return showToast("The report was not exported because the full record set is still loading. Try again in a moment.");const exportLedger=ledgerTotals();const rows=[["Report","Value"],["Pipeline",dashboardMetrics().pipelineValue],["Collected",exportLedger.collected],["Expenses",exportLedger.expenses],["Billable hours",(state.jobTimeEntries.filter((item)=>item.billable).reduce((sum,item)=>sum+number(item.minutes),0)/60).toFixed(2)]];const csv=rows.map((row)=>row.map((value)=>`"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`jobcrest-performance-${todayISO()}.csv`;link.click();URL.revokeObjectURL(url);if(canUseCloudSync())await cloudClient.from("crm_report_exports").insert({company_state_id:supabaseStateId(),id:uid("reportexport"),report_type:"performance",filters:{},row_count:rows.length-1,requested_by:authSession.user.id});}
 
 async function exportPerformanceReportToGoogleSheets() {
   if (!requireAction("manageCompany")) return;
@@ -14077,9 +15376,21 @@ function renderEstimates() {
   renderEstimatePreview(estimate);
 }
 
+// Estimate numbers count upward, so the highest number is the newest.
+function estimateSequence(estimate = {}) {
+  const sequence = Number(String(estimate.estimateNumber || "").replace(/\D/g, ""));
+  return Number.isFinite(sequence) ? sequence : 0;
+}
+
 function estimateHistoryMarkup(estimate, estimates) {
-  return estimates.length
-    ? estimates
+  // Newest first, always. The list used to follow the order records happened
+  // to load in, which put two recent estimates above forty in ascending order.
+  const ordered = [...estimates].sort((a, b) => estimateSequence(b) - estimateSequence(a)
+    || activityTimestamp(b.issueDate) - activityTimestamp(a.issueDate));
+  // An estimate whose lead has not loaded yet is not an orphan.
+  const missingLeadLabel = coreRecordsArePartial() ? "Loading lead…" : "Lead not found";
+  return ordered.length
+    ? ordered
         .map((item) => {
           const contact = getEstimateContact(item);
           const total = totalsFor(item).total;
@@ -14087,7 +15398,7 @@ function estimateHistoryMarkup(estimate, estimates) {
             <button type="button" class="${item.id === estimate?.id ? "active" : ""}" data-estimate-id="${escapeHtml(item.id)}">
               <span class="estimate-history-main">
                 <strong>${escapeHtml(item.projectTitle || item.estimateNumber)}</strong>
-                <small>${escapeHtml(item.estimateNumber)} · ${escapeHtml(contact?.name || "Unknown lead")}</small>
+                <small>${escapeHtml(item.estimateNumber)} · ${escapeHtml(contact?.name || missingLeadLabel)}</small>
               </span>
               <span class="estimate-history-side">
                 <span class="status-pill">${escapeHtml(item.status)}</span>
@@ -14260,7 +15571,7 @@ function renderEstimatePreview(estimate) {
           </div>
         </div>
         <div class="est-header-meta">
-          <p class="est-doc-label">CONSTRUCTION ESTIMATE</p>
+          <p class="est-doc-label">${escapeHtml(estimateWordingFor(job?.division || contact?.division || "roofing").label)}</p>
           <p class="est-doc-kicker">PROPOSAL &amp; SCOPE OF WORK</p>
           <p class="est-doc-num">${escapeHtml(estimate.estimateNumber)}</p>
           <p class="est-doc-date">${escapeHtml([estimate.leadNumber, estimate.projectNumber].filter(Boolean).join(" · "))}</p>
@@ -14315,7 +15626,7 @@ function renderEstimatePreview(estimate) {
             </tr>
           </thead>
           <tbody>
-            ${estimate.items.map((item) => `
+            ${printableEstimateItems(estimate).map((item) => `
               <tr>
                 <td>
                   <span class="est-item-title">${escapeHtml(item.title || "Line item")}</span>
@@ -14338,12 +15649,12 @@ function renderEstimatePreview(estimate) {
             <div class="est-total-row">
               <span>Tax (${number(estimate.taxRate)}%)</span><span>${money.format(totals.tax)}</span>
             </div>
-            <div class="est-total-row">
-              <span>Deposit</span><span>&minus;${money.format(number(estimate.deposit))}</span>
-            </div>
             <div class="est-total-row est-total-grand">
               <span>Total</span><span>${money.format(totals.total)}</span>
             </div>
+            ${number(estimate.deposit) > 0 ? `<div class="est-total-row">
+              <span>Deposit due at signing</span><span>&minus;${money.format(number(estimate.deposit))}</span>
+            </div>` : ""}
             <div class="est-total-row est-total-balance">
               <span>Balance due on completion</span><span>${money.format(totals.balance)}</span>
             </div>
@@ -14534,7 +15845,7 @@ async function verifyGoogleDriveConnection() {
 }
 
 async function disconnectGoogleWorkspace() {
-  if (!window.confirm("Disconnect Google Workspace from JobCrest? Existing Google events and sent Gmail messages will remain in Google.")) return;
+  if (!(await appConfirm("Disconnect Google Workspace from JobCrest? Existing Google events and sent Gmail messages will remain in Google.", { title: "Disconnect Google Workspace", confirmLabel: "Disconnect", danger: true }))) return;
   try {
     const headers = await squareApiHeaders();
     const response = await fetch("/api/integrations/google/disconnect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
@@ -14608,7 +15919,7 @@ async function connectZohoSign() {
 }
 
 async function disconnectZohoSign() {
-  if (!window.confirm("Disconnect Zoho Sign from JobCrest? Existing Zoho drafts will remain in Zoho Sign.")) return;
+  if (!(await appConfirm("Disconnect Zoho Sign from JobCrest? Existing Zoho drafts will remain in Zoho Sign.", { title: "Disconnect Zoho Sign", confirmLabel: "Disconnect", danger: true }))) return;
   try {
     const headers = await squareApiHeaders();
     const response = await fetch("/api/integrations/zoho/disconnect", { method: "POST", headers, signal: AbortSignal.timeout(15000) });
@@ -14788,25 +16099,25 @@ function toggleDocumentCategory(categoryId) {
   );
 }
 
-function deleteDocumentCategory(categoryId) {
+async function deleteDocumentCategory(categoryId) {
   const category = state.company.documentCategories.find((item) => item.id === categoryId);
   if (!category) return;
   if (documentCategoryDocumentCount(categoryId)) {
     showToast("Only empty categories can be deleted");
     return;
   }
-  if (!window.confirm(`Delete the empty ${category.name} category?`)) return;
+  if (!(await appConfirm(`Delete the empty ${category.name} category?`, { title: "Delete category", confirmLabel: "Delete category", danger: true }))) return;
   saveDocumentCategories(
     state.company.documentCategories.filter((item) => item.id !== categoryId),
     `${category.name} category deleted`,
   );
 }
 
-function mergeDocumentCategory(sourceId, targetId) {
+async function mergeDocumentCategory(sourceId, targetId) {
   const source = state.company.documentCategories.find((category) => category.id === sourceId);
   const target = state.company.documentCategories.find((category) => category.id === targetId);
   if (!source || !target || source.id === target.id) return;
-  if (!window.confirm(`Merge ${source.name} into ${target.name}? All documents will move and ${source.name} will be removed.`)) return;
+  if (!(await appConfirm(`Merge ${source.name} into ${target.name}? All documents will move and ${source.name} will be removed.`, { title: "Merge categories", confirmLabel: "Merge" }))) return;
   state.contacts = state.contacts.map((contact) => ({
     ...contact,
     documents: (contact.documents || []).map((document) =>
@@ -14897,19 +16208,48 @@ function openContactDialog(contactId, defaults = {}) {
   els.contactDialog.showModal();
 }
 
-function saveContactFromForm(event) {
+async function saveContactFromForm(event) {
   event.preventDefault();
   if (!requireAction("manageContacts")) return;
   const formData = new FormData(els.contactForm);
   const id = formData.get("id") || uid("contact");
   const existing = getContact(id);
+  const repProblem = salesRepNameProblem(formData.get("salesRep"));
+  if (repProblem && normalizePersonName(formData.get("salesRep")) !== normalizePersonName(existing?.salesRep)) {
+    showToast(repProblem);
+    els.contactForm.elements.salesRep?.focus();
+    return;
+  }
+  // A new lead with the same phone, email, or name and address as an existing
+  // one is almost always the same person entered twice. Say so before saving.
+  if (!existing) {
+    const duplicates = findDuplicateContacts({ id, name: formData.get("name"), phone: formData.get("phone"), email: formData.get("email"), address: formData.get("address") });
+    if (duplicates.length) {
+      const first = duplicates[0];
+      const choice = await openAppDialog({
+        title: "This may be a duplicate",
+        message: `${first.name}${first.leadNumber ? ` (${first.leadNumber})` : ""}${first.archived ? ", archived," : ""} has the same phone number, email, or name and address${duplicates.length > 1 ? `, and so do ${duplicates.length - 1} other lead${duplicates.length === 2 ? "" : "s"}` : ""}.`,
+        confirmLabel: `Open ${first.name}`,
+        extraLabel: "Save as a new lead",
+        cancelLabel: "Cancel",
+      });
+      if (choice === true) {
+        els.contactDialog.close();
+        if (first.archived) { state.view = "contacts"; saveUiState(); render(); showToast(`${first.name} is archived. Restore it from Contacts > Archived.`); }
+        else openLeadDetail(first.id);
+        return;
+      }
+      if (choice !== "extra") return;
+    }
+  }
   const contact = {
-    ...(existing || { createdAt: todayISO() }),
+    ...(existing || { createdAt: todayISO(), createdTimestamp: new Date().toISOString() }),
     id,
     type: formData.get("type"),
     status: formData.get("status"),
     name: formData.get("name").trim(),
-    source: formData.get("source").trim(),
+    // "REFERRAL", "referral" and "Refferal" are saved as one source.
+    source: formData.get("source").trim() ? leadSourceLabel(formData.get("source")) : "",
     division: formData.get("division") || "roofing",
     service: formData.get("service") || "",
     propertyType: formData.get("propertyType") || "residential",
@@ -14961,7 +16301,7 @@ function saveContactFromForm(event) {
     contact.updates = [
       {
         id: uid("update"),
-        author: contact.salesRep || "Local user",
+        author: currentActorName(),
         status: contact.status,
         message: `Status changed from ${existing.status} to ${contact.status}.`,
         createdAt: new Date().toISOString(),
@@ -15003,7 +16343,13 @@ async function deleteContact(contactId) {
   const contact = getContact(contactId);
   if (!contact) return;
   if (contactHasFinancialHistory(contactId)) {
-    showToast("This lead has invoice or payment history and must be retained for financial records.");
+    // Payment history is never deleted. Offer the archive instead of a toast
+    // that vanished in a second and left the record in every list and total.
+    if (!canManageTeamData()) {
+      showToast("This lead has invoice or payment history and must be retained for financial records. Ask a manager to archive it instead.");
+      return;
+    }
+    await setContactArchived(contactId, true);
     return;
   }
   const hasEstimates = state.estimates.some((estimate) => estimate.contactId === contactId);
@@ -15013,7 +16359,7 @@ async function deleteContact(contactId) {
     documentCount ? `${documentCount} document record${documentCount === 1 ? "" : "s"} (stored file revisions will be retained)` : "",
   ].filter(Boolean).join(" and ");
   const message = affected ? `Delete ${contact.name} and archive ${affected}?` : `Delete ${contact.name}?`;
-  if (!window.confirm(message)) return;
+  if (!(await appConfirm(message, { title: "Delete lead", confirmLabel: "Delete lead", danger: true }))) return;
 
   if (!(await settleDurableWritesBeforeTrustedMutation())) {
     showToast("This lead was not deleted because pending shared changes could not be confirmed.");
@@ -15023,28 +16369,54 @@ async function deleteContact(contactId) {
   const previousEstimates = state.estimates;
   const previousContactId = state.selectedContactId;
   const previousEstimateId = state.selectedEstimateId;
+  const previousView = state.view;
   state.contacts = state.contacts.filter((item) => item.id !== contactId);
   state.estimates = state.estimates.filter((estimate) => estimate.contactId !== contactId);
-  state.selectedContactId = state.contacts[0]?.id || null;
-  state.selectedEstimateId = state.estimates[0]?.id || null;
+  // Go back to the lead list. This used to select whichever lead happened to
+  // be first and show its page, which looked like the delete had failed and
+  // made it easy to delete a second, unrelated lead.
+  state.selectedContactId = null;
+  if (state.selectedEstimateId && !state.estimates.some((estimate) => estimate.id === state.selectedEstimateId)) {
+    state.selectedEstimateId = state.estimates[0]?.id || null;
+  }
+  if (state.view === "leadDetail") state.view = canView("leads") ? "leads" : firstAllowedView();
   saveState({ localOnly: true });
   if (canUseCloudSync() && !(await flushDurableRecordsSave())) {
     state.contacts = previousContacts;
     state.estimates = previousEstimates;
     state.selectedContactId = previousContactId;
     state.selectedEstimateId = previousEstimateId;
+    state.view = previousView;
     saveState({ localOnly: true });
     showToast("The lead was not deleted because the shared CRM did not confirm the archive.");
     render();
     return;
   }
   queueCloudSave();
+  saveUiState();
   els.contactDialog.close();
   render();
-  showToast("Contact deleted");
+  showToast(`${contact.name} deleted`);
 }
 
-async function createEstimate(contactId, shouldRender = true, jobId = "") {
+// A draft nobody has filled in yet: no prices and nothing but the starter line.
+function estimateIsUntouchedDraft(estimate = {}) {
+  return estimate.status === "Draft" && !estimate.squareInvoiceId && totalsFor(estimate).total === 0
+    && (estimate.items || []).every((item) => isPlaceholderEstimateItem(item) || (!number(item.rate) && !String(item.title || "").trim()));
+}
+
+function openExistingEstimate(estimate, contactId, shouldRender = true) {
+  state.selectedEstimateId = estimate.id;
+  state.selectedContactId = contactId;
+  state.newEstimateContactId = "";
+  state.newEstimateJobId = "";
+  state.view = "estimates";
+  saveUiState();
+  if (shouldRender) render();
+  return estimate;
+}
+
+async function createEstimate(contactId, shouldRender = true, jobId = "", { forceNew = false } = {}) {
   if (!requireAction("manageEstimates")) return null;
   if (!contactId) {
     showToast("Choose a lead before creating an estimate");
@@ -15056,6 +16428,32 @@ async function createEstimate(contactId, shouldRender = true, jobId = "") {
     return null;
   }
   const initialJob = contactJobs(contact).find((item) => item.id === jobId) || primaryJob(contact);
+  // The Estimate button on a lead or job used to add a new blank draft on every
+  // click (one job collected ten $0.00 drafts). Reuse an untouched draft, and
+  // ask before adding another estimate to a job that already has one.
+  if (!forceNew && initialJob) {
+    const existing = state.estimates
+      .filter((item) => item.contactId === contactId && (item.jobId === initialJob.id || (!item.jobId && primaryJob(contact)?.id === initialJob.id)))
+      .sort((a, b) => activityTimestamp(b.updatedAt || b.sentAt || b.issueDate) - activityTimestamp(a.updatedAt || a.sentAt || a.issueDate));
+    const untouched = existing.find(estimateIsUntouchedDraft);
+    if (untouched) {
+      showToast(`Opened draft ${untouched.estimateNumber}, which is still blank for this job.`);
+      return openExistingEstimate(untouched, contactId, shouldRender);
+    }
+    if (existing.length) {
+      const latest = existing[0];
+      const choice = await openAppDialog({
+        title: "This job already has an estimate",
+        message: `${initialJob.name} has ${existing.length} estimate${existing.length === 1 ? "" : "s"}. The latest is ${latest.estimateNumber} (${latest.status}, ${money.format(totalsFor(latest).total)}).`,
+        confirmLabel: `Open ${latest.estimateNumber}`,
+        extraLabel: "Create a new estimate",
+        cancelLabel: "Cancel",
+      });
+      if (choice === true) return openExistingEstimate(latest, contactId, shouldRender);
+      if (choice !== "extra") return null;
+    }
+  }
+  const wording = estimateWordingFor(initialJob?.division || contact.division || "roofing");
   const estimateId = uid("estimate");
   let reservation = null;
   if (canUseCloudSync()) {
@@ -15073,15 +16471,14 @@ async function createEstimate(contactId, shouldRender = true, jobId = "") {
     leadNumber: reservation?.leadNumber || contact.leadNumber,
     projectNumber: reservation?.projectNumber || job?.projectNumber || "",
     estimateNumber: reservation?.estimateNumber || nextEstimateNumber(),
-    projectTitle: job?.name || "Exterior Restoration Estimate",
+    projectTitle: job?.name || wording.title,
     status: "Draft",
     projectManager: normalizePersonName(job?.salesRep || contact.salesRep || state.currentUser.name || ""),
     salesRepEmail: state.currentUser.email || state.company.email || "",
     salesRepPhone: state.currentUser.phone || state.company.phone || "",
     issueDate: todayISO(),
     validUntil: addDaysISO(14),
-    scopeSummary:
-      "Provide labor, materials, project supervision, debris removal, and final cleanup for the approved exterior restoration scope.",
+    scopeSummary: wording.scope,
     taxRate: 0,
     deposit: 0,
     contractValue: 0,
@@ -15092,9 +16489,8 @@ async function createEstimate(contactId, shouldRender = true, jobId = "") {
     sentAt: "",
     items: [
       {
-        title: "Exterior restoration scope",
-        description:
-          "Add product details, material notes, manufacturer/color selections, and installation scope for this item.",
+        title: wording.line,
+        description: ESTIMATE_PLACEHOLDER_DESCRIPTION,
         quantity: 1,
         unit: "job",
         rate: 0,
@@ -15276,7 +16672,7 @@ function updateLineItem(input) {
   scheduleEstimateVisualRefresh(estimate.id);
 }
 
-function deleteEstimate() {
+async function deleteEstimate() {
   if (!requireAction("manageEstimates")) return;
   const estimate = getSelectedEstimate();
   if (!estimate) return;
@@ -15286,7 +16682,7 @@ function deleteEstimate() {
     return;
   }
 
-  if (!window.confirm(`Delete estimate ${estimate.estimateNumber}?`)) return;
+  if (!(await appConfirm(`Delete estimate ${estimate.estimateNumber}?`, { title: "Delete estimate", confirmLabel: "Delete estimate", danger: true }))) return;
   state.estimates = state.estimates.filter((item) => item.id !== estimate.id);
   state.selectedEstimateId = state.estimates[0]?.id || null;
   saveState();
@@ -15349,7 +16745,11 @@ ${estimate.notes || state.company.defaultTerms}`;
 
 function estimateFileName(estimate = getSelectedEstimate()) {
   const contact = getEstimateContact(estimate);
-  return `${estimate?.estimateNumber || "estimate"}-${contact?.name || "customer"}`
+  // Name the file after the job it is for: a lead can have several jobs, and
+  // every one of their estimates used to carry only the lead's name.
+  const job = getEstimateJob(estimate);
+  const jobLabel = job?.name && job.name !== contact?.name ? job.name : "";
+  return [estimate?.estimateNumber || "estimate", contact?.name || "customer", jobLabel].filter(Boolean).join("-")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
@@ -15392,7 +16792,7 @@ async function saveEstimatePdfDocument(estimate, contact, doc) {
     size: file.size,
     ...stored,
     uploadedAt: new Date().toISOString(),
-    uploadedBy: state.currentUser.name || state.currentUser.email || "Local user",
+    uploadedBy: currentActorName(),
     versionNumber: existing ? Math.max(1, number(existing.versionNumber)) + 1 : 1,
     previousVersions: existing ? [...(existing.previousVersions || []), {
       versionNumber: existing.versionNumber,
@@ -15463,6 +16863,30 @@ function pdfTextBlock(doc, text, x, cursor, width, options = {}) {
   pdfAddPageIfNeeded(doc, cursor, lines.length * lineHeight + 8);
   doc.text(lines, x, cursor.y);
   cursor.y += lines.length * lineHeight + (options.after || 0);
+}
+
+// The logo is printed about an inch wide. Embedding the full-size original
+// (stored uncompressed, which is how jsPDF keeps a PNG unless told otherwise)
+// made every saved one-page estimate about 2 MB. Scale it to print size first.
+async function downscaleImageDataUrl(dataUrl, maxSide = 360) {
+  if (!String(dataUrl || "").startsWith("data:image/") || typeof Image === "undefined" || typeof document === "undefined") return dataUrl;
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = reject;
+      element.src = dataUrl;
+    });
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    if (scale >= 1) return dataUrl;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } catch {
+    return dataUrl;
+  }
 }
 
 function pdfImageFormat(dataUrl = "") {
@@ -15542,8 +16966,9 @@ async function downloadEstimatePdf(options = {}) {
   const rep = estimateSalesRep(estimate);
   const officeAddress = companyOfficeAddress();
   const totals = totalsFor(estimate);
-  const doc = new JsPdf({ unit: "pt", format: "letter" });
-  const pdfLogoDataUrl = await companyLogoDataUrlForPdf(company);
+  const doc = new JsPdf({ unit: "pt", format: "letter", compress: true });
+  const pdfLogoDataUrl = await downscaleImageDataUrl(await companyLogoDataUrlForPdf(company));
+  const estimateWording = estimateWordingFor(job?.division || contact?.division || "roofing");
   const cursor = { y: 0 };
   const left = 48;
   const right = PDF_PAGE_WIDTH - 48;
@@ -15552,7 +16977,7 @@ async function downloadEstimatePdf(options = {}) {
 
   doc.setProperties({
     title: `${estimate.estimateNumber} - ${estimate.projectTitle || "Estimate"}`,
-    subject: "Roofing estimate",
+    subject: estimateWording.title,
     author: company.name,
   });
 
@@ -15564,7 +16989,7 @@ async function downloadEstimatePdf(options = {}) {
   let brandTextX = left;
   if (pdfLogoDataUrl) {
     try {
-      doc.addImage(pdfLogoDataUrl, pdfImageFormat(pdfLogoDataUrl), left, 12, 76, 70);
+      doc.addImage(pdfLogoDataUrl, pdfImageFormat(pdfLogoDataUrl), left, 12, 76, 70, undefined, "FAST");
       brandTextX = left + 86;
     } catch { brandTextX = left; }
   } else {
@@ -15600,7 +17025,7 @@ async function downloadEstimatePdf(options = {}) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(17);
   doc.setTextColor(55, 55, 60);
-  doc.text("CONSTRUCTION ESTIMATE", right, 31, { align: "right" });
+  doc.text(estimateWording.label, right, 31, { align: "right" });
   doc.setFontSize(9);
   doc.setTextColor(166, 105, 119);
   doc.text("PROPOSAL & SCOPE OF WORK", right, 44, { align: "right" });
@@ -15715,7 +17140,7 @@ async function downloadEstimatePdf(options = {}) {
   pdfAddPageIfNeeded(doc, cursor, 48);
   pdfDrawEstimateTableHeader(doc, cursor, left, right);
 
-  estimate.items.forEach((item) => {
+  printableEstimateItems(estimate).forEach((item) => {
     const titleLines = doc.splitTextToSize(item.title || "Line item", 235);
     const descLines = item.description ? doc.splitTextToSize(item.description, 235) : [];
     const textLines = titleLines.length + descLines.length;
@@ -15762,8 +17187,9 @@ async function downloadEstimatePdf(options = {}) {
   const totalRows = [
     ["Subtotal", money.format(totals.subtotal), false],
     [`Tax (${number(estimate.taxRate)}%)`, money.format(totals.tax), false],
-    ["Deposit", `-${money.format(number(estimate.deposit))}`, false],
     ["Total", money.format(totals.total), true],
+    // The deposit comes off the total, so it is listed after it.
+    ...(number(estimate.deposit) > 0 ? [["Deposit due at signing", `-${money.format(number(estimate.deposit))}`, false]] : []),
     ["Balance due on completion", money.format(totals.balance), false],
   ];
 
@@ -16003,10 +17429,14 @@ async function openEstimateLeadOverview(contactId) {
     openLeadDetail(contact.id, "overview", jobId);
     return true;
   }
-  const confirmed = window.confirm(
-    `Save the latest changes and estimate PDF before opening ${contact.name}? Select Cancel to stay on this estimate.`,
+  const confirmed = await appConfirm(
+    `Save the latest changes and estimate PDF before opening ${contact.name}? Select Stay here to keep working on this estimate.`,
+    { title: "Save estimate first", confirmLabel: "Save and open lead", cancelLabel: "Stay here" },
   );
   if (!confirmed) return false;
+  // The question is asked without freezing the page, so make sure the same
+  // estimate is still the one on screen before saving it.
+  if (getSelectedEstimate()?.id !== estimateId || state.view !== initialView) return false;
   const saved = await saveCurrentEstimateAndPdf();
   // A delayed save must not pull the rep away from another estimate or view
   // they deliberately opened in the meantime.
@@ -16058,8 +17488,99 @@ function showToast(message) {
   if (isRoutineSaveNotice && !isFailure && !isWorkflowBlocker && !/\bdownloaded\b/i.test(text)) return;
   window.clearTimeout(toastTimer);
   els.toast.textContent = text;
+  // Shown in the browser's top layer so a message raised while a dialog is
+  // open (a blocked status change, a failed save) is not hidden behind it.
+  if (typeof els.toast.showPopover === "function") {
+    try {
+      if (els.toast.getAttribute("popover") !== "manual") els.toast.setAttribute("popover", "manual");
+      if (els.toast.matches(":popover-open")) els.toast.hidePopover();
+      els.toast.showPopover();
+    } catch { /* The plain fixed-position toast below still works. */ }
+  }
   els.toast.classList.add("show");
-  toastTimer = window.setTimeout(() => els.toast.classList.remove("show"), 2400);
+  // Long or blocking messages need reading time; a flat 2.4 seconds hid
+  // explanations such as why a record could not be deleted.
+  const visibleFor = Math.min(10000, Math.max(isFailure || isWorkflowBlocker ? 5000 : 2800, text.length * 60));
+  toastTimer = window.setTimeout(() => {
+    els.toast.classList.remove("show");
+    try { if (els.toast.matches?.(":popover-open")) els.toast.hidePopover(); } catch { /* already hidden */ }
+  }, visibleFor);
+}
+
+// In-app replacements for window.confirm() and window.prompt(). They match the
+// CRM's styling, never freeze the page, and open above any other dialog.
+// Resolves true/false for a confirmation, or the entered text/null for a prompt.
+// With extraLabel a third button is shown, and choosing it resolves "extra".
+function openAppDialog({ title = "", message = "", confirmLabel = "OK", cancelLabel = "Cancel", extraLabel = "", danger = false, input = null } = {}) {
+  const nativeFallback = () => (input
+    ? (typeof window.prompt === "function" ? window.prompt(title, input.value || "") : null)
+    : (typeof window.confirm === "function" ? Boolean(window.confirm([title, message].filter(Boolean).join("\n\n"))) : false));
+  let dialog;
+  try {
+    dialog = document.createElement("dialog");
+    if (typeof dialog.showModal !== "function" || !document.body) return Promise.resolve(nativeFallback());
+  } catch {
+    return Promise.resolve(nativeFallback());
+  }
+  return new Promise((resolve) => {
+    dialog.className = "contact-dialog app-dialog";
+    dialog.innerHTML = `<form method="dialog" novalidate>
+      <h2 class="app-dialog-title"></h2>
+      <p class="app-dialog-message"></p>
+      ${input ? '<label class="app-dialog-field"><span></span><input type="text" name="value" autocomplete="off" /></label>' : ""}
+      <div class="dialog-actions app-dialog-actions">
+        <button class="secondary-button" type="button" data-app-dialog-cancel></button>
+        ${extraLabel ? '<button class="secondary-button" type="button" data-app-dialog-extra></button>' : ""}
+        <button class="primary-button${danger ? " danger-button" : ""}" type="submit"></button>
+      </div>
+    </form>`;
+    const form = dialog.querySelector("form");
+    const field = dialog.querySelector("input");
+    const cancelButton = dialog.querySelector("[data-app-dialog-cancel]");
+    const confirmButton = dialog.querySelector('button[type="submit"]');
+    dialog.querySelector(".app-dialog-title").textContent = title;
+    const messageNode = dialog.querySelector(".app-dialog-message");
+    messageNode.textContent = message;
+    messageNode.hidden = !message;
+    cancelButton.textContent = cancelLabel;
+    confirmButton.textContent = confirmLabel;
+    if (field) {
+      dialog.querySelector(".app-dialog-field span").textContent = input.label || "";
+      field.value = input.value || "";
+      field.maxLength = Number(input.maxLength) || 200;
+      if (input.placeholder) field.placeholder = input.placeholder;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      try { dialog.close(); } catch { /* already closed */ }
+      dialog.remove();
+      resolve(value);
+    };
+    const cancelled = input ? null : false;
+    const extraButton = dialog.querySelector("[data-app-dialog-extra]");
+    if (extraButton) {
+      extraButton.textContent = extraLabel;
+      extraButton.addEventListener("click", () => finish("extra"));
+    }
+    cancelButton.addEventListener("click", () => finish(cancelled));
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(cancelled); });
+    dialog.addEventListener("close", () => finish(cancelled));
+    form.addEventListener("submit", (event) => { event.preventDefault(); finish(field ? field.value : true); });
+    document.body.append(dialog);
+    dialog.showModal();
+    if (field) { field.focus(); field.select(); }
+    else (danger ? cancelButton : confirmButton).focus();
+  });
+}
+
+function appConfirm(message, options = {}) {
+  return openAppDialog({ title: options.title || "Please confirm", message, confirmLabel: options.confirmLabel || "Confirm", cancelLabel: options.cancelLabel || "Cancel", danger: Boolean(options.danger) });
+}
+
+function appPrompt(title, value = "", options = {}) {
+  return openAppDialog({ title, message: options.message || "", confirmLabel: options.confirmLabel || "Save", cancelLabel: options.cancelLabel || "Cancel", input: { value, label: options.label || "", maxLength: options.maxLength, placeholder: options.placeholder } });
 }
 
 function hydrateIcons(root = document) {
@@ -16172,6 +17693,12 @@ function bindEvents() {
       event.preventDefault();
       els.globalSearch.focus();
       els.globalSearch.select();
+    }
+    if (event.key === "Escape" && state.view === "pipeline" && state.pipelineSelectedOpportunity && !document.querySelector("dialog[open]")) {
+      state.pipelineSelectedOpportunity = "";
+      saveUiState();
+      renderPipeline();
+      return;
     }
     if (event.key === "Escape" && state.sidebarMode === "expanded" && window.matchMedia("(max-width: 820px)").matches) {
       setSidebarMode("compact");
@@ -16435,6 +17962,12 @@ function bindEvents() {
       selectedCompanyDocumentFolderId = "";
       renderCompanyDocuments();
     }
+    if (action === "rename-company-document-folder") {
+      void renameCompanyDocumentFolder(actionButton.dataset.folderId || "");
+    }
+    if (action === "delete-company-document-folder") {
+      void deleteCompanyDocumentFolder(actionButton.dataset.folderId || "");
+    }
     if (action === "edit-document-category") {
       editDocumentCategory(actionButton.dataset.categoryId, actionButton.closest(".document-category-admin-row"));
     }
@@ -16490,6 +18023,9 @@ function bindEvents() {
     }
     if (action === "complete-calendar-task") {
       completeCalendarTask(actionButton.dataset.taskId);
+    }
+    if (action === "reopen-calendar-task") {
+      void reopenCalendarTask(actionButton.dataset.taskId);
     }
     if (action === "delete-calendar-task") {
       deleteCalendarTask(actionButton.dataset.taskId);
@@ -16600,7 +18136,8 @@ function bindEvents() {
   });
   els.estimateLeadDetailButton.addEventListener("click", async () => {
     const contact = getSelectedContact();
-    if (contact && requireAction("manageEstimates")) await createEstimate(contact.id);
+    // The estimate is for the job selected on this lead, not always its first job.
+    if (contact && requireAction("manageEstimates")) await createEstimate(contact.id, true, state.selectedLeadJobId || "");
   });
   els.uploadLeadDocumentButton.addEventListener("click", () => {
     if (!requireAction("manageDocuments")) return;
@@ -16668,17 +18205,19 @@ function bindEvents() {
     saveUiState();
     renderLeadOperations(contact);
   });
-  els.permitForm?.addEventListener("submit", savePermit);
-  els.inspectionForm?.addEventListener("submit", saveInspection);
-  els.selectionForm?.addEventListener("submit", saveSelection);
-  els.changeOrderForm?.addEventListener("submit", saveChangeOrder);
-  els.progressBillingForm?.addEventListener("submit", saveProgressBilling);
-  els.maintenancePlanForm?.addEventListener("submit", saveMaintenancePlan);
-  els.customerAccountForm?.addEventListener("submit", saveCustomerAccount);
-  els.accountPropertyLinkForm?.addEventListener("submit", saveAccountPropertyLink);
+  els.permitForm?.addEventListener("submit", guardedSubmit(savePermit));
+  els.inspectionForm?.addEventListener("submit", guardedSubmit(saveInspection));
+  els.selectionForm?.addEventListener("submit", guardedSubmit(saveSelection));
+  els.changeOrderForm?.addEventListener("submit", guardedSubmit(saveChangeOrder));
+  els.progressBillingForm?.addEventListener("submit", guardedSubmit(saveProgressBilling));
+  els.maintenancePlanForm?.addEventListener("submit", guardedSubmit(saveMaintenancePlan));
+  els.customerAccountForm?.addEventListener("submit", guardedSubmit(saveCustomerAccount));
+  els.accountPropertyLinkForm?.addEventListener("submit", guardedSubmit(saveAccountPropertyLink));
   els.leadOperationsPanel?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-create-progress-invoice]");
     if (button) void createProgressDrawInvoice(button.dataset.createProgressInvoice);
+    const removal = event.target.closest("[data-operation-delete]");
+    if (removal) void confirmDeleteJobOperation(removal.dataset.operationDelete, removal.dataset.operationId);
   });
   els.leadOperationsPanel?.addEventListener("change", async (event) => {
     const select = event.target.closest("[data-operation-update]");
@@ -16688,19 +18227,21 @@ function bindEvents() {
     if (!operationsTableStateMap[table] || !["status", "result", "active"].includes(field)) return;
     const value = field === "active" ? select.value === "true" : select.value;
     select.disabled = true;
+    const previousValue = (state[operationsTableStateMap[table]] || []).find((item) => item.id === select.dataset.operationId)?.[field];
     try {
       await updateJobOperation(table, select.dataset.operationId, { [field]: value });
       renderLeadOperations(getSelectedContact());
       setOperationsStatus("Status updated");
+      if (table === "crm_change_orders" && field === "status" && await reconcileChangeOrderWithContract(select.dataset.operationId, previousValue, value)) renderLeadDetail();
     } catch (error) {
       renderLeadOperations(getSelectedContact());
       setOperationsStatus(error.message || "Status could not be updated", "error");
     }
   });
   els.jobMilestoneForm?.addEventListener("submit", saveJobMilestone);
-  els.projectMemberForm?.addEventListener("submit", saveProjectMember);
-  els.projectNoteForm?.addEventListener("submit", saveProjectNote);
-  els.projectDiscussionForm?.addEventListener("submit", saveProjectDiscussion);
+  els.projectMemberForm?.addEventListener("submit", guardedSubmit(saveProjectMember));
+  els.projectNoteForm?.addEventListener("submit", guardedSubmit(saveProjectNote));
+  els.projectDiscussionForm?.addEventListener("submit", guardedSubmit(saveProjectDiscussion));
   els.toggleJobTimerButton?.addEventListener("click", toggleJobDeliveryTimer);
   els.applyProjectTemplateButton?.addEventListener("click", applySelectedProjectTemplate);
   els.clearJobFormButton.addEventListener("click", () => fillJobForm());
@@ -16744,9 +18285,9 @@ function bindEvents() {
   els.refreshLeadEmailThreadsButton?.addEventListener("click", refreshLeadEmailThreads);
   els.reportExportButton?.addEventListener("click",()=>void exportPerformanceReport());
   els.googleSheetsExportButton?.addEventListener("click",()=>void exportPerformanceReportToGoogleSheets());
-  els.adminTaxForm?.addEventListener("submit",saveAdminTax);
-  els.adminAnnouncementForm?.addEventListener("submit",saveAdminAnnouncement);
-  els.customerPortalInviteForm?.addEventListener("submit",inviteCustomerPortal);
+  els.adminTaxForm?.addEventListener("submit", guardedSubmit(saveAdminTax));
+  els.adminAnnouncementForm?.addEventListener("submit", guardedSubmit(saveAdminAnnouncement));
+  els.customerPortalInviteForm?.addEventListener("submit", guardedSubmit(inviteCustomerPortal));
   els.documentOperationsForm?.addEventListener("submit", saveDocumentOperations);
   els.closeDocumentOperationsDialog?.addEventListener("click",()=>els.documentOperationsDialog?.close());
   els.uploadCompanyDocumentButton.addEventListener("click", () => {
@@ -17060,7 +18601,8 @@ function bindEvents() {
   });
   els.newEstimateButton.addEventListener("click", async () => {
     if (!requireAction("manageEstimates")) return;
-    const estimate = await createEstimate(state.newEstimateContactId || els.newEstimateContact?.value, true, els.newEstimateJob?.value);
+    // "New Estimate" on the Estimates page is an explicit request for a new one.
+    const estimate = await createEstimate(state.newEstimateContactId || els.newEstimateContact?.value, true, els.newEstimateJob?.value, { forceNew: true });
     if (estimate) {
       els.estimateCreatePanel?.classList.add("hidden");
       els.toggleEstimateCreateButton?.setAttribute("aria-expanded", "false");
@@ -17084,12 +18626,15 @@ function bindEvents() {
     if (!picker) return;
     const isOpen = !picker.classList.contains("hidden");
     if (isOpen) { picker.classList.add("hidden"); return; }
-    picker.innerHTML = estimateTemplates.map((tpl, i) => `
+    // Only the templates for this job's division (templates with no division
+    // are the roofing ones the CRM started with).
+    const templateDivision = getEstimateJob(getSelectedEstimate())?.division || "roofing";
+    picker.innerHTML = estimateTemplates.map((tpl, i) => (tpl.division || "roofing") !== templateDivision ? "" : `
       <button class="template-chip" type="button" data-template-index="${i}">
         <span aria-hidden="true" data-icon="template"></span>
         ${escapeHtml(tpl.name)}
       </button>
-    `).join("");
+    `).join("") || '<span class="muted-copy">No templates for this division yet. Add line items below.</span>';
     hydrateIcons(picker);
     picker.classList.remove("hidden");
   });
@@ -17102,7 +18647,9 @@ function bindEvents() {
     if (!estimate) return;
     const tpl = estimateTemplates[Number(btn.dataset.templateIndex)];
     if (!tpl) return;
-    estimate.items = [...estimate.items, ...tpl.items.map((item) => ({ ...item }))];
+    // The template replaces the untouched instruction line a new estimate
+    // starts with; lines the user has written are kept.
+    estimate.items = [...estimate.items.filter((item) => !isPlaceholderEstimateItem(item)), ...tpl.items.map((item) => ({ ...item }))];
     queueLocalStateSave();
     renderEstimateLineItems(estimate);
     queueEstimateVerifiedSave(estimate.id);
@@ -17411,6 +18958,7 @@ async function startApp() {
       if (!earlier.available) showDraftStorageWarning();
     }
   }
+  try { pruneBlockedSaveRecoveries(localStorage); } catch { /* The browser may deny storage. */ }
   state = loadState(activeStorageKey(), cachedRecoveryState);
   state.currentUser = currentUserFromAuthSession(authSession);
   if (canUseCloudSync() && authSession?.user?.id) {
@@ -17508,6 +19056,17 @@ async function startApp() {
   hydrateIcons();
   bindEvents();
   render();
+  startSaveIndicator();
+  // Startup shows the first page of leads and jobs for speed. Finish loading
+  // the rest right away, whichever screen the session opened on, so no screen
+  // is left totalling a partial set of records.
+  if (canUseCloudSync()) void ensureCompleteCoreRecordsLoaded();
+  // The menu is hidden until the grouped menu replaces it (see styles.css). If
+  // that add-on never loads, show the built-in menu rather than none at all.
+  window.setTimeout(() => {
+    const nav = document.querySelector(".nav-list");
+    if (nav && !nav.dataset.workflowNavigation) nav.dataset.workflowNavigation = "built-in";
+  }, 2500);
   const integrationResult = new URLSearchParams(window.location.search).get("google");
   if (integrationResult) {
     googleIntegrationState.loaded = false;

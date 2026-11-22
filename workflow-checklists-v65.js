@@ -112,6 +112,127 @@
     ],
   };
 
+  // Construction and Home Services previously had no checklist at any stage,
+  // so a job could travel from New Lead to its last stage with nothing
+  // recorded. These follow the same pattern as roofing: system-verified items
+  // where the CRM already holds the data, manual confirmations elsewhere.
+  // Wording is a starting point and is meant to be adjusted to the company's
+  // own process; item ids must stay stable once jobs have ticked them.
+  const fullPaymentItem = () =>
+    autoItem("final-payment", "Confirmed payments cover the full contract", (_contact, job) => jobHasFullPayment(job));
+  const constructionChecklistDefinitions = {
+    New: checklistDefinitions.New,
+    Consultation: [
+      manualItem("consultation-complete", "Consultation completed with the decision maker"),
+      manualItem("goals-budget", "Project goals, budget range, and timeline documented"),
+      manualItem("site-visit-scheduled", "Site visit scheduled"),
+    ],
+    "Design & Selections": [
+      manualItem("site-measured", "Site visit and measurements completed"),
+      manualItem("existing-photos", "Existing-condition photos saved"),
+      manualItem("scope-drafted", "Scope of work drafted"),
+      manualItem("design-approved", "Design or plan direction approved by the customer"),
+      manualItem("selections-recorded", "Selections and allowances recorded"),
+      manualItem("trade-pricing", "Subcontractor and supplier pricing gathered"),
+    ],
+    Estimate: [
+      autoItem("estimate-created", "Estimate created for this job", (contact, job) => estimatesForJob(contact, job).length > 0),
+      autoItem(
+        "estimate-sent",
+        "Estimate marked Sent or Won",
+        (contact, job) => estimatesForJob(contact, job).some((estimate) => ["Sent", "Won", "Approved"].includes(estimate.status)),
+      ),
+      manualItem("estimate-reviewed", "Estimate reviewed with the customer"),
+      manualItem("revisions-documented", "Revisions and objections documented"),
+    ],
+    Contract: [
+      manualItem("signed-contract", "Signed contract uploaded to Documents"),
+      manualItem("deposit-terms", "Deposit and payment schedule recorded"),
+      manualItem("hoa-financing", "HOA and financing requirements reviewed"),
+      manualItem("production-handoff", "Production handoff notes completed"),
+    ],
+    Permits: [
+      manualItem("permits-submitted", "Permit applications submitted"),
+      manualItem("permits-issued", "Permits issued, or confirmed not required"),
+      manualItem("noc-recorded", "Notice of Commencement recorded where required"),
+      manualItem("start-date", "Start date confirmed with the customer"),
+    ],
+    Demo: [
+      manualItem("site-protection", "Site protection in place"),
+      manualItem("demo-complete", "Demolition completed"),
+      manualItem("debris-removed", "Debris removed from the property"),
+      manualItem("hidden-conditions", "Hidden conditions documented and change orders raised"),
+    ],
+    "Rough-In": [
+      manualItem("framing-complete", "Framing and structural work completed"),
+      manualItem("trades-rough-in", "Electrical, plumbing, and mechanical rough-in completed"),
+      manualItem("rough-photos", "Rough-in photos saved"),
+      manualItem("inspections-requested", "Rough inspections requested"),
+    ],
+    Inspections: [
+      manualItem("inspections-passed", "Required inspections passed"),
+      manualItem("corrections-complete", "Corrections completed and re-inspected"),
+      manualItem("results-saved", "Inspection results saved to the job"),
+    ],
+    Finishes: [
+      manualItem("finishes-installed", "Finish work installed to the approved selections"),
+      manualItem("change-orders", "Change orders documented and approved"),
+      manualItem("quality-check", "Quality-control walk completed"),
+    ],
+    "Punch List": [
+      manualItem("punch-created", "Punch list created with the customer"),
+      manualItem("punch-complete", "Punch list items completed"),
+      manualItem("final-clean", "Final cleaning completed"),
+    ],
+    "Final Walkthrough": [
+      manualItem("walkthrough", "Final walkthrough accepted by the customer"),
+      manualItem("final-invoice", "Final invoice sent"),
+      manualItem("warranty-docs", "Warranty and closeout documents delivered"),
+      fullPaymentItem(),
+    ],
+    Paid: checklistDefinitions.Paid,
+    Lost: checklistDefinitions.Lost,
+  };
+  const servicesChecklistDefinitions = {
+    New: [
+      autoItem("contact-name", "Customer name entered", (contact) => Boolean(contact.name?.trim())),
+      autoItem("contact-phone", "Phone number entered", (contact) => Boolean(contact.phone?.trim())),
+      autoItem("job-address", "Job address entered", (contact, job) => Boolean((job.address || contact.address || "").trim())),
+      autoItem("project-notes", "Requested work documented", (contact, job) => Boolean((job.notes || contact.notes || "").trim())),
+    ],
+    Request: [
+      manualItem("request-confirmed", "Customer reached and request confirmed"),
+      manualItem("price-quoted", "Scope and price quoted"),
+      manualItem("visit-agreed", "Visit date agreed"),
+    ],
+    Scheduled: [
+      manualItem("price-approved", "Price or quote approved by the customer"),
+      manualItem("crew-assigned", "Technician or crew assigned"),
+      manualItem("customer-notified", "Customer notified of the arrival window"),
+      manualItem("access-notes", "Access and site notes documented"),
+    ],
+    Completed: [
+      manualItem("work-complete", "Work completed and before/after photos saved"),
+      manualItem("customer-signoff", "Customer sign-off received"),
+      manualItem("invoice-sent", "Invoice sent to the customer"),
+    ],
+    Invoiced: [fullPaymentItem()],
+    Paid: [
+      manualItem("review-requested", "Review request sent"),
+      manualItem("repeat-service", "Follow-up or recurring service offered"),
+    ],
+    Lost: checklistDefinitions.Lost,
+  };
+  const checklistDefinitionsByDivision = {
+    roofing: checklistDefinitions,
+    construction: constructionChecklistDefinitions,
+    services: servicesChecklistDefinitions,
+  };
+
+  function definitionsForDivision(division) {
+    return checklistDefinitionsByDivision[division] || null;
+  }
+
   const chronologicalNavigation = [
     {
       label: "Overview",
@@ -122,11 +243,11 @@
       items: [
         { view: "leads", label: "Lead Intake", icon: "user" },
         { view: "contacts", label: "Contacts", icon: "users" },
-        { view: "jobs", label: "Inspections & Jobs", icon: "briefcase" },
+        { view: "jobs", label: "Jobs", icon: "briefcase" },
         { view: "estimates", label: "Estimates", icon: "file" },
         { view: "projects", label: "Sold Jobs & Production", icon: "hammer" },
         { view: "invoices", label: "Billing & Payments", icon: "invoice" },
-        { view: "reviews", label: "Reviews & Referrals", icon: "star" },
+        { view: "reviews", label: "Reviews", icon: "star" },
         { view: "pipeline", label: "Sales Pipeline", icon: "pipeline" },
       ],
     },
@@ -208,8 +329,15 @@
   }
 
   function stageChecklist(contact, job, stage = job.status || contact.status || "New") {
-    const roofing = (job.division || contact.division || "roofing") === "roofing";
-    const definitions = roofing ? checklistDefinitions[stage] || [] : [];
+    const division = job.division || contact.division || "roofing";
+    const divisionDefinitions = definitionsForDivision(division);
+    // A stage that only exists in the company's own pipeline settings (the
+    // Paid stage is the gate for the stage before it, whatever that is called)
+    // still verifies payment before the job can close.
+    const stages = typeof pipelineStagesFor === "function" ? pipelineStagesFor(division) : progressionStages;
+    const gatesPaid = stages[stages.indexOf(stage) + 1] === "Paid";
+    let definitions = divisionDefinitions?.[stage] || [];
+    if (gatesPaid && !definitions.some((item) => item.id === "final-payment")) definitions = [...definitions, fullPaymentItem()];
     const items = definitions.map((item) => ({
       ...item,
       complete: itemComplete(contact, job, stage, item),
@@ -219,7 +347,10 @@
       items,
       completed: items.filter((item) => item.complete).length,
       total: items.length,
-      ready: (!roofing || items.length > 0) && items.every((item) => item.complete),
+      // Roofing keeps its original rule: a stage with no checklist cannot be
+      // passed. Other divisions may add custom stages in Settings, and those
+      // have nothing to complete.
+      ready: (division !== "roofing" || items.length > 0) && items.every((item) => item.complete),
       missing: items.filter((item) => !item.complete),
     };
   }
@@ -252,11 +383,29 @@
         (currentIndex >= 0 && targetIndex === currentIndex + 1) ||
         (manager && ((currentIndex < 0 && targetIndex === 0) || targetIndex < currentIndex))
       );
-      if (!allowed) return { allowed: false, reason: "Move this job one division stage at a time. Ask a manager to correct an earlier stage." };
+      if (!allowed) {
+        const next = stages[currentIndex + 1];
+        return {
+          allowed: false,
+          reason: targetIndex < currentIndex
+            ? "Ask a manager to move this job back to an earlier stage."
+            : `Move this job one stage at a time.${next ? ` The next stage is ${next}.` : ""}`,
+        };
+      }
+      // A manager correcting a stage backward is not held to the checklist.
+      if (targetIndex < currentIndex || currentIndex < 0) return { allowed: true };
       if (targetStatus === "Paid" && !jobHasFullPayment(job)) {
         return { allowed: false, reason: "Record confirmed payments covering the full contract before moving this job to Paid." };
       }
-      return { allowed: true };
+      const divisionChecklist = stageChecklist(contact, job, currentStatus);
+      if (!divisionChecklist.ready) {
+        return {
+          allowed: false,
+          reason: `Complete before moving to ${targetStatus}: ${divisionChecklist.missing.map((item) => item.label).join(", ")}.`,
+          checklist: divisionChecklist,
+        };
+      }
+      return { allowed: true, checklist: divisionChecklist };
     }
 
     const currentIndex = stageIndex(currentStatus);
@@ -299,6 +448,16 @@
       return {
         allowed: false,
         reason: `Complete before moving to ${targetStatus}: ${missingLabels.join(", ")}.`,
+        checklist,
+      };
+    }
+    // "Estimate Sent" means what it says: an estimate that merely exists as a
+    // draft is not enough to enter the stage.
+    if (targetStatus === "Estimate Sent" &&
+        !estimatesForJob(contact, job).some((estimate) => ["Sent", "Won", "Approved"].includes(estimate.status))) {
+      return {
+        allowed: false,
+        reason: "The estimate for this job is still a draft. Mark it as Sent before moving the job to Estimate Sent.",
         checklist,
       };
     }
@@ -485,20 +644,18 @@
     return selected;
   }
 
-  function routeForStatus(status) {
-    if (status === "New") return "leads";
-    if (status === "Contacted" || status === "Lost") return "pipeline";
-    if (status === "Inspection") return "jobs";
-    if (status === "Estimate Sent") return "estimates";
-    if (["Won", "Scheduled", "Materials Ordered", "In Progress", "Completed"].includes(status)) return "projects";
-    if (status === "Paid") return "reviews";
-    return "leads";
-  }
-
+  // The lead page keeps the menu item the user arrived from highlighted. It
+  // used to follow the lead's stage, so the highlight jumped between Lead
+  // Intake, Jobs and Production while the user stayed on one lead.
+  let leadDetailOriginView = "leads";
   function activeNavigationView() {
-    if (state.view !== "leadDetail") return state.view;
-    const contact = getSelectedContact();
-    return routeForStatus(contact?.status || "New");
+    if (state.view !== "leadDetail") {
+      leadDetailOriginView = state.view;
+      return state.view;
+    }
+    return chronologicalNavigation.some((group) => group.items.some((item) => item.view === leadDetailOriginView))
+      ? leadDetailOriginView
+      : "leads";
   }
 
   function addPipelinePermissions() {
@@ -846,6 +1003,7 @@
       return;
     }
     checklistSaveStates.set(nextSaveKey, { message: "", tone: "" });
+    if (typeof afterJobStageChange === "function") void afterJobStageChange(contact.id, job.id, job.status, targetStatus);
   }
 
   // The contact form has an input named "id", which shadows form.id, so the
@@ -899,11 +1057,24 @@
       : transitionCheck(context.contact, context.job, context.targetStatus);
     if (result.allowed) return;
 
+    const statusSelect = form.querySelector('[name="status"]');
+    const reason = result.reason || "Complete the stage checklist before moving forward";
+    // Editing an existing lead or job: only the stage change is refused. Put the
+    // stage back and let the save continue, so the other edits in the form are
+    // not thrown away along with it.
+    const formId = formIdOf(form);
+    if (!context.blockedNew && context.job && statusSelect && ["contactForm", "leadJobForm"].includes(formId)) {
+      statusSelect.value = context.job.status;
+      if (statusSelect.value === context.job.status) {
+        showToast(`Stage was not changed. ${reason} Your other changes were saved.`);
+        return;
+      }
+    }
+
     event.preventDefault();
     event.stopImmediatePropagation();
-    const statusSelect = form.querySelector('[name="status"]');
     if (statusSelect && context.job) statusSelect.value = context.job.status;
-    showToast(result.reason || "Complete the stage checklist before moving forward");
+    showToast(reason);
   }
 
   function handleWorkflowChange(event) {
@@ -1240,6 +1411,7 @@
       version: "65",
       stages: progressionStages,
       definitions: checklistDefinitions,
+      definitionsByDivision: checklistDefinitionsByDivision,
       stageChecklist,
       transitionCheck,
       updateChecklistItem,

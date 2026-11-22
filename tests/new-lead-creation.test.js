@@ -24,6 +24,11 @@ function harness(configured = []) {
     app.match(/const leadStatusLabel = [^\n]+/)[0] +
     source(app, 'populateDivisionFields') + source(app, 'refreshDivisionForm') +
     source(workflow, 'formIdOf', '  ') + source(workflow, 'formTransitionContext', '  ') +
+    // No checklists in this harness: these tests cover creation and stage order.
+    workflow.match(/const progressionStages = \[[^]*?\];/)[0] +
+    'const checklistDefinitionsByDivision = {}; function itemComplete() { return true; }' +
+    'function fullPaymentItem() { return { id: "final-payment", label: "Paid in full", mode: "auto" }; }' +
+    source(workflow, 'definitionsForDivision', '  ') + source(workflow, 'stageChecklist', '  ') +
     source(workflow, 'transitionCheck', '  '), context);
   return context;
 }

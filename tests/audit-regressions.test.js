@@ -494,7 +494,7 @@ test('Zoho merge preserves jobs, documents, ownership, workflow and financial va
   const c = functions('app.js', ['number', 'normalizeManualPayment', 'normalizeCostItem', 'normalizeJobEmail', 'normalizeJob', 'normalizeUpdate', 'normalizeDocument', 'normalizeContact', 'mergeImportedContact'], {
     seedContacts: [], defaultDocumentCategories: [], soldJobStatuses: ['Won'], todayISO: () => '2026-10-14',
     uid: prefix => `${prefix}-generated`, normalizePersonName: value => value || '', categoryForLegacyName: () => null,
-    JOB_PHOTO_CATEGORY_ID: 'doccat_photos', sanitizeSmartDocumentRecord: value => value,
+    JOB_PHOTO_CATEGORY_ID: 'doccat_photos', COMPANY_DOCUMENT_LEAD_ID: 'company', sanitizeSmartDocumentRecord: value => value,
   });
   const merged = c.mergeImportedContact(existing, imported);
   assert.equal(merged.name, 'Updated Name'); assert.equal(merged.email, 'updated@example.invalid');
@@ -511,10 +511,22 @@ test('contact deletion is blocked before mutation when financial history exists'
     state: { contacts: [contact], estimates: [], selectedContactId: 'lead', selectedEstimateId: null },
     requireAction: () => true, getContact: () => contact, contactJobs: value => value.jobs,
     number: value => Number(value || 0), showToast: value => { notice = value; },
+    // A rep is told why; a manager is offered the archive instead (never a delete).
+    canManageTeamData: () => false,
   });
   await c.deleteContact('lead');
   assert.equal(c.state.contacts.length, 1);
   assert.match(notice, /invoice or payment history/i);
+  let archiveOffered = '';
+  const manager = functions('app.js', ['contactHasFinancialHistory', 'deleteContact'], {
+    state: { contacts: [contact], estimates: [], selectedContactId: 'lead', selectedEstimateId: null },
+    requireAction: () => true, getContact: () => contact, contactJobs: value => value.jobs,
+    number: value => Number(value || 0), showToast() {}, canManageTeamData: () => true,
+    setContactArchived: async (id, archived) => { archiveOffered = `${id}:${archived}`; return false; },
+  });
+  await manager.deleteContact('lead');
+  assert.equal(manager.state.contacts.length, 1, 'payment history is never deleted');
+  assert.equal(archiveOffered, 'lead:true');
 });
 
 test('legacy inline HTML and SVG documents are never opened as same-origin blobs', async () => {

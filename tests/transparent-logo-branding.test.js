@@ -16,5 +16,6 @@ test('navigation and estimate logos are rendered at the enlarged sizes without a
   assert.match(css, /\.brand-icon\s*\{[\s\S]*?width: 86px;[\s\S]*?height: 86px;[\s\S]*?background: transparent;/);
   assert.match(css, /\.est-logo\s*\{[\s\S]*?width: 88px;[\s\S]*?height: 76px;/);
   assert.match(css, /\.doc-logo\s*\{[\s\S]*?width: 76px;[\s\S]*?height: 68px;/);
-  assert.match(app, /doc\.addImage\(pdfLogoDataUrl,[\s\S]*?left, 12, 76, 70\)/);
+  // Same size on the page; the trailing arguments ask jsPDF to compress the image.
+  assert.match(app, /doc\.addImage\(pdfLogoDataUrl,[\s\S]*?left, 12, 76, 70, undefined, "FAST"\)/);
 });
