@@ -3202,13 +3202,30 @@ function rememberDurableRows(rows = [], auditRows = []) {
   rows.forEach(row => durableFinancialBaseline.set(durableRecordKey(row), row.data));
   if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
   const normalizedRows = new Map(durableRowsFromState().map((row) => [durableRecordKey(row), row]));
+  const savedAsPaidButNotPaid = (row) => {
+    const normalized = normalizedRows.get(durableRecordKey(row));
+    return row.data?.status === "Paid" && Boolean(normalized?.data?.status) && normalized.data.status !== "Paid";
+  };
+  // Leads with a job that has to move back from Paid. Their own summary stage
+  // is corrected together with that job, not on its own.
+  const leadsWithJobMovingBack = new Set(rows.filter((row) => !row.deleted_at && row.record_type === "job" && savedAsPaidButNotPaid(row)).map((row) => row.lead_id));
   durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => {
     const normalized = normalizedRows.get(durableRecordKey(row));
-    const repairsInvalidPaidStatus = row.data?.status === "Paid" && Boolean(normalized?.data?.status) && normalized.data.status !== "Paid";
+    const repairsInvalidPaidStatus = savedAsPaidButNotPaid(row);
     // Keep only this invalid legacy state dirty so the ordinary conflict-safe
     // writer repairs it durably after startup. Other display defaults retain
     // their normalized fingerprint and never cause bulk background rewrites.
-    if (repairsInvalidPaidStatus) return [durableRecordKey(row), durableFingerprint(row)];
+    // Only a session the database will let make the repair carries it.
+    // Anyone else (a view-only user, someone looking at a record they do not
+    // own, or a rep whose job has to move back a stage, which only a manager
+    // may do) was refused, reloaded, found the record marked for repair again
+    // and tried again without end, with "Change not saved" each time. They
+    // still see the corrected stage; a session that can save it makes it
+    // permanent.
+    if (repairsInvalidPaidStatus && canCarryPaidStatusRepair(row, row.record_type === "job" || leadsWithJobMovingBack.has(row.id))) {
+      durableAutomaticRepairKeys.add(durableRecordKey(row));
+      return [durableRecordKey(row), durableFingerprint(row)];
+    }
     return [durableRecordKey(row), durableFingerprint(normalized || row)];
   }));
   durableAuditIds = new Set(auditRows.map((row) => row.id));
@@ -3302,9 +3319,31 @@ function durableBusinessRuleRejection(error) {
   return Object.keys(durableRejectionReasons).find((name) => name !== "authentication_required" && text.includes(name)) || "";
 }
 
-function handleRejectedDurableWrite({ error }) {
+// Whether this session may save the automatic "saved as Paid, but not paid in
+// full" correction for a record. The database lets a record's owner or a
+// manager save it, lets only a manager move a job back a stage, and a
+// correction it has already refused in this session is not offered again.
+function canCarryPaidStatusRepair(row, movesJobBack) {
+  return canSaveExistingRecord(row.record_type, row.owner_id)
+    && (!movesJobBack || canManageTeamData())
+    && !durableRefusedRepairKeys.has(durableRecordKey(row));
+}
+
+// Records this session marked for an automatic correction, and those the
+// database then refused. A correction is offered once: the reload that follows
+// a refusal used to mark the same record again, so the same save was refused
+// again, without end, with "Change not saved" each time and the save indicator
+// stuck on "Still saving…".
+const durableAutomaticRepairKeys = new Set();
+const durableRefusedRepairKeys = new Set();
+
+function handleRejectedDurableWrite({ error, payload }) {
   durableRejectionReloadPending = true;
   window.clearTimeout(durableSaveTimer);
+  (payload?.p_changes || []).forEach((change) => {
+    const key = durableRecordKey(change);
+    if (durableAutomaticRepairKeys.has(key)) durableRefusedRepairKeys.add(key);
+  });
   const reason = durableRejectionReason(error) || "That change is not allowed.";
   showToast(`Change not saved. ${reason}`);
   // The commit RPC confirmed that the whole request was rolled back. Restore
@@ -3316,6 +3355,8 @@ function handleRejectedDurableWrite({ error }) {
     if (restored !== null) {
       durableRejectionReloadPending = false;
       renderDurableUpdateWhenIdle();
+      // Other corrections that were not part of the refused save still need one.
+      if (hasPendingDurableChanges()) queueDurableRecordsSave();
     }
   }, 0);
 }
@@ -3486,7 +3527,12 @@ function preserveImmutableSalesNumbers(rows) {
     for (const field of fields) {
       // Number reservations are permanent database identities. A stale tab or
       // display normalizer must never turn an ordinary edit into a renumbering.
-      if (Object.prototype.hasOwnProperty.call(baseline, field)) row.data[field] = baseline[field];
+      // Only a number that has been assigned is permanent, though. A blank is
+      // not a number: treating it as one meant a job first saved without a
+      // number could never receive it (the job's own record stayed blank and
+      // showed "not numbered" again after a reload). The database applies the
+      // same rule: blank to a reserved number is allowed, any later change is not.
+      if (Object.prototype.hasOwnProperty.call(baseline, field) && baseline[field]) row.data[field] = baseline[field];
     }
   }
   return rows;
@@ -3503,6 +3549,20 @@ function restoreEstimateSalesNumbersFromBaseline(estimate) {
     changed = true;
   }
   return changed;
+}
+
+// A lead's summary stage follows its first job. Keep that first job the same
+// one however the records arrived. The complete load returns jobs in id order
+// (oldest first); the first page at startup returns them most recently updated
+// first. A lead with two jobs therefore showed one stage at startup and
+// another once everything had loaded, and a lead saved as Paid could be marked
+// for an automatic "repair" only because its newer, unpaid job came first.
+function inStableJobOrder(jobs = []) {
+  return [...jobs].sort((a, b) => {
+    const left = String(a?.id || "");
+    const right = String(b?.id || "");
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
 }
 
 function applyDurableRows(rows = [], auditRows = []) {
@@ -3540,7 +3600,7 @@ function applyDurableRows(rows = [], auditRows = []) {
     ...row.data,
     id: row.id,
     ownerUserId: row.owner_id || row.data?.ownerUserId || "",
-    jobs: jobsByLead.get(row.id) || [],
+    jobs: inStableJobOrder(jobsByLead.get(row.id) || []),
     documents: documentsByLead.get(row.id) || [],
     updates: (updatesByLead.get(row.id) || []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
   }, state.company.documentCategories, { preserveEmptyJobs: true }));
@@ -3637,7 +3697,7 @@ function normalizeServerLeadItem(item = {}) {
   const jobs = Array.isArray(item.jobs) ? item.jobs : [];
   return normalizeContact({
     ...(row.data || {}), id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "",
-    jobs: jobs.map((jobRow) => ({ ...(jobRow.data || {}), id: jobRow.id, ownerUserId: jobRow.owner_id || jobRow.data?.ownerUserId || "" })),
+    jobs: inStableJobOrder(jobs.map((jobRow) => ({ ...(jobRow.data || {}), id: jobRow.id, ownerUserId: jobRow.owner_id || jobRow.data?.ownerUserId || "" }))),
     documents: [], updates: [],
   }, state.company.documentCategories, { preserveEmptyJobs: true });
 }
@@ -3888,6 +3948,14 @@ async function ensureCompleteCoreRecordsLoaded() {
     saveState({ localOnly: true });
     // Never redraw over a field the user is typing in.
     renderDurableUpdateWhenIdle();
+    // A record in the complete set that needs an automatic correction has
+    // just been marked for one. The save queued at startup has usually run by
+    // now, so start one: otherwise the correction waited for the user's next
+    // edit and the save indicator sat on "Still saving…".
+    if (hasPendingDurableChanges()) queueDurableRecordsSave();
+    // Leads beyond the first page were not in memory when numbers were
+    // checked at startup.
+    void repairSalesNumbersAfterCompleteLoad();
     return true;
   })().then((loaded) => {
     // The load is skipped while a save is in flight. Try again shortly rather
@@ -4817,8 +4885,14 @@ async function createDailyRecoveryBackup() {
       .eq("company_state_id", supabaseStateId()).eq("backup_date", todayISO());
     if (!existing.error && number(existing.count) > 0) return;
     // The backup must hold every record. fetchDurableRows() returns only the
-    // first page of leads and jobs when the workspace loads in pages.
-    const { rows, auditRows } = await fetchCompleteDurableSnapshot();
+    // first page of leads and jobs when the workspace loads in pages, and the
+    // workspace snapshot leaves out document records (they load per lead), so
+    // the backup reads every record type itself. Without the document records
+    // the file list below was always empty.
+    const [rows, auditRows] = await Promise.all([
+      fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"]),
+      fetchRecentCompanyRows(SUPABASE_AUDIT_TABLE, 500, (query) => query.neq("event_type", "record_commit")),
+    ]);
     const conversationMessages = await fetchAllCompanyRows("crm_conversation_messages", ["created_at", "id"]);
     const payload = {
       schemaVersion: 2,
@@ -5192,6 +5266,21 @@ function searchResultJob(contact, query) {
   return jobs.find((job) => contactMatchesSearch(contact, query, [job])) || jobs[0];
 }
 
+// The database's own rule (crm_commit_records) for who may save a record that
+// already exists. An automatic correction checks it first, so a session that
+// is not allowed to save a record never tries to: the attempt is refused and
+// the user sees "Change not saved" for something they did not do.
+function canSaveExistingRecord(recordType, ownerUserId) {
+  const role = currentRole();
+  if (role === "admin" || role === "office_manager") return true;
+  if (role === "sales_manager") return ["contact", "job", "estimate", "task", "document"].includes(recordType);
+  if (role === "operations_manager") return ["contact", "job", "task", "document"].includes(recordType);
+  const own = Boolean(ownerUserId) && ownerUserId === authSession?.user?.id;
+  if (role === "sales") return own;
+  if (role === "production") return own && ["job", "task", "document"].includes(recordType);
+  return false;
+}
+
 async function ensureExistingSharedSalesNumbers() {
   const missing = [];
   for (const estimate of state.estimates) {
@@ -5200,7 +5289,30 @@ async function ensureExistingSharedSalesNumbers() {
     if (!contact || !job) continue;
     if (contact.leadNumber && job.projectNumber && estimate.leadNumber === contact.leadNumber &&
         estimate.projectNumber === job.projectNumber && estimate.estimateNumber) continue;
+    // Restoring a number changes the lead, the job or the estimate. Leave it
+    // to a session that can save all three; everyone else still sees the
+    // number, taken from the estimate.
+    if (!canSaveExistingRecord("contact", contact.ownerUserId) || !canSaveExistingRecord("job", job.ownerUserId || contact.ownerUserId) ||
+        !canSaveExistingRecord("estimate", estimate.ownerUserId || contact.ownerUserId)) continue;
     missing.push({ contactId: contact.id, jobId: job.id, estimateId: estimate.id });
+  }
+  // Every sold job has a number. A job sold without an estimate has no
+  // estimate to be found through, so sold jobs are checked directly:
+  // - one release numbered such a job at the sale but lost the job's own
+  //   number on saving, so the lead kept its number and the job's record
+  //   stayed blank. Reserving again hands back the number already reserved;
+  // - a job sold before numbering at the sale existed gets its first number
+  //   now, and so does its lead when the lead has none.
+  // The session must be able to save what changes: the job, and the lead too
+  // when the lead is being numbered.
+  const alreadyListed = new Set(missing.map((item) => item.jobId));
+  for (const contact of state.contacts) {
+    for (const job of contactJobs(contact)) {
+      if (job.projectNumber || alreadyListed.has(job.id) || !jobIsSold(job)) continue;
+      if (!canSaveExistingRecord("job", job.ownerUserId || contact.ownerUserId)) continue;
+      if (!contact.leadNumber && !canSaveExistingRecord("contact", contact.ownerUserId)) continue;
+      missing.push({ contactId: contact.id, jobId: job.id, estimateId: "" });
+    }
   }
   const failures = [];
   // Numbering repairs are independent and bounded. A historical record that
@@ -5214,8 +5326,29 @@ async function ensureExistingSharedSalesNumbers() {
       if (result.status === "rejected") failures.push({ ...batch[index], error: result.reason });
     });
   }
-  if (failures.length) console.warn(`${failures.length} historical estimate number${failures.length === 1 ? "" : "s"} could not be repaired during startup.`, failures);
+  if (failures.length) console.warn(`${failures.length} job or estimate number${failures.length === 1 ? "" : "s"} could not be repaired.`, failures);
   return { repaired: missing.length - failures.length, failures };
+}
+
+// The startup number check above only sees the first page of leads and jobs,
+// so a job further down the list whose reserved number never reached its own
+// record was never looked at. Run the check once more when every lead and job
+// has loaded and save what it restored. It goes through the normal save, so
+// the usual version checks and audit trail apply. Once a job holds its number
+// the check has nothing left to do for it.
+async function repairSalesNumbersAfterCompleteLoad() {
+  if (!canUseCloudSync()) return 0;
+  try {
+    const { repaired } = await ensureExistingSharedSalesNumbers();
+    if (repaired) {
+      queueDurableRecordsSave();
+      renderDurableUpdateWhenIdle();
+    }
+    return repaired;
+  } catch (error) {
+    console.warn("Job and estimate numbers could not be checked after the full load", error);
+    return 0;
+  }
 }
 
 function getSalesNumbering() {
@@ -8877,7 +9010,21 @@ async function createProgressDrawInvoice(drawId) {
   if (!draw || !contact || !job) return showToast("The billing draw is no longer connected to a job");
   if (operationValue(draw, "invoiceId", "invoice_id")) return showToast("This draw already has an invoice");
   try {
-    const invoiceId = `draw_invoice_${draw.id}`;
+    if (canUseCloudSync()) {
+      const { data: invoiceId, error } = await cloudClient.rpc("crm_invoice_progress_draw", {
+        p_draw_id: draw.id, p_generation: draw.billing_generation ?? 0, p_terms: state.company?.defaultTerms || "",
+      });
+      if (error) throw error;
+      if (!invoiceId) throw new Error("No invoice confirmation received. Refresh before retrying.");
+      const refreshed = await Promise.all([initializeFinancialLedger(), initializeJobOperations()]);
+      if (!refreshed.every(Boolean)) throw new Error("Draw invoiced, but the view could not be refreshed. Reload to see the invoice.");
+      renderLeadDetail();
+      return showToast("Billing draw converted to a draft invoice");
+    }
+    // A draw whose first invoice was voided needs a new invoice id: the voided
+    // invoice keeps its own.
+    const baseInvoiceId = `draw_invoice_${draw.id}`;
+    const invoiceId = (state.invoices || []).some((item) => item.id === baseInvoiceId) ? `${baseInvoiceId}_${Date.now().toString(36)}` : baseInvoiceId;
     const invoice = await createOperationalInvoice(contact, job, {
       id: invoiceId,
       invoiceNumber: `DRAW-${Date.now().toString().slice(-8)}`,
@@ -14296,8 +14443,10 @@ function startSquarePoll() {
   squarePollInterval = setInterval(pollSquarePayments, 30000);
 }
 
+// A voided invoice no longer bills its estimate, so the estimate can be
+// invoiced again (the new invoice takes the next free number).
 function internalInvoiceForEstimate(estimateId) {
-  return (state.invoices || []).find((invoice) => invoice.estimateId === estimateId && invoice.provider === "internal");
+  return (state.invoices || []).find((invoice) => invoice.estimateId === estimateId && invoice.provider === "internal" && invoice.status !== "void");
 }
 
 function nextInternalInvoiceNumber(estimate) {
@@ -14610,22 +14759,17 @@ async function voidInvoice(invoiceId) {
   if (!confirmed) return;
   try {
     if (canUseCloudSync()) {
-      const { error } = await cloudClient.from("crm_invoices")
-        .update({ status: "void", updated_by: authSession.user.id })
-        .eq("company_state_id", supabaseStateId()).eq("id", invoice.id);
+      const { data: voided, error } = await cloudClient.rpc("crm_void_internal_invoice", { p_invoice_id: invoice.id });
       if (error) throw error;
-      const schedule = (state.invoiceSchedules || []).find((item) => item.templateInvoiceId === invoice.id && item.active);
-      if (schedule) {
-        const { error: scheduleError } = await cloudClient.from("crm_invoice_schedules")
-          .update({ active: false, updated_by: authSession.user.id })
-          .eq("company_state_id", supabaseStateId()).eq("id", schedule.id);
-        if (scheduleError) console.warn("The recurring schedule for a voided invoice could not be stopped", scheduleError);
-      }
-      if (!(await initializeFinancialLedger())) throw new Error("Invoice voided, but the ledger could not be refreshed");
+      if (voided !== invoice.id) throw new Error("The invoice was not confirmed void. Refresh before retrying.");
+      if (!(await Promise.all([initializeFinancialLedger(), initializeJobOperations()])).every(Boolean))
+        throw new Error("Invoice voided, but the billing view could not be refreshed.");
     } else {
       invoice.status = "void";
       invoice.updatedAt = new Date().toISOString();
       (state.invoiceSchedules || []).forEach((item) => { if (item.templateInvoiceId === invoice.id) item.active = false; });
+      state.progressBillings = (state.progressBillings || []).map((item) => operationValue(item, "invoiceId", "invoice_id") === invoice.id
+        ? { ...item, status: "planned", invoiceId: "", invoice_id: "" } : item);
       saveState({ localOnly: true });
     }
     renderInvoicesView();
@@ -14811,8 +14955,10 @@ function renderInvoicesView() {
     .sort((a, b) => String(a.paymentUpdatedAt || "").localeCompare(String(b.paymentUpdatedAt || "")))
     .map((estimate) => [estimate.squareInvoiceId, estimate])).values()];
   const internalInvoices = [...(state.invoices || [])].sort((a, b) => activityTimestamp(b.issueDate) - activityTimestamp(a.issueDate));
-  const convertedEstimateIds = new Set(internalInvoices.map((invoice) => invoice.estimateId).filter(Boolean));
-  const totalInvoiced = internalInvoices.reduce((sum, invoice) => sum + number(invoice.totalAmount), 0) + financialInvoices
+  // Voided invoices stay in the list below but are left out of every total.
+  const liveInvoices = internalInvoices.filter((invoice) => invoice.status !== "void");
+  const convertedEstimateIds = new Set(liveInvoices.map((invoice) => invoice.estimateId).filter(Boolean));
+  const totalInvoiced = liveInvoices.reduce((sum, invoice) => sum + number(invoice.totalAmount), 0) + financialInvoices
     .filter((estimate) => !convertedEstimateIds.has(estimate.id))
     .reduce((sum, estimate) => sum + (number(estimate.contractValue) || totalsFor(estimate).total), 0);
   const ledgerEntries = financialLedgerEntries();
@@ -19050,7 +19196,7 @@ async function startApp() {
     canUseCloudSync() ? ensureExistingSharedSalesNumbers() : null,
   ]);
   if (canUseCloudSync()) {
-    if (numbering.failures.length) showToast("The CRM is ready, but some historical estimate numbers need administrator attention.");
+    if (numbering.failures.length) showToast("The CRM is ready, but some job or estimate numbers need administrator attention.");
   } else if (ensureExistingSalesNumbers()) saveState();
   void migrateInlineDocumentsToStorage();
   hydrateIcons();

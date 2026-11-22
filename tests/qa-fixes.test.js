@@ -756,9 +756,13 @@ test('#2 #3 #63 recovery copies are bounded and the daily backup is complete and
   assert.equal([...items.keys()].filter((key) => key.startsWith('jobcrest-unsaved-recovery:')).length, 5);
   assert.ok(items.has('roofline-crm-v1:user'), 'nothing else is touched');
   const backup = app.match(/^async function createDailyRecoveryBackup\(\) \{[^]*?^}/m)[0];
-  assert.match(backup, /fetchCompleteDurableSnapshot\(\)/);
+  // The backup reads every record type itself: the paged loader holds only the
+  // first 100 leads and jobs, and the workspace snapshot leaves out documents.
+  const readsEverything = 'fetchAllCompanyRows(SUPABASE_RECORDS_TABLE, ["record_type", "id"])';
+  assert.ok(backup.includes(readsEverything), 'every record type is read, with no record_type filter');
   assert.doesNotMatch(backup, /await fetchDurableRows\(\)/);
-  assert.ok(backup.indexOf('.eq("backup_date", todayISO())') < backup.indexOf('fetchCompleteDurableSnapshot()'));
+  assert.doesNotMatch(backup, /fetchCompleteDurableSnapshot\(\)/);
+  assert.ok(backup.indexOf('.eq("backup_date", todayISO())') < backup.indexOf(readsEverything));
 });
 
 test('#68 #69 a failed approval check is reported as an outage, never as "not approved"', () => {
@@ -916,6 +920,251 @@ test('#39 stray keystrokes cannot be saved as a sales representative', () => {
 test('#61 the invite form lays out its Google Groups choices as normal checkboxes on their own row', () => {
   assert.match(styles, /\.team-invite-form fieldset \{\s*order: 1;\s*grid-column: 1 \/ -1;/);
   assert.match(styles, /\.team-invite-form fieldset input\[type="checkbox"\] \{[^}]*width: 16px;[^}]*min-height: 0;/);
+});
+
+// ---- Found by the signed-in run against a local copy of the cloud database ----
+
+test('signed-in run: a job first saved without a number can receive one, and an assigned number never changes', () => {
+  const baseline = new Map([
+    ['job:blank', { projectNumber: '' }],
+    ['job:numbered', { projectNumber: 'LD-20261122-000001-P01' }],
+    ['contact:lead', { name: 'No number yet' }],
+  ]);
+  const context = functions(['immutableSalesNumberFields', 'durableRecordKey', 'preserveImmutableSalesNumbers'], { durableFinancialBaseline: baseline });
+  const rows = [
+    { record_type: 'job', id: 'blank', data: { projectNumber: 'LD-20261122-000002-P01' } },
+    { record_type: 'job', id: 'numbered', data: { projectNumber: 'LD-99999999-000009-P09' } },
+    { record_type: 'job', id: 'numbered', data: { projectNumber: '' } },
+    { record_type: 'contact', id: 'lead', data: { leadNumber: 'LD-20261122-000002' } },
+  ];
+  context.preserveImmutableSalesNumbers(rows);
+  assert.equal(rows[0].data.projectNumber, 'LD-20261122-000002-P01', 'the first number reaches the job record');
+  assert.equal(rows[1].data.projectNumber, 'LD-20261122-000001-P01', 'a renumbering is undone');
+  assert.equal(rows[2].data.projectNumber, 'LD-20261122-000001-P01', 'an assigned number is never blanked');
+  assert.equal(rows[3].data.leadNumber, 'LD-20261122-000002');
+});
+
+test('signed-in run: a voided invoice leaves every total and frees its estimate', () => {
+  const context = functions(['internalInvoiceForEstimate'], { state: { invoices: [
+    { id: 'a', estimateId: 'est1', provider: 'internal', status: 'void' },
+    { id: 'b', estimateId: 'est2', provider: 'internal', status: 'draft' },
+  ] } });
+  assert.equal(context.internalInvoiceForEstimate('est1'), undefined, 'a voided invoice no longer blocks a new one');
+  assert.equal(context.internalInvoiceForEstimate('est2').id, 'b');
+  const billing = app.match(/^function renderInvoicesView\(\) \{[^]*?^}/m)[0];
+  assert.match(billing, /const liveInvoices = internalInvoices\.filter\(\(invoice\) => invoice\.status !== "void"\);/);
+  assert.match(billing, /const totalInvoiced = liveInvoices\.reduce/);
+  assert.match(billing, /new Set\(liveInvoices\.map\(\(invoice\) => invoice\.estimateId\)/);
+  // The cloud save asks for the changed row back, so a refused update is reported.
+  const voiding = app.match(/^async function voidInvoice\(invoiceId\) \{[^]*?^}/m)[0];
+  assert.match(voiding, /rpc\("crm_void_internal_invoice"/);
+  assert.match(voiding, /voided !== invoice\.id/);
+  assert.doesNotMatch(voiding, /cloudClient\.from\(/);
+  // A draw invoiced a second time needs a new invoice id.
+  const drawInvoice = app.match(/^async function createProgressDrawInvoice\(drawId\) \{[^]*?^}/m)[0];
+  assert.match(drawInvoice, /rpc\("crm_invoice_progress_draw"/);
+  assert.match(drawInvoice, /\(state\.invoices \|\| \[\]\)\.some\(\(item\) => item\.id === baseInvoiceId\)/);
+});
+
+test('signed-in run: voiding an invoice reopens the billing draw it came from', async () => {
+  const state = {
+    invoices: [{ id: 'inv1', invoiceNumber: 'DRAW-1', status: 'draft', totalAmount: 500, amountPaid: 0 }],
+    invoiceSchedules: [],
+    progressBillings: [{ id: 'd1', status: 'invoiced', invoice_id: 'inv1' }, { id: 'd2', status: 'invoiced', invoiceId: 'other' }],
+  };
+  const toasts = [];
+  const context = functions(['operationValue', 'voidInvoice'], {
+    state, canManageManualPayments: () => true, number: (value) => Number(value) || 0, invoiceCreditTotal: () => 0,
+    appConfirm: async () => true, money: { format: (value) => `$${value}` }, canUseCloudSync: () => false,
+    saveState() {}, renderInvoicesView() {}, showToast: (text) => toasts.push(text),
+  });
+  await context.voidInvoice('inv1');
+  assert.equal(state.invoices[0].status, 'void');
+  assert.equal(state.progressBillings[0].status, 'planned');
+  assert.equal(state.progressBillings[0].invoice_id, '');
+  assert.equal(state.progressBillings[1].status, 'invoiced', 'other draws are untouched');
+  assert.equal(toasts.at(-1), 'DRAW-1 voided');
+});
+
+test('number repair: only a session the database would let save a record tries to correct it', () => {
+  const allowed = (role, type, owner, userId = 'me') => functions(['canSaveExistingRecord'], {
+    currentRole: () => role, authSession: { user: { id: userId } },
+  }).canSaveExistingRecord(type, owner);
+  for (const type of ['contact', 'job', 'estimate']) {
+    assert.equal(allowed('admin', type, 'someone'), true);
+    assert.equal(allowed('office_manager', type, 'someone'), true);
+    assert.equal(allowed('sales_manager', type, 'someone'), true);
+    assert.equal(allowed('sales', type, 'me'), true, 'a rep saves their own records');
+    assert.equal(allowed('sales', type, 'someone'), false, 'a rep never saves another rep\'s record');
+    assert.equal(allowed('sales', type, ''), false);
+    assert.equal(allowed('viewer', type, 'me'), false, 'a view-only session saves nothing');
+  }
+  assert.equal(allowed('operations_manager', 'job', 'someone'), true);
+  assert.equal(allowed('operations_manager', 'estimate', 'someone'), false);
+  assert.equal(allowed('production', 'job', 'me'), true);
+  assert.equal(allowed('production', 'contact', 'me'), false);
+});
+
+test('number repair: a reserved job number that never reached the job record is restored and saved once', async () => {
+  const number = 'LD-20261121-000001-P01';
+  const run = async (role, userId, jobNumber = '') => {
+    const state = {
+      estimates: [{ id: 'est1', contactId: 'lead1', jobId: 'job1', ownerUserId: 'rep', estimateNumber: 'EST-1001', leadNumber: 'LD-20261121-000001', projectNumber: number }],
+      contacts: [{ id: 'lead1', ownerUserId: 'rep', leadNumber: 'LD-20261121-000001', jobs: [{ id: 'job1', ownerUserId: 'rep', projectNumber: jobNumber }] }],
+    };
+    const tally = { reserved: 0, queued: 0 };
+    const context = functions(['canSaveExistingRecord', 'getEstimateContact', 'getEstimateJob', 'ensureExistingSharedSalesNumbers', 'repairSalesNumbersAfterCompleteLoad'], {
+      state, authSession: { user: { id: userId } }, currentRole: () => role,
+      getContact: (id) => state.contacts.find((contact) => contact.id === id), contactJobs: (contact) => contact.jobs,
+      jobIsSold: (job) => job.sold === true,
+      // The real reservation is idempotent: it hands back the number already reserved.
+      reserveSharedSalesNumbers: async () => { tally.reserved += 1; state.contacts[0].jobs[0].projectNumber = number; },
+      canUseCloudSync: () => true, queueDurableRecordsSave: () => { tally.queued += 1; }, renderDurableUpdateWhenIdle: () => true,
+    });
+    const repaired = await context.repairSalesNumbersAfterCompleteLoad();
+    return { repaired, ...tally, jobNumber: state.contacts[0].jobs[0].projectNumber };
+  };
+  assert.deepEqual(await run('admin', 'boss'), { repaired: 1, reserved: 1, queued: 1, jobNumber: number });
+  assert.deepEqual(await run('sales', 'rep'), { repaired: 1, reserved: 1, queued: 1, jobNumber: number }, 'the owning rep repairs it');
+  assert.deepEqual(await run('sales', 'another-rep'), { repaired: 0, reserved: 0, queued: 0, jobNumber: '' });
+  assert.deepEqual(await run('viewer', 'rep'), { repaired: 0, reserved: 0, queued: 0, jobNumber: '' }, 'a view-only session never tries');
+  assert.deepEqual(await run('admin', 'boss', number), { repaired: 0, reserved: 0, queued: 0, jobNumber: number }, 'nothing to do once the job holds its number');
+  // Leads beyond the first page are only in memory after the complete load.
+  assert.match(app.match(/^async function ensureCompleteCoreRecordsLoaded\(\) \{[^]*?^}/m)[0], /void repairSalesNumbersAfterCompleteLoad\(\);/);
+});
+
+test('number repair: every sold job gets a number, with or without an estimate', async () => {
+  const number = 'LD-20261120-000001-P01';
+  const run = async (role, userId, { sold = true, leadNumber = 'LD-20261120-000001', jobNumber = '', withEstimate = false } = {}) => {
+    const state = {
+      estimates: withEstimate ? [{ id: 'est1', contactId: 'lead1', jobId: 'job1', ownerUserId: 'rep', estimateNumber: 'EST-1001', leadNumber, projectNumber: number }] : [],
+      contacts: [{ id: 'lead1', ownerUserId: 'rep', leadNumber, jobs: [{ id: 'job1', ownerUserId: 'rep', projectNumber: jobNumber, sold }] }],
+    };
+    const reservedFor = [];
+    let queued = 0;
+    const context = functions(['canSaveExistingRecord', 'getEstimateContact', 'getEstimateJob', 'ensureExistingSharedSalesNumbers', 'repairSalesNumbersAfterCompleteLoad'], {
+      state, authSession: { user: { id: userId } }, currentRole: () => role,
+      getContact: (id) => state.contacts.find((contact) => contact.id === id), contactJobs: (contact) => contact.jobs,
+      jobIsSold: (job) => job.sold === true,
+      // The real reservation numbers the lead as well when it has no number.
+      reserveSharedSalesNumbers: async (leadId, jobId, estimateId) => {
+        reservedFor.push(estimateId || 'job only');
+        state.contacts[0].leadNumber = 'LD-20261120-000001';
+        state.contacts[0].jobs[0].projectNumber = number;
+      },
+      canUseCloudSync: () => true, queueDurableRecordsSave: () => { queued += 1; }, renderDurableUpdateWhenIdle: () => true,
+    });
+    const repaired = await context.repairSalesNumbersAfterCompleteLoad();
+    return { repaired, reservedFor: reservedFor.join(','), queued, leadNumber: state.contacts[0].leadNumber, jobNumber: state.contacts[0].jobs[0].projectNumber };
+  };
+  const done = { repaired: 1, reservedFor: 'job only', queued: 1, leadNumber: 'LD-20261120-000001', jobNumber: number };
+  const untouched = { repaired: 0, reservedFor: '', queued: 0, leadNumber: 'LD-20261120-000001', jobNumber: '' };
+  const neverNumbered = { ...untouched, leadNumber: '' };
+  // The lead already has its number: only the job's record changes.
+  assert.deepEqual(await run('admin', 'boss'), done);
+  assert.deepEqual(await run('sales', 'rep'), done, 'the rep who owns the job');
+  assert.deepEqual(await run('production', 'rep'), done, 'the job\'s owner may save the job');
+  assert.deepEqual(await run('sales', 'another-rep'), untouched);
+  assert.deepEqual(await run('viewer', 'rep'), untouched);
+  // The lead has no number yet: the lead is numbered with the job, so the session must be able to save both.
+  assert.deepEqual(await run('admin', 'boss', { leadNumber: '' }), done);
+  assert.deepEqual(await run('sales', 'rep', { leadNumber: '' }), done, 'a rep who owns the lead and the job');
+  assert.deepEqual(await run('production', 'rep', { leadNumber: '' }), neverNumbered, 'a production user cannot save the lead');
+  assert.deepEqual(await run('sales', 'another-rep', { leadNumber: '' }), neverNumbered);
+  assert.deepEqual(await run('viewer', 'rep', { leadNumber: '' }), neverNumbered);
+  // Only sold jobs, and only once.
+  assert.deepEqual(await run('admin', 'boss', { sold: false }), untouched, 'a job that is not sold is not numbered');
+  assert.deepEqual(await run('admin', 'boss', { sold: false, leadNumber: '' }), neverNumbered);
+  assert.deepEqual(await run('admin', 'boss', { jobNumber: number }), { ...untouched, jobNumber: number }, 'nothing to do once the job holds its number');
+  // A job already found through its estimate is reserved once, not twice.
+  assert.deepEqual(await run('admin', 'boss', { withEstimate: true }), { ...done, reservedFor: 'est1' });
+});
+
+// ---- #71 an automatic correction the database refuses must not be retried for ever ----
+
+test('#71 a lead keeps the same first job, and so the same stage, however its jobs were loaded', () => {
+  const { inStableJobOrder } = functions(['inStableJobOrder']);
+  const newestFirst = [{ id: 'job_mw9b_bbb', status: 'Request' }, { id: 'job_mw1a_aaa', status: 'Paid' }];
+  assert.deepEqual(Array.from(inStableJobOrder(newestFirst), (job) => job.id), ['job_mw1a_aaa', 'job_mw9b_bbb']);
+  assert.equal(newestFirst[0].id, 'job_mw9b_bbb', 'the list handed in is not reordered');
+  const load = (jobRows) => {
+    const state = { company: {}, contacts: [] };
+    const context = functions(['inStableJobOrder', 'applyDurableRows'], {
+      state, durableUnmappedRows: [], COMPANY_DOCUMENT_LEAD_ID: '__company__', showUnmappedRecordNotice() {},
+      applySharedState: (data) => Object.assign(state, data),
+      // The real rule: a lead's summary stage is its first job's stage.
+      normalizeContact: (contact) => ({ ...contact, status: contact.jobs[0]?.status || contact.status }),
+      normalizeDocument: (value) => value,
+    });
+    context.applyDurableRows([{ record_type: 'contact', id: 'lead1', data: { status: 'Paid' } }, ...jobRows], []);
+    return state.contacts[0];
+  };
+  const paid = { record_type: 'job', id: 'job_mw1a_aaa', lead_id: 'lead1', data: { status: 'Paid' } };
+  const request = { record_type: 'job', id: 'job_mw9b_bbb', lead_id: 'lead1', data: { status: 'Request' } };
+  // The complete load returns jobs in id order, the first page most recently updated first.
+  assert.equal(load([paid, request]).status, 'Paid');
+  assert.equal(load([request, paid]).status, 'Paid');
+  assert.match(app.match(/^function normalizeServerLeadItem\([^]*?^}/m)[0], /jobs: inStableJobOrder\(jobs\.map\(/);
+});
+
+test('#71 only a session the database will let make a Paid-status correction marks it for saving', () => {
+  const remember = (role, userId, rows, normalizedStatus, refused = []) => {
+    const context = functions(['canSaveExistingRecord', 'canManageTeamData', 'canCarryPaidStatusRepair', 'rememberDurableRows'], {
+      currentRole: () => role, authSession: { user: { id: userId } },
+      durableFinancialBaseline: new Map(), durableRecordFingerprints: new Map(), durableAuditIds: new Set(),
+      durableAutomaticRepairKeys: new Set(), durableRefusedRepairKeys: new Set(refused),
+      durableRecordKey: (row) => `${row.record_type}:${row.id}`,
+      durableFingerprint: (row) => row.data.status,
+      durableRowsFromState: () => rows.map((row) => ({ ...row, data: { ...row.data, status: normalizedStatus } })),
+      getDurableCommitWriter: () => ({ remember() {} }),
+    });
+    context.rememberDurableRows(rows, []);
+    const marked = [...context.durableAutomaticRepairKeys].map((key) => key.split(':')[0]).sort();
+    // A marked record keeps the saved value as its fingerprint, so it differs
+    // from what is on screen and the next save sends it. Any other record is
+    // fingerprinted as shown, so nothing is waiting to be saved for it.
+    for (const row of rows) {
+      const fingerprint = context.durableRecordFingerprints.get(`${row.record_type}:${row.id}`);
+      assert.equal(fingerprint, marked.includes(row.record_type) ? 'Paid' : normalizedStatus);
+    }
+    return marked;
+  };
+  const lead = { record_type: 'contact', id: 'lead1', owner_id: 'rep', data: { status: 'Paid' } };
+  const job = { record_type: 'job', id: 'job1', lead_id: 'lead1', owner_id: 'rep', data: { status: 'Paid' } };
+  // Only the lead's summary is wrong: its owner may save that.
+  assert.deepEqual(remember('sales', 'rep', [lead], 'Scheduled'), ['contact']);
+  assert.deepEqual(remember('viewer', 'rep', [lead], 'Scheduled'), [], 'a view-only session marks nothing');
+  assert.deepEqual(remember('sales', 'another-rep', [lead], 'Scheduled'), []);
+  // The job itself has to move back a stage: only a manager may do that, and the lead goes with it.
+  assert.deepEqual(remember('sales', 'rep', [lead, job], 'Completed'), []);
+  assert.deepEqual(remember('admin', 'boss', [lead, job], 'Completed'), ['contact', 'job']);
+  assert.deepEqual(remember('sales_manager', 'boss', [lead, job], 'Completed'), ['contact', 'job']);
+  // Refused once in this session: not offered again.
+  assert.deepEqual(remember('admin', 'boss', [lead, job], 'Completed', ['job:job1']), ['contact']);
+  // Nothing wrong: nothing marked.
+  assert.deepEqual(remember('admin', 'boss', [lead, job], 'Paid'), []);
+});
+
+test('#71 a refused automatic correction is remembered, and a late one gets its save started', () => {
+  const refused = new Set();
+  const toasts = [];
+  const context = functions(['handleRejectedDurableWrite'], {
+    durableRejectionReloadPending: false, durableSaveTimer: 0,
+    window: { clearTimeout() {}, setTimeout() {} },
+    durableRecordKey: (row) => `${row.record_type}:${row.id}`,
+    durableAutomaticRepairKeys: new Set(['job:auto']), durableRefusedRepairKeys: refused,
+    durableRejectionReason: () => 'A job can only move forward one stage at a time.', showToast: (text) => toasts.push(text),
+  });
+  context.handleRejectedDurableWrite({ error: { message: 'invalid_stage_transition' }, payload: { p_changes: [
+    { record_type: 'job', id: 'auto' }, { record_type: 'contact', id: 'edited-by-user' },
+  ] } });
+  assert.deepEqual([...refused], ['job:auto'], 'only the automatic correction is set aside; the user is still told');
+  assert.equal(toasts.length, 1);
+  context.handleRejectedDurableWrite({ error: { message: 'record_access_denied' } });
+  assert.equal(refused.size, 1);
+  const completeLoad = app.match(/^async function ensureCompleteCoreRecordsLoaded\(\) \{[^]*?^}/m)[0];
+  assert.match(completeLoad, /if \(hasPendingDurableChanges\(\)\) queueDurableRecordsSave\(\);\s*\/\/[^]*?void repairSalesNumbersAfterCompleteLoad\(\);/);
+  assert.match(app.match(/^function handleRejectedDurableWrite\([^]*?^}/m)[0], /if \(hasPendingDurableChanges\(\)\) queueDurableRecordsSave\(\);/);
 });
 
 module.exports = { functions, app, page, styles };
