@@ -21,6 +21,7 @@ function harness(rows, names) {
     checkpointPendingDraft() {}, preserveBlockedDurableWrite() {}, queueCloudSave() {}, queueDurableRecordsSave() {},
     markRecentLocalDurableWrite() {}, clearRecentLocalDurableWrite() {},
     durableAuditRowsFromState: () => [], COMPANY_DOCUMENT_LEAD_ID: 'company',
+    SAVE_RETRY_ATTEMPTS: 1, waitBeforeSaveRetry: async () => {}, durableChangeCounter: 0,
   });
   for (const name of ['durableRecordData', 'durableFingerprint', 'canonicalRecordValue', 'durableRecordDataMatches', 'getDurableCommitWriter', 'commitDurableChanges', ...names]) {
     const match = source.match(new RegExp(`^( *)(?:async )?function ${name}\\([^]*?^\\1}`, 'm'));

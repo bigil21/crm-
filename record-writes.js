@@ -64,6 +64,12 @@
     isExpectedRejection = () => false,
     timeoutMs = 15000,
     transientRetries = 0,
+    // Called before each retry of a request that failed in transit (a dropped
+    // connection, a timeout, a busy server). It may wait: for a moment, or for
+    // the connection to come back. The same request, with the same id, is
+    // then sent again; the database answers a repeated request once, so this
+    // is safe even when the first attempt did reach it.
+    transientRetryWait = async () => {},
     // Optional conflict recovery: baseFor(row) returns the record data this
     // editor last loaded; fetchCurrent(changes) returns the saved rows now.
     baseFor = null,
@@ -119,10 +125,18 @@
           const saved = new Map(current.map(row => [key(row), row]));
           const merged = [];
           const rebased = [];
+          // Deletes of records that are already gone. There is nothing left to
+          // do for them, and that is not a conflict: it used to stop the whole
+          // request and pause saving in the tab.
+          const alreadyDeleted = [];
           for (const change of sent) {
             const now = saved.get(key(change));
             if (change.operation === 'delete') {
-              if (!now || now.deleted_at || !Number.isSafeInteger(now.version)) return null;
+              if (!now || now.deleted_at) {
+                alreadyDeleted.push({ ...change, version: Number.isSafeInteger(now?.version) ? now.version : 0 });
+                continue;
+              }
+              if (!Number.isSafeInteger(now.version)) return null;
               rebased.push({ ...change, expected_version: now.version });
               continue;
             }
@@ -143,7 +157,7 @@
             bases.set(key(change), clone(now.data));
             merged.push({ key: key(change), localData: change.data, conflicts });
           }
-          return { changes: rebased, merged };
+          return { changes: rebased, merged, alreadyDeleted };
         };
         const operation = tail.then(async () => {
           if (blocked) return { data: null, error: blocked.error };
@@ -166,7 +180,14 @@
             };
             let response;
             const merges = new Map();
+            const settledDeletes = [];
             for (let conflictAttempt = 0; ; conflictAttempt += 1) {
+              // Every change turned out to be a delete of something already
+              // gone, and there is no history to add: nothing needs sending.
+              if (conflictAttempt > 0 && !payload.p_changes.length && !payload.p_events.length) {
+                response = { data: { rows: [], audit_ids: [] }, error: null };
+                break;
+              }
               try {
                 for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
                   try {
@@ -179,6 +200,7 @@
                     const retryable = status === 408 || status === 429 || (status >= 500 && status <= 599) ||
                       /timed out|timeout|network|fetch|gateway/.test(message);
                     if (attempt >= transientRetries || !retryable) throw error;
+                    try { await transientRetryWait(attempt + 1, error); } catch { /* retry at once */ }
                   }
                 }
                 break;
@@ -194,6 +216,7 @@
                 if (!rebased) throw error;
                 payload.p_changes = rebased.changes;
                 payload.p_request_id = requestId();
+                settledDeletes.push(...rebased.alreadyDeleted);
                 rebased.merged.forEach(entry => {
                   const earlier = merges.get(entry.key);
                   merges.set(entry.key, earlier
@@ -217,7 +240,12 @@
               if (row.deleted_at) snapshots.delete(key(row));
               else if (isPlainObject(row.data)) snapshots.set(key(row), clone(row.data));
             }
-            onAcknowledged(clone(sentChanges), response.data.audit_ids || []);
+            for (const gone of settledDeletes) {
+              if (gone.version > 0) versions.set(key(gone), gone.version);
+              snapshots.delete(key(gone));
+            }
+            // The caller hears about those deletes too: for it they are done.
+            onAcknowledged(clone([...sentChanges, ...settledDeletes.map(({ version, ...change }) => change)]), response.data.audit_ids || []);
             if (merges.size) {
               try {
                 onMerged([...merges.values()].map(entry => ({

@@ -5,10 +5,13 @@
     if (!companyId || !userId || !sessionId) throw new Error("Recovery requires a company, user and page session.");
     const prefix = `jobcrest-pending:v1:${encodeURIComponent(companyId)}:${encodeURIComponent(userId)}:`;
     const ownKey = prefix + encodeURIComponent(sessionId);
-    function captureSerialized(stateJson) {
+    // `details.pending` lists the records ("type:id") that were unsaved when
+    // the copy was taken, so the rest is never mistaken for lost work.
+    function captureSerialized(stateJson, details) {
       if (typeof stateJson !== "string") return false;
       try {
-        const metadata = JSON.stringify({ format: 1, companyId, userId, sessionId, updatedAt: now() });
+        const pending = Array.isArray(details?.pending) ? details.pending.map(String) : null;
+        const metadata = JSON.stringify({ format: 1, companyId, userId, sessionId, updatedAt: now(), ...(pending ? { pending } : {}) });
         // Reuse the cache's existing JSON serialization instead of serializing
         // every lead and embedded file a second time while the user is typing.
         storage.setItem(ownKey, `${metadata.slice(0, -1)},"state":${stateJson}}`);
@@ -17,9 +20,9 @@
     }
     return {
       captureSerialized,
-      capture(state) {
+      capture(state, details) {
         try {
-          return captureSerialized(JSON.stringify(state));
+          return captureSerialized(JSON.stringify(state), details);
         } catch { return false; }
       },
       settle() {

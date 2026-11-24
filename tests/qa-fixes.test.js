@@ -340,11 +340,11 @@ test('#17 the menu highlight stays put while a lead is open', () => {
 
 test('#54 totals are never computed from a partial set of records', () => {
   const calls = [];
-  const context = functions(['coreRecordsArePartial', 'dashboardDataSource', 'ledgerTotals', 'dashboardMetrics'], {
+  const context = functions(['coreRecordsArePartial', 'dashboardDataSource', 'ledgerTotals', 'moneyTotalsForDisplay', 'dashboardMetrics'], {
     canUseCloudSync: () => true,
     completeCoreRecordsLoaded: false,
     completeCoreRecordsAttempts: 0,
-    dashboardAggregateTotals: { leads: 999 },
+    serverLedgerTotals: null,
     financialLedgerEntries: () => { calls.push('ledger'); return []; },
     visibleContacts: () => { calls.push('contacts'); return [{ id: 'only-the-first-page' }]; },
     visibleEstimates: () => [], allJobs: () => [], contactJobs: () => [], jobHasFullPayment: () => false,
@@ -367,9 +367,11 @@ test('#54 the full record set is loaded in the background on every start, and re
   assert.match(loader, /renderDurableUpdateWhenIdle\(\);/);
   // Billing and the dashboard are among the screens that need everything.
   assert.match(app, /function viewNeedsCompleteCoreRecords[\s\S]*?"dashboard", "invoices"/);
-  // Refreshing server totals no longer blanks them first.
+  // Refreshing the database's totals never blanks the ones on screen first.
   const invalidate = app.match(/^function invalidateServerRecordPages\(\) \{[^]*?^}/m)[0];
-  assert.doesNotMatch(invalidate, /dashboardAggregateTotals = null/);
+  assert.doesNotMatch(invalidate, /serverLedgerTotals = null/);
+  // The old dashboard aggregates are gone from the app: nothing showed them.
+  assert.doesNotMatch(app, /dashboardAggregateTotals|recordPageClient\.aggregates\(\)/);
 });
 
 test('#1 #70 the dashboard, Billing and Reports read money from one ledger', () => {
@@ -389,11 +391,13 @@ test('#1 #70 the dashboard, Billing and Reports read money from one ledger', () 
   assert.deepEqual({ ...context.ledgerTotals() }, { payments: 43000, refunds: 250, collected: 42750, expenses: 9000, credits: 100 });
   const months = context.collectedByMonth([{ year: 2026, month: 9, value: 0 }, { year: 2026, month: 10, value: 0 }]);
   assert.deepEqual(months.map((month) => month.value), [42000, 750], 'each payment counts in the month it was received');
-  // All three screens use it.
+  // All three screens use it. Billing and Reports reach it through
+  // moneyTotalsForDisplay, which hands back this ledger once every record is loaded.
   assert.match(app.match(/^function dashboardMetrics\(\) \{[^]*?^}/m)[0], /closedValue: ledgerTotals\(\)\.collected/);
-  assert.match(app.match(/^function renderInvoicesView\(\) \{[^]*?^}/m)[0], /const ledger = ledgerTotals\(ledgerEntries\);/);
+  assert.match(app.match(/^function moneyTotalsForDisplay\([^]*?^}/m)[0], /if \(!coreRecordsArePartial\(\)\) return \{ ready: true, source: "local", \.\.\.ledgerTotals\(entries\) \};/);
+  assert.match(app.match(/^function renderInvoicesView\(\) \{[^]*?^}/m)[0], /const ledger = moneyTotalsForDisplay\(ledgerEntries\);/);
   const reports = app.match(/^function renderReportsView\(\) \{[^]*?^}/m)[0];
-  assert.match(reports, /const ledger = ledgerTotals\(ledgerEntries\);/);
+  assert.match(reports, /const ledger = moneyTotalsForDisplay\(ledgerEntries\);/);
   assert.doesNotMatch(reports, /state\.financialPayments\.reduce/);
 });
 
@@ -1005,23 +1009,29 @@ test('number repair: only a session the database would let save a record tries t
   assert.equal(allowed('production', 'contact', 'me'), false);
 });
 
-test('number repair: a reserved job number that never reached the job record is restored and saved once', async () => {
+// The names lifted out of app.js for the "numbers are given out after a user's
+// own save" tests, and a stand-in for the timer that starts the check.
+const NUMBERING = ['canSaveExistingRecord', 'getEstimateContact', 'getEstimateJob', 'ensureExistingSharedSalesNumbers', 'numberingAfterSaveQueue', 'queueNumberingAfterSave', 'numberRecordsJustSaved'];
+const numberingTimers = () => ({ numberingAfterSaveTimer: null, window: { clearTimeout() {}, setTimeout: () => 1 } });
+
+test('number repair: a reserved job number that never reached the job record is restored when that job is next saved', async () => {
   const number = 'LD-20261121-000001-P01';
-  const run = async (role, userId, jobNumber = '') => {
+  const run = async (role, userId, jobNumber = '', saved = [{ record_type: 'job', id: 'job1' }]) => {
     const state = {
       estimates: [{ id: 'est1', contactId: 'lead1', jobId: 'job1', ownerUserId: 'rep', estimateNumber: 'EST-1001', leadNumber: 'LD-20261121-000001', projectNumber: number }],
       contacts: [{ id: 'lead1', ownerUserId: 'rep', leadNumber: 'LD-20261121-000001', jobs: [{ id: 'job1', ownerUserId: 'rep', projectNumber: jobNumber }] }],
     };
     const tally = { reserved: 0, queued: 0 };
-    const context = functions(['canSaveExistingRecord', 'getEstimateContact', 'getEstimateJob', 'ensureExistingSharedSalesNumbers', 'repairSalesNumbersAfterCompleteLoad'], {
-      state, authSession: { user: { id: userId } }, currentRole: () => role,
+    const context = functions(NUMBERING, {
+      state, authSession: { user: { id: userId } }, currentRole: () => role, ...numberingTimers(),
       getContact: (id) => state.contacts.find((contact) => contact.id === id), contactJobs: (contact) => contact.jobs,
       jobIsSold: (job) => job.sold === true,
       // The real reservation is idempotent: it hands back the number already reserved.
       reserveSharedSalesNumbers: async () => { tally.reserved += 1; state.contacts[0].jobs[0].projectNumber = number; },
       canUseCloudSync: () => true, queueDurableRecordsSave: () => { tally.queued += 1; }, renderDurableUpdateWhenIdle: () => true,
     });
-    const repaired = await context.repairSalesNumbersAfterCompleteLoad();
+    context.queueNumberingAfterSave(saved);
+    const repaired = await context.numberRecordsJustSaved();
     return { repaired, ...tally, jobNumber: state.contacts[0].jobs[0].projectNumber };
   };
   assert.deepEqual(await run('admin', 'boss'), { repaired: 1, reserved: 1, queued: 1, jobNumber: number });
@@ -1029,8 +1039,25 @@ test('number repair: a reserved job number that never reached the job record is 
   assert.deepEqual(await run('sales', 'another-rep'), { repaired: 0, reserved: 0, queued: 0, jobNumber: '' });
   assert.deepEqual(await run('viewer', 'rep'), { repaired: 0, reserved: 0, queued: 0, jobNumber: '' }, 'a view-only session never tries');
   assert.deepEqual(await run('admin', 'boss', number), { repaired: 0, reserved: 0, queued: 0, jobNumber: number }, 'nothing to do once the job holds its number');
-  // Leads beyond the first page are only in memory after the complete load.
-  assert.match(app.match(/^async function ensureCompleteCoreRecordsLoaded\(\) \{[^]*?^}/m)[0], /void repairSalesNumbersAfterCompleteLoad\(\);/);
+  // Saving its estimate is enough too; saving some other record is not.
+  assert.deepEqual(await run('admin', 'boss', '', [{ record_type: 'estimate', id: 'est1' }]), { repaired: 1, reserved: 1, queued: 1, jobNumber: number });
+  assert.deepEqual(await run('admin', 'boss', '', [{ record_type: 'job', id: 'another-job' }, { record_type: 'contact', id: 'lead1' }]), { repaired: 0, reserved: 0, queued: 0, jobNumber: '' });
+  assert.deepEqual(await run('admin', 'boss', '', [{ record_type: 'job', id: 'job1', operation: 'delete' }]), { repaired: 0, reserved: 0, queued: 0, jobNumber: '' });
+});
+
+test('to-do 7: opening the CRM writes nothing', () => {
+  const start = app.slice(app.indexOf('async function startApp()'));
+  assert.doesNotMatch(start, /ensureExistingSharedSalesNumbers\(/, 'numbers are not checked at startup');
+  const completeLoad = app.match(/^async function ensureCompleteCoreRecordsLoaded\(\) \{[^]*?^}/m)[0];
+  assert.doesNotMatch(completeLoad, /ensureExistingSharedSalesNumbers|numberRecordsJustSaved|repairSalesNumbers/, 'nor when the rest of the records arrive');
+  // The only caller of the number check is the one that runs after a save.
+  assert.equal((app.match(/ensureExistingSharedSalesNumbers\(/g) || []).length, 2, 'its definition and one call');
+  assert.match(app.match(/^async function numberRecordsJustSaved\(\) \{[^]*?^}/m)[0], /await ensureExistingSharedSalesNumbers\(only\)/);
+  assert.match(app, /onAcknowledged: \(changes, auditIds\) => \{[^]*?queueNumberingAfterSave\(changes\);/);
+  // Loading records never leaves one marked as waiting to be saved.
+  const remember = app.match(/^function rememberDurableRows\([^]*?^}/m)[0];
+  assert.doesNotMatch(remember, /durableFingerprint\(row\)\]/, 'every record is fingerprinted as shown');
+  assert.match(remember, /return \[durableRecordKey\(row\), durableFingerprint\(normalized \|\| row\)\];/);
 });
 
 test('number repair: every sold job gets a number, with or without an estimate', async () => {
@@ -1042,8 +1069,8 @@ test('number repair: every sold job gets a number, with or without an estimate',
     };
     const reservedFor = [];
     let queued = 0;
-    const context = functions(['canSaveExistingRecord', 'getEstimateContact', 'getEstimateJob', 'ensureExistingSharedSalesNumbers', 'repairSalesNumbersAfterCompleteLoad'], {
-      state, authSession: { user: { id: userId } }, currentRole: () => role,
+    const context = functions(NUMBERING, {
+      state, authSession: { user: { id: userId } }, currentRole: () => role, ...numberingTimers(),
       getContact: (id) => state.contacts.find((contact) => contact.id === id), contactJobs: (contact) => contact.jobs,
       jobIsSold: (job) => job.sold === true,
       // The real reservation numbers the lead as well when it has no number.
@@ -1054,7 +1081,9 @@ test('number repair: every sold job gets a number, with or without an estimate',
       },
       canUseCloudSync: () => true, queueDurableRecordsSave: () => { queued += 1; }, renderDurableUpdateWhenIdle: () => true,
     });
-    const repaired = await context.repairSalesNumbersAfterCompleteLoad();
+    // The job has just been saved by the user, for example by moving it to its sold stage.
+    context.queueNumberingAfterSave([{ record_type: 'job', id: 'job1' }]);
+    const repaired = await context.numberRecordsJustSaved();
     return { repaired, reservedFor: reservedFor.join(','), queued, leadNumber: state.contacts[0].leadNumber, jobNumber: state.contacts[0].jobs[0].projectNumber };
   };
   const done = { repaired: 1, reservedFor: 'job only', queued: 1, leadNumber: 'LD-20261120-000001', jobNumber: number };
@@ -1107,80 +1136,84 @@ test('#71 a lead keeps the same first job, and so the same stage, however its jo
   assert.match(app.match(/^function normalizeServerLeadItem\([^]*?^}/m)[0], /jobs: inStableJobOrder\(jobs\.map\(/);
 });
 
-test('#71 only a session the database will let make a Paid-status correction marks it for saving', () => {
-  const remember = (role, userId, rows, normalizedStatus, refused = []) => {
-    const context = functions(['canSaveExistingRecord', 'canManageTeamData', 'canCarryPaidStatusRepair', 'rememberDurableRows'], {
-      currentRole: () => role, authSession: { user: { id: userId } },
-      durableFinancialBaseline: new Map(), durableRecordFingerprints: new Map(), durableAuditIds: new Set(),
-      durableAutomaticRepairKeys: new Set(), durableRefusedRepairKeys: new Set(refused),
-      durableRecordKey: (row) => `${row.record_type}:${row.id}`,
-      durableFingerprint: (row) => row.data.status,
-      durableRowsFromState: () => rows.map((row) => ({ ...row, data: { ...row.data, status: normalizedStatus } })),
-      getDurableCommitWriter: () => ({ remember() {} }),
-    });
-    context.rememberDurableRows(rows, []);
-    const marked = [...context.durableAutomaticRepairKeys].map((key) => key.split(':')[0]).sort();
-    // A marked record keeps the saved value as its fingerprint, so it differs
-    // from what is on screen and the next save sends it. Any other record is
-    // fingerprinted as shown, so nothing is waiting to be saved for it.
-    for (const row of rows) {
-      const fingerprint = context.durableRecordFingerprints.get(`${row.record_type}:${row.id}`);
-      assert.equal(fingerprint, marked.includes(row.record_type) ? 'Paid' : normalizedStatus);
-    }
-    return marked;
-  };
+test('#71 to-do 7: loading a record that needs the Paid correction leaves nothing waiting to be saved, for anyone', () => {
   const lead = { record_type: 'contact', id: 'lead1', owner_id: 'rep', data: { status: 'Paid' } };
   const job = { record_type: 'job', id: 'job1', lead_id: 'lead1', owner_id: 'rep', data: { status: 'Paid' } };
-  // Only the lead's summary is wrong: its owner may save that.
-  assert.deepEqual(remember('sales', 'rep', [lead], 'Scheduled'), ['contact']);
-  assert.deepEqual(remember('viewer', 'rep', [lead], 'Scheduled'), [], 'a view-only session marks nothing');
-  assert.deepEqual(remember('sales', 'another-rep', [lead], 'Scheduled'), []);
-  // The job itself has to move back a stage: only a manager may do that, and the lead goes with it.
-  assert.deepEqual(remember('sales', 'rep', [lead, job], 'Completed'), []);
-  assert.deepEqual(remember('admin', 'boss', [lead, job], 'Completed'), ['contact', 'job']);
-  assert.deepEqual(remember('sales_manager', 'boss', [lead, job], 'Completed'), ['contact', 'job']);
-  // Refused once in this session: not offered again.
-  assert.deepEqual(remember('admin', 'boss', [lead, job], 'Completed', ['job:job1']), ['contact']);
-  // Nothing wrong: nothing marked.
-  assert.deepEqual(remember('admin', 'boss', [lead, job], 'Paid'), []);
+  for (const role of ['admin', 'sales_manager', 'sales', 'production', 'viewer']) {
+    // What is shown differs from what is stored: the job is at Completed on screen.
+    const shown = [lead, job].map((row) => ({ ...row, data: { ...row.data, status: 'Completed' } }));
+    const context = functions(['rememberDurableRows'], {
+      durableFinancialBaseline: new Map(), durableRecordFingerprints: new Map(), durableAuditIds: new Set(),
+      durableRecordKey: (row) => `${row.record_type}:${row.id}`,
+      durableFingerprint: (row) => row.data.status,
+      durableRowsFromState: () => shown,
+      getDurableCommitWriter: () => ({ remember() {} }),
+    });
+    context.rememberDurableRows([lead, job], []);
+    // Each record's fingerprint is what is on screen, so the save sees no difference.
+    for (const row of shown) {
+      assert.equal(context.durableRecordFingerprints.get(`${row.record_type}:${row.id}`), 'Completed', `${role} · ${row.record_type}`);
+    }
+  }
 });
 
-test('#71 a refused automatic correction is remembered, and a late one gets its save started', () => {
-  const refused = new Set();
+test('#71 to-do 7: the stored Paid stage is sent back unchanged by anyone who may not move a job back', () => {
+  const outgoing = (role, shownStatus, storedStatus = 'Paid') => {
+    const rows = [{ record_type: 'job', id: 'job1', data: { status: shownStatus, notes: 'edited by the user' } },
+      { record_type: 'contact', id: 'lead1', data: { status: shownStatus } }];
+    const context = functions(['canManageTeamData', 'preserveStoredPaidStageForNonManagers'], {
+      currentRole: () => role,
+      durableFinancialBaseline: new Map([['job:job1', { status: storedStatus }], ['contact:lead1', { status: storedStatus }]]),
+      durableRecordKey: (row) => `${row.record_type}:${row.id}`,
+    });
+    context.preserveStoredPaidStageForNonManagers(rows);
+    return { job: rows[0].data.status, lead: rows[1].data.status, notes: rows[0].data.notes };
+  };
+  // A rep edits a note on a job that shows Completed but is stored as Paid: the note is saved, the stage is left alone.
+  assert.deepEqual(outgoing('sales', 'Completed'), { job: 'Paid', lead: 'Completed', notes: 'edited by the user' });
+  assert.deepEqual(outgoing('production', 'Final Walkthrough'), { job: 'Paid', lead: 'Final Walkthrough', notes: 'edited by the user' });
+  // A manager's save carries the corrected stage, which the database lets a manager make.
+  for (const role of ['admin', 'office_manager', 'sales_manager', 'operations_manager']) {
+    assert.equal(outgoing(role, 'Completed').job, 'Completed', role);
+  }
+  // Anyone may move a job to Lost; an ordinary forward move from another stage is untouched.
+  assert.equal(outgoing('sales', 'Lost').job, 'Lost');
+  assert.equal(outgoing('sales', 'Scheduled', 'Won').job, 'Scheduled');
+  // It is part of every outgoing save.
+  assert.match(app, /return preserveStoredPaidStageForNonManagers\(preserveImmutableSalesNumbers\(preserveReadOnlyPaymentFields\(\[/);
+});
+
+test('#71 a refused save still tells the user and restores what the database holds', () => {
   const toasts = [];
+  let reloads = 0;
   const context = functions(['handleRejectedDurableWrite'], {
-    durableRejectionReloadPending: false, durableSaveTimer: 0,
-    window: { clearTimeout() {}, setTimeout() {} },
-    durableRecordKey: (row) => `${row.record_type}:${row.id}`,
-    durableAutomaticRepairKeys: new Set(['job:auto']), durableRefusedRepairKeys: refused,
+    durableRejectionReloadPending: false, durableSaveTimer: 0, durableSaveInFlight: false,
+    window: { clearTimeout() {}, setTimeout: (run) => { void run(); } },
+    reloadDurableRecords: async () => { reloads += 1; return []; }, renderDurableUpdateWhenIdle: () => true,
     durableRejectionReason: () => 'A job can only move forward one stage at a time.', showToast: (text) => toasts.push(text),
   });
-  context.handleRejectedDurableWrite({ error: { message: 'invalid_stage_transition' }, payload: { p_changes: [
-    { record_type: 'job', id: 'auto' }, { record_type: 'contact', id: 'edited-by-user' },
-  ] } });
-  assert.deepEqual([...refused], ['job:auto'], 'only the automatic correction is set aside; the user is still told');
-  assert.equal(toasts.length, 1);
-  context.handleRejectedDurableWrite({ error: { message: 'record_access_denied' } });
-  assert.equal(refused.size, 1);
-  const completeLoad = app.match(/^async function ensureCompleteCoreRecordsLoaded\(\) \{[^]*?^}/m)[0];
-  assert.match(completeLoad, /if \(hasPendingDurableChanges\(\)\) queueDurableRecordsSave\(\);\s*\/\/[^]*?void repairSalesNumbersAfterCompleteLoad\(\);/);
-  assert.match(app.match(/^function handleRejectedDurableWrite\([^]*?^}/m)[0], /if \(hasPendingDurableChanges\(\)\) queueDurableRecordsSave\(\);/);
+  context.handleRejectedDurableWrite({ error: { message: 'invalid_stage_transition' } });
+  assert.deepEqual(toasts, ['Change not saved. A job can only move forward one stage at a time.']);
+  assert.equal(reloads, 1);
+  // Nothing is marked for saving by a reload any more, so nothing is resent after it.
+  assert.doesNotMatch(app.match(/^function handleRejectedDurableWrite\([^]*?^}/m)[0], /queueDurableRecordsSave\(\)/);
+  assert.doesNotMatch(app, /durableAutomaticRepairKeys|durableRefusedRepairKeys|canCarryPaidStatusRepair/);
 });
 
 // ---- Dashboard, Billing and Reports always agree ----------------------------
 
-test('totals: there is no fallback figure, so the three screens can never show different things', () => {
+test('totals: with no checked figure from the database, the three screens show the same totals or none', () => {
   const calls = [];
   const globals = (loaded, attempts) => ({
     canUseCloudSync: () => true, completeCoreRecordsLoaded: loaded, completeCoreRecordsAttempts: attempts,
-    // The database's own totals are present, and must not be used: its "collected"
-    // is only the money on jobs marked Paid.
-    dashboardAggregateTotals: { leads: 999, closedValue: 111, pipelineValue: 222 },
+    // Nothing has come back from the database's ledger function (see
+    // tests/ledger-totals-database.test.js for when it has).
+    serverLedgerTotals: null,
     financialLedgerEntries: () => { calls.push('ledger'); return [{ kind: 'Payment', amount: 133640.97 }]; },
     visibleContacts: () => [], visibleEstimates: () => [], allJobs: () => [], contactJobs: () => [], jobHasFullPayment: () => false,
     number: (value) => Number(value) || 0,
   });
-  const names = ['COMPLETE_LOAD_QUICK_ATTEMPTS', 'coreRecordsArePartial', 'companyTotalsState', 'companyTotalsCaption', 'dashboardDataSource', 'ledgerTotals', 'dashboardMetrics'];
+  const names = ['COMPLETE_LOAD_QUICK_ATTEMPTS', 'coreRecordsArePartial', 'companyTotalsState', 'companyTotalsCaption', 'dashboardDataSource', 'ledgerTotals', 'moneyTotalsForDisplay', 'dashboardMetrics'];
   // Still loading, and after the quick tries have all failed: nothing is shown, on any screen.
   for (const [attempts, expectedState, caption] of [[0, 'loading', 'Loading all records'], [8, 'stalled', 'Not loaded yet · still trying'], [40, 'stalled', 'Not loaded yet · still trying']]) {
     const context = functions(names, globals(false, attempts));
@@ -1189,7 +1222,9 @@ test('totals: there is no fallback figure, so the three screens can never show d
     assert.equal(context.dashboardDataSource(), 'pending');
     const metrics = context.dashboardMetrics();
     assert.equal(metrics.pending, true, 'Dashboard and Reports show a placeholder');
-    assert.equal(metrics.closedValue, 0, 'the database total is never passed off as revenue collected');
+    assert.equal(metrics.moneyReady, false);
+    assert.equal(metrics.closedValue, 0, 'no figure is shown for revenue collected');
+    assert.equal(context.moneyTotalsForDisplay().ready, false, 'Billing and Reports get the same answer');
     assert.equal(context.coreRecordsArePartial(), true, 'Billing shows a placeholder by the same test');
   }
   assert.deepEqual(calls, [], 'no total is computed from a partial set');
@@ -1202,10 +1237,12 @@ test('totals: there is no fallback figure, so the three screens can never show d
   assert.doesNotMatch(app, /source === "server"/);
   assert.doesNotMatch(app.match(/^function dashboardDataSource\(\) \{[^]*?^}/m)[0], /dashboardAggregateTotals|"server"/);
   const billing = app.match(/^function renderInvoicesView\(\) \{[^]*?^}/m)[0];
-  assert.match(billing, /const ledger = ledgerTotals\(ledgerEntries\);/);
+  assert.match(billing, /const ledger = moneyTotalsForDisplay\(ledgerEntries\);/);
   assert.match(billing, /const pendingTotals = coreRecordsArePartial\(\);/);
   const reports = app.match(/^function renderReportsView\(\) \{[^]*?^}/m)[0];
-  assert.match(reports, /const ledger = ledgerTotals\(ledgerEntries\);/);
+  assert.match(reports, /const ledger = moneyTotalsForDisplay\(ledgerEntries\);/);
+  // The Dashboard goes through the same function.
+  assert.match(app.match(/^function dashboardMetrics\(\) \{[^]*?^}/m)[0], /const early = moneyTotalsForDisplay\(\);/);
   assert.match(reports, /const shown = \(value\) => \(metrics\.pending \? "…" : value\);/);
   // The tables on Reports are totals too: rep production, lead sources, payment methods, invoice aging.
   assert.equal((reports.match(/\$\{tableRows\(3, /g) || []).length, 3);

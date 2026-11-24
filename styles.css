@@ -137,6 +137,38 @@
 .pipeline-attention-items strong { font-size: 19px; }
 .pipeline-attention-items span { font-size: 10px; line-height: 1.25; }
 
+/* Today's worklist: the "Needs attention" counts as a list to work through. */
+.pipeline-worklist { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 16px; background: #fff; }
+.pipeline-worklist > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.pipeline-worklist > header div { display: grid; gap: 2px; }
+.pipeline-worklist > header strong { color: var(--text); font-size: 15px; }
+.pipeline-worklist > header span { color: var(--muted); font-size: 12px; }
+.pipeline-worklist-rows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.pipeline-worklist-row { display: grid; grid-template-columns: minmax(200px, 1.3fr) minmax(190px, 1fr) auto; align-items: center; gap: 8px 16px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: #fbfcfe; }
+.pipeline-worklist-row.is-open { border-color: #d97706; background: #fffaf0; }
+.pipeline-worklist-who, .pipeline-worklist-when { display: grid; gap: 3px; min-width: 0; }
+.pipeline-worklist-who strong { color: var(--text); font-size: 14px; }
+.pipeline-worklist-who > span, .pipeline-worklist-when span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.pipeline-worklist-reasons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+.pipeline-reason { padding: 2px 8px; border-radius: 999px; background: #eef2f7; color: #334155; font-size: 11px; font-style: normal; font-weight: 700; }
+.pipeline-reason.overdue { background: #fee2e2; color: #991b1b; }
+.pipeline-reason.unassigned, .pipeline-reason.uncontacted { background: #ffedd5; color: #9a3412; }
+.pipeline-reason.noDecision { background: #fef3c7; color: #854d0e; }
+.pipeline-worklist-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.pipeline-worklist-nophone, .pipeline-worklist-more { color: var(--muted); font-size: 12px; }
+.pipeline-worklist-more { margin: 0; }
+.pipeline-call-form { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); align-items: end; gap: 10px 14px; padding-top: 11px; border-top: 1px dashed #f1c276; }
+.pipeline-call-form label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.pipeline-call-form input[type="text"], .pipeline-call-form input[type="date"], .pipeline-call-form input[type="datetime-local"], .pipeline-call-form select { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; background: #fff; color: var(--text); font: inherit; }
+.pipeline-call-form input:disabled { background: #f1f5f9; color: var(--muted); }
+.pipeline-call-form .pipeline-call-check { display: flex; align-items: center; gap: 8px; min-height: 38px; color: var(--text); font-weight: 600; white-space: nowrap; }
+.pipeline-call-form input[type="checkbox"] { flex: none; width: 18px; height: 18px; min-height: 0; margin: 0; padding: 0; }
+.pipeline-call-actions { display: flex; gap: 8px; }
+@media (max-width: 900px) {
+  .pipeline-worklist-row { grid-template-columns: 1fr; }
+  .pipeline-worklist-actions { justify-content: flex-start; }
+}
+
 .sales-pipeline-board-wrap { width: 100%; min-width: 0; overflow-x: auto; padding: 2px 2px 14px; scrollbar-color: #94a3b8 transparent; }
 .sales-pipeline-board { display: grid; grid-template-columns: repeat(var(--pipeline-columns), minmax(265px, 1fr)) minmax(245px, .85fr); gap: 12px; min-width: calc(var(--pipeline-columns) * 277px + 255px); align-items: start; }
 .sales-pipeline-column { min-height: 380px; border: 1px solid var(--border); border-radius: 15px; background: color-mix(in srgb, var(--surface) 92%, #e2e8f0); overflow: hidden; transition: border-color .15s ease, background .15s ease; }
@@ -7591,4 +7623,36 @@ textarea:focus {
 
 @media (max-width: 640px) {
   .server-page-footer { align-items: stretch; flex-direction: column; }
+}
+
+/* Recover unsaved estimate lines: one button, and a panel only when asked for. */
+.estimate-recover-button { border-color: #d97706; color: #9a3412; background: #fff7ed; font-weight: 700; }
+.estimate-recovery-panel { display: grid; gap: 10px; margin: 10px 0 14px; padding: 14px; border: 1px solid #f5c36a; border-radius: 12px; background: #fffaf0; }
+.estimate-recovery-panel p { margin: 0; color: #5b3a09; font-size: 13px; line-height: 1.45; }
+.estimate-recovery-panel ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.estimate-recovery-panel li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 10px 12px; border: 1px solid #f2d7a5; border-radius: 10px; background: #fff; }
+.estimate-recovery-panel li > div:first-child { display: grid; gap: 2px; min-width: 0; }
+.estimate-recovery-panel li strong { color: var(--text); font-size: 14px; }
+.estimate-recovery-panel li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.estimate-recovery-panel .estimate-recovery-now { color: #9a3412; }
+.estimate-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Uploads: one line per file, with its own status. */
+.upload-status { display: grid; gap: 8px; margin: 6px 0 14px; }
+.upload-status-list { display: grid; gap: 4px; max-height: 320px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.upload-status-row { display: grid; grid-template-columns: minmax(120px, 1.4fr) 76px minmax(150px, 1.6fr) auto; align-items: center; gap: 4px 12px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 9px; background: #fff; font-size: 13px; }
+.upload-status-name { overflow: hidden; color: var(--text); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.upload-status-size { color: var(--muted); font-size: 12px; }
+.upload-status-state { color: var(--muted); }
+.upload-status-row.is-sending .upload-status-state, .upload-status-row.is-confirming .upload-status-state { color: #1d4ed8; font-weight: 600; }
+.upload-status-row.is-saved { border-color: #bbf7d0; background: #f0fdf4; }
+.upload-status-row.is-saved .upload-status-state { color: #166534; font-weight: 600; }
+.upload-status-row.is-failed { border-color: #fecaca; background: #fef2f2; }
+.upload-status-row.is-failed .upload-status-state { color: #991b1b; font-weight: 600; }
+.upload-status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.upload-status-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.upload-status-footer:empty { display: none; }
+@media (max-width: 760px) {
+  .upload-status-row { grid-template-columns: 1fr auto; }
+  .upload-status-state, .upload-status-actions { grid-column: 1 / -1; }
 }

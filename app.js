@@ -768,6 +768,7 @@ const createInitialState = () => ({
   pipelineDateRange: "all",
   pipelineStaleDays: 7,
   pipelineAttention: "all",
+  pipelineWorklist: false,
   pipelineSelectedOpportunity: "",
   pipelineGuidanceStage: "",
   leadStageFilter: "",
@@ -862,7 +863,6 @@ let cloudClient = null;
 let assignableTeam = [];
 let cloudReady = false;
 let recordPageClient = null;
-let dashboardAggregateTotals = null;
 let recordPageRequestSequence = 0;
 let completeCoreRecordsLoaded = false;
 let completeCoreRecordsLoad = null;
@@ -879,6 +879,13 @@ let cloudSaveInFlight = false;
 let companySettingsWriter = null;
 let salesNumbering = null;
 let durableUnmappedRows = [];
+// Goes up every time the records held here move on: a save of this tab's is
+// confirmed, or someone else's change arrives. A refresh notes it before it
+// reads the records. If it has gone up by the time the read is back, what was
+// read may be older than what is on screen, and it is thrown away and read
+// again. Without this a refresh that began before a lead was deleted put the
+// lead back on screen afterwards, with its old version number.
+let durableChangeCounter = 0;
 const recentCloudWrites = new Map();
 let localStateSaveTimer = null;
 let localEditRevision = 0;
@@ -921,6 +928,7 @@ const recentLocalDurableWrites = new Map();
 let estimateVisualRefreshTimer = null;
 let pendingDurableRender = false;
 const photoPreviewCache = new Map();
+const unreadablePhotoPreviews = new Set();
 const photoDisplayLimits = new Map();
 const leadDocumentDisplayLimits = new Map();
 const companyDocumentDisplayLimits = new Map();
@@ -1328,6 +1336,7 @@ function uiStateSnapshot() {
     pipelineDateRange: state.pipelineDateRange,
     pipelineStaleDays: state.pipelineStaleDays,
     pipelineAttention: state.pipelineAttention,
+    pipelineWorklist: Boolean(state.pipelineWorklist),
     pipelineSelectedOpportunity: state.pipelineSelectedOpportunity,
     pipelineGuidanceStage: state.pipelineGuidanceStage,
     leadStageFilter: state.leadStageFilter,
@@ -1433,6 +1442,7 @@ function normalizeState(nextState) {
     pipelineDateRange: ["all", "30", "90", "365"].includes(nextState.pipelineDateRange) ? nextState.pipelineDateRange : "all",
     pipelineStaleDays: Math.min(90, Math.max(1, Math.round(number(nextState.pipelineStaleDays) || 7))),
     pipelineAttention: nextState.pipelineAttention || "all",
+    pipelineWorklist: nextState.pipelineWorklist === true,
     pipelineSelectedOpportunity: nextState.pipelineSelectedOpportunity || "",
     pipelineGuidanceStage: nextState.pipelineGuidanceStage || "",
     sidebarMode: ["expanded", "compact"].includes(nextState.sidebarMode) ? nextState.sidebarMode : "auto",
@@ -1452,7 +1462,7 @@ function normalizeState(nextState) {
     calendarTasks: (nextState.calendarTasks || []).map(normalizeCalendarTask).filter((task) => isSafeRecordId(task.id)),
     estimates: (nextState.estimates || []).map((estimate) => normalizeEstimate(estimate, contacts)).filter((estimate) => isSafeRecordId(estimate.id)),
     invoices: (nextState.invoices || []).map(normalizeInvoice).filter((invoice) => isSafeRecordId(invoice.id)),
-    financialPayments: (nextState.financialPayments || []).map(normalizeFinancialPayment).filter((payment) => isSafeRecordId(payment.id)),
+    financialPayments: (nextState.financialPayments || []).filter(isInvoicePaymentRow).map(normalizeFinancialPayment).filter((payment) => isSafeRecordId(payment.id)),
     financialExpenses: (nextState.financialExpenses || []).map(normalizeFinancialExpense).filter((expense) => isSafeRecordId(expense.id)),
     creditNotes: (nextState.creditNotes || []).map(normalizeCreditNote).filter((credit) => isSafeRecordId(credit.id)),
     paymentAllocations: (nextState.paymentAllocations || []).map(normalizePaymentAllocation).filter((allocation) => isSafeRecordId(allocation.id)),
@@ -1540,6 +1550,17 @@ function normalizeInvoice(invoice = {}) {
       position: Number.isFinite(Number(item.position)) ? Number(item.position) : position,
     })),
   };
+}
+
+// The payments table holds every payment. The database files a row there for
+// each payment recorded on a job (origin "job"), in the same save as the job.
+// This browser already has those payments on the job records it holds, which
+// live updates keep current, so it reads them from there and takes only the
+// other rows (payments recorded against an invoice) from the table. The
+// database adds the same money up from the table (crm_ledger_totals), and the
+// two answers are compared: see compareServerLedgerWithLocal.
+function isInvoicePaymentRow(payment) {
+  return payment?.origin !== "job";
 }
 
 function normalizeFinancialPayment(payment = {}) {
@@ -2068,6 +2089,10 @@ function normalizeDocument(document, { leadId = "", categoryId = "", categories 
     source: document.source || "",
     sourceDocumentId: document.sourceDocumentId || "",
     estimateId: document.estimateId || "",
+    // Only estimate PDFs carry this, so no other document gains a new field.
+    ...(document.pdfContentKey ? { pdfContentKey: String(document.pdfContentKey) } : {}),
+    // Where a photo's small gallery copy is kept, for photos that have one.
+    ...(document.previewPath ? { previewPath: String(document.previewPath) } : {}),
     smartDocument: document.smartDocument && Array.isArray(document.smartDocument.fields)
       ? {
           fields: document.smartDocument.fields.slice(0, 300).map((field, index) => ({
@@ -2261,7 +2286,7 @@ function normalizeEstimate(estimate, contacts = []) {
     ownerName: estimate.ownerName || contact?.ownerName || "",
     salesRepEmail: estimate.salesRepEmail || estimate.repEmail || "",
     salesRepPhone: estimate.salesRepPhone || estimate.repPhone || "",
-    items: (estimate.items || []).map(normalizeLineItem),
+    items: ensureEstimateLineIds((estimate.items || []).map(normalizeLineItem)),
     leadNumber: estimate.leadNumber || contact?.leadNumber || "",
     projectNumber: estimate.projectNumber || job?.projectNumber || "",
     squareInvoiceId: estimate.squareInvoiceId || "",
@@ -2283,6 +2308,37 @@ function normalizeEstimate(estimate, contacts = []) {
   }
   normalized.paymentPercent = normalized.contractValue ? Math.min(100, normalized.paidAmount / normalized.contractValue * 100) : 0;
   return normalized;
+}
+
+// Every estimate line has an id of its own. When two people change the same
+// estimate, the save combines their work line by line: a line one of them
+// added, changed or removed is kept as they left it. Without ids the list of
+// lines could only be taken whole from whoever saved last, and the other
+// person's lines silently disappeared.
+//
+// Lines saved before ids existed are numbered by position ("line-1", ...).
+// That is the same on every device that loads the same estimate, which is what
+// lets two people who both opened the old copy still be combined. Lines made
+// from now on get a random id when they are created.
+function ensureEstimateLineIds(items = []) {
+  const list = Array.isArray(items) ? items : [];
+  const hasId = (item) => Boolean(item) && ["string", "number"].includes(typeof item.id) && item.id !== "";
+  if (list.every(hasId) && new Set(list.map((item) => String(item.id))).size === list.length) return list;
+  const savedBeforeIds = !list.some(hasId);
+  const used = new Set();
+  return list.map((item, index) => {
+    let id = hasId(item) ? String(item.id) : savedBeforeIds ? `line-${index + 1}` : uid("line");
+    while (used.has(id)) id = uid("line");
+    used.add(id);
+    return { ...item, id };
+  });
+}
+
+// The same ids on the copies a save is merged with: the one this editor
+// loaded and the one that is in the database now.
+function mergeReadyRecordData(row, data) {
+  if (row?.record_type !== "estimate" || !data || typeof data !== "object" || !Array.isArray(data.items)) return data;
+  return { ...data, items: ensureEstimateLineIds(data.items) };
 }
 
 function normalizeLineItem(item) {
@@ -2336,10 +2392,23 @@ function hasPendingCompanyChanges() {
     (cloudReady && durableBusinessStateAuthoritative && sharedStateSnapshot() !== lastCloudSnapshot));
 }
 
+// Which records have an edit that has not been saved yet, as "type:id".
+function pendingDurableRecordKeys() {
+  try {
+    const projection = durableStateProjection();
+    return projection.rows.map(durableRecordKey).filter((key) => durableRecordFingerprints.get(key) !== projection.fingerprints.get(key));
+  } catch {
+    return [];
+  }
+}
+
 function checkpointPendingDraft(serializedState) {
   if (!draftRecoveryStore || !durableRecordsReady || applyingCloudState) return;
   if (durableWriteBlocked || hasPendingDurableChanges() || hasPendingCompanyChanges()) {
-    const stored = typeof serializedState === "string" ? draftRecoveryStore.captureSerialized(serializedState) : draftRecoveryStore.capture(state);
+    // The copy says which records were unsaved when it was taken. Everything
+    // else in it had been saved, and must not be mistaken for lost work later.
+    const details = { pending: typeof pendingDurableRecordKeys === "function" ? pendingDurableRecordKeys() : [] };
+    const stored = typeof serializedState === "string" ? draftRecoveryStore.captureSerialized(serializedState, details) : draftRecoveryStore.capture(state, details);
     if (stored?.then) stored.then((available) => { if (!available) showDraftStorageWarning(); });
     else if (!stored) showDraftStorageWarning();
   } else if (!durableSaveInFlight && !cloudSaveInFlight) {
@@ -2538,10 +2607,20 @@ async function setContactArchived(contactId, archived) {
   return true;
 }
 
+// An archived lead's estimates and invoices are put away with it. They used to
+// stay in the estimate list and in Billing: archiving a test lead with a $100
+// Square invoice left "$100.00 owed on invoices" on the Billing screen, although
+// archiving says the lead is hidden from every list and all totals.
+function leadIsArchived(contactId) {
+  return Boolean(contactId && state.contacts.find((contact) => contact.id === contactId)?.archived);
+}
+
 function visibleEstimates() {
-  return state.estimates.filter((estimate) =>
-    recordOwnedByCurrentUser(estimate) || recordOwnedByCurrentUser(state.contacts.find((contact) => contact.id === estimate.contactId)),
-  );
+  return state.estimates.filter((estimate) => {
+    const contact = state.contacts.find((item) => item.id === estimate.contactId);
+    if (contact?.archived) return false;
+    return recordOwnedByCurrentUser(estimate) || recordOwnedByCurrentUser(contact);
+  });
 }
 
 function visibleCalendarTasks() {
@@ -3080,10 +3159,10 @@ function durableRowsFromState() {
   // the saved child. Keep unmapped rows untouched until a reviewed relationship
   // repair is loaded from the server, even if a local import reuses their IDs.
   const unmappedKeys = new Set(durableUnmappedRows.map(durableRecordKey));
-  return preserveImmutableSalesNumbers(preserveReadOnlyPaymentFields([
+  return preserveStoredPaidStageForNonManagers(preserveImmutableSalesNumbers(preserveReadOnlyPaymentFields([
     ...rows.filter(row => !unmappedKeys.has(durableRecordKey(row))),
     ...durableUnmappedRows.map(row => JSON.parse(JSON.stringify(row))),
-  ]));
+  ])));
 }
 
 function durableAuditRowsFromState() {
@@ -3202,46 +3281,56 @@ function rememberDurableRows(rows = [], auditRows = []) {
   rows.forEach(row => durableFinancialBaseline.set(durableRecordKey(row), row.data));
   if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
   const normalizedRows = new Map(durableRowsFromState().map((row) => [durableRecordKey(row), row]));
-  const savedAsPaidButNotPaid = (row) => {
-    const normalized = normalizedRows.get(durableRecordKey(row));
-    return row.data?.status === "Paid" && Boolean(normalized?.data?.status) && normalized.data.status !== "Paid";
-  };
-  // Leads with a job that has to move back from Paid. Their own summary stage
-  // is corrected together with that job, not on its own.
-  const leadsWithJobMovingBack = new Set(rows.filter((row) => !row.deleted_at && row.record_type === "job" && savedAsPaidButNotPaid(row)).map((row) => row.lead_id));
+  // Opening the CRM writes nothing. Every record is fingerprinted as it is
+  // shown, so none of them is waiting to be saved just because it was loaded.
+  // One correction used to be the exception: a job saved as Paid that is not
+  // paid in full was marked here and saved straight after startup. That save
+  // could be refused (a rep may not move a job back a stage) and was then
+  // retried without end. The corrected stage is still what is shown; it is
+  // saved the next time a manager saves that job for any reason (see
+  // preserveStoredPaidStageForNonManagers for everyone else).
   durableRecordFingerprints = new Map(rows.filter(row => !row.deleted_at).map((row) => {
     const normalized = normalizedRows.get(durableRecordKey(row));
-    const repairsInvalidPaidStatus = savedAsPaidButNotPaid(row);
-    // Keep only this invalid legacy state dirty so the ordinary conflict-safe
-    // writer repairs it durably after startup. Other display defaults retain
-    // their normalized fingerprint and never cause bulk background rewrites.
-    // Only a session the database will let make the repair carries it.
-    // Anyone else (a view-only user, someone looking at a record they do not
-    // own, or a rep whose job has to move back a stage, which only a manager
-    // may do) was refused, reloaded, found the record marked for repair again
-    // and tried again without end, with "Change not saved" each time. They
-    // still see the corrected stage; a session that can save it makes it
-    // permanent.
-    if (repairsInvalidPaidStatus && canCarryPaidStatusRepair(row, row.record_type === "job" || leadsWithJobMovingBack.has(row.id))) {
-      durableAutomaticRepairKeys.add(durableRecordKey(row));
-      return [durableRecordKey(row), durableFingerprint(row)];
-    }
     return [durableRecordKey(row), durableFingerprint(normalized || row)];
   }));
   durableAuditIds = new Set(auditRows.map((row) => row.id));
   getDurableCommitWriter().remember(rows);
 }
 
+// A dropped connection is the most ordinary reason a save cannot be confirmed.
+// The save used to be tried once more, at once, and then saving in the tab was
+// paused until the page was reloaded: a few seconds without signal on a job
+// site was enough. The same request is now sent again after a short wait, or
+// as soon as the browser says the connection is back, for several minutes
+// before the tab gives up. The database recognises a repeated request by its
+// id and answers it once, so sending it again cannot save anything twice.
+const SAVE_RETRY_ATTEMPTS = 8;
+function waitBeforeSaveRetry(attempt) {
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const delay = offline ? 60000 : Math.min(1000 * 2 ** Math.max(attempt - 1, 0), 15000);
+  return new Promise((resolve) => {
+    const finish = () => {
+      window.removeEventListener("online", finish);
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, delay);
+    window.addEventListener("online", finish);
+  });
+}
+
 function getDurableCommitWriter() {
   if (!durableCommitWriter) durableCommitWriter = window.CrmRecordWrites.create({
     rpc: (name, payload) => cloudClient.rpc(name, payload),
     requestId: () => crypto.randomUUID(),
-    transientRetries: 1,
+    transientRetries: SAVE_RETRY_ATTEMPTS,
+    transientRetryWait: waitBeforeSaveRetry,
     // Two people saving the same record: merge instead of pausing this tab.
-    baseFor: (row) => durableFinancialBaseline.get(durableRecordKey(row)),
-    fetchCurrent: (changes) => fetchCurrentDurableRows(changes),
+    baseFor: (row) => mergeReadyRecordData(row, durableFinancialBaseline.get(durableRecordKey(row))),
+    fetchCurrent: async (changes) => (await fetchCurrentDurableRows(changes)).map((row) => ({ ...row, data: mergeReadyRecordData(row, row.data) })),
     onMerged: (entries) => applyMergedDurableRows(entries),
     onAcknowledged: (changes, auditIds) => {
+      durableChangeCounter += 1;
       changes.forEach(row => {
         if (row.data) durableFinancialBaseline.set(durableRecordKey(row), row.data);
         if (row.operation === "delete") durableRecordFingerprints.delete(durableRecordKey(row));
@@ -3249,6 +3338,8 @@ function getDurableCommitWriter() {
       });
       auditIds.forEach(id => durableAuditIds.add(id));
       if (typeof invalidateDurableProjection === "function") invalidateDurableProjection();
+      // A job or estimate in this save that should have a number gets it now.
+      if (typeof queueNumberingAfterSave === "function") queueNumberingAfterSave(changes);
     },
     isExpectedRejection: (error) => Boolean(durableBusinessRuleRejection(error)),
     onRejected: (value) => handleRejectedDurableWrite(value),
@@ -3273,14 +3364,46 @@ function sameDurableData(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
+// Records whose last save was combined with a teammate's. What came back for
+// them is, rightly, not word for word what this editor sent.
+const recentlyMergedDurableKeys = new Set();
+
 function applyMergedDurableRows(entries = []) {
   const conflicted = [];
-  entries.forEach(({ row, localData, conflicts }) => {
+  entries.forEach(({ key, row, localData, conflicts }) => {
+    if (key) recentlyMergedDurableKeys.add(key);
     if (!row) return;
-    // Show the teammate's merged-in fields, unless this editor has typed more
-    // since; that newer edit saves next and merges again.
+    // What was saved holds the teammate's work as well as this editor's. This
+    // editor's copy must take it in, always. It used to be skipped whenever
+    // the editor had typed anything since the save was sent; the next save
+    // then went out from a copy without the teammate's work and erased it.
     const projected = durableProjectedRow(row.record_type, row.id);
-    if (projected && sameDurableData(projected.data, localData)) applyDurableRealtimeRecord(row, "UPDATE");
+    if (projected) {
+      const typedSince = !sameDurableData(projected.data, localData);
+      // Typed since: keep those newer edits on top of what was saved. They
+      // stay unsaved, and go out with the next save.
+      const next = typedSince
+        ? window.CrmRecordWrites.mergeRecordData(mergeReadyRecordData(row, localData), mergeReadyRecordData(row, projected.data), mergeReadyRecordData(row, row.data))
+        : row.data;
+      applyDurableRealtimeRecord({ ...row, data: next }, "UPDATE");
+      if (typedSince) {
+        // applyDurableRealtimeRecord treats what it is given as saved. Only
+        // `row.data` is: put the saved copy back as the baseline, so the
+        // newer edits are still seen as waiting to be saved.
+        const recordKey = durableRecordKey(row);
+        durableFinancialBaseline.set(recordKey, row.data || {});
+        durableRecordFingerprints.set(recordKey, durableFingerprint(row));
+        getDurableCommitWriter().remember([row]);
+        invalidateDurableProjection();
+        queueDurableRecordsSave();
+      }
+      // The estimate that is open shows the combined lines at once, so the
+      // rows on screen and the lines in the estimate cannot drift apart.
+      if (row.record_type === "estimate" && getSelectedEstimate()?.id === row.id && state.view === "estimates" && !els.estimateForm?.classList.contains("hidden")) {
+        renderEstimateLineItemsKeepingFocus(getSelectedEstimate());
+        scheduleEstimateVisualRefresh(row.id);
+      }
+    }
     if (conflicts?.length) conflicted.push(...conflicts);
   });
   if (!entries.length) return;
@@ -3319,31 +3442,24 @@ function durableBusinessRuleRejection(error) {
   return Object.keys(durableRejectionReasons).find((name) => name !== "authentication_required" && text.includes(name)) || "";
 }
 
-// Whether this session may save the automatic "saved as Paid, but not paid in
-// full" correction for a record. The database lets a record's owner or a
-// manager save it, lets only a manager move a job back a stage, and a
-// correction it has already refused in this session is not offered again.
-function canCarryPaidStatusRepair(row, movesJobBack) {
-  return canSaveExistingRecord(row.record_type, row.owner_id)
-    && (!movesJobBack || canManageTeamData())
-    && !durableRefusedRepairKeys.has(durableRecordKey(row));
+// A job saved as Paid that is not paid in full is shown at the stage before
+// Paid. Saving that stage is a move backward, which the database allows a
+// manager only. For everyone else the stored stage is sent back unchanged, so
+// their own edit to the job (a note, an address) is not refused because of a
+// stage they never touched. Moving a job to Lost is open to everyone.
+function preserveStoredPaidStageForNonManagers(rows) {
+  if (canManageTeamData()) return rows;
+  for (const row of rows) {
+    if (row.record_type !== "job") continue;
+    const baseline = durableFinancialBaseline.get(durableRecordKey(row));
+    if (baseline?.status === "Paid" && row.data.status !== "Paid" && row.data.status !== "Lost") row.data.status = "Paid";
+  }
+  return rows;
 }
 
-// Records this session marked for an automatic correction, and those the
-// database then refused. A correction is offered once: the reload that follows
-// a refusal used to mark the same record again, so the same save was refused
-// again, without end, with "Change not saved" each time and the save indicator
-// stuck on "Still saving…".
-const durableAutomaticRepairKeys = new Set();
-const durableRefusedRepairKeys = new Set();
-
-function handleRejectedDurableWrite({ error, payload }) {
+function handleRejectedDurableWrite({ error }) {
   durableRejectionReloadPending = true;
   window.clearTimeout(durableSaveTimer);
-  (payload?.p_changes || []).forEach((change) => {
-    const key = durableRecordKey(change);
-    if (durableAutomaticRepairKeys.has(key)) durableRefusedRepairKeys.add(key);
-  });
   const reason = durableRejectionReason(error) || "That change is not allowed.";
   showToast(`Change not saved. ${reason}`);
   // The commit RPC confirmed that the whole request was rolled back. Restore
@@ -3355,8 +3471,6 @@ function handleRejectedDurableWrite({ error, payload }) {
     if (restored !== null) {
       durableRejectionReloadPending = false;
       renderDurableUpdateWhenIdle();
-      // Other corrections that were not part of the refused save still need one.
-      if (hasPendingDurableChanges()) queueDurableRecordsSave();
     }
   }, 0);
 }
@@ -3479,9 +3593,14 @@ function preserveBlockedDurableWrite({ error, payload }) {
   }
   showSavePausedNotice();
   const rejection = durableRejectionReason(error);
+  // A refused estimate is not lost: its lines are in the copy kept on this
+  // device, and the estimate offers them back after the reload.
+  const estimateRefused = Array.isArray(payload?.p_changes) && payload.p_changes.some((change) => change?.record_type === "estimate");
   // PT409 is the database's conflict code; 40001 is the code it used before.
   showToast(["PT409", "40001"].includes(error?.code)
-    ? "A newer shared version exists. Reload the page before editing this record again."
+    ? estimateRefused
+      ? "Someone else saved this estimate first, so your changes were not saved. Reload the page, open the estimate and choose \"Recover unsaved lines\" to put your lines back."
+      : "A newer shared version exists. Reload the page before editing this record again."
     : rejection
       ? `Change not saved. ${rejection}`
       : "Shared saving needs attention. Your recovery copy was kept on this device; reload the page before continuing.");
@@ -3795,12 +3914,15 @@ async function loadServerRecordPage(kind, { append = false, silent = false } = {
 
 async function initializeRecordPages() {
   if (!configureRecordPages()) return false;
-  const [leadResult, jobResult, aggregateResult] = await Promise.allSettled([
+  const [leadResult, jobResult] = await Promise.allSettled([
     loadServerRecordPage("leads", { silent: true }),
     loadServerRecordPage("jobs", { silent: true }),
-    recordPageClient.aggregates(),
+    // The database's own money totals, for the screens to show while the rest
+    // of the records load (see moneyTotalsForDisplay). The older dashboard
+    // aggregates are no longer fetched: nothing shows them, and their
+    // "collected" was only the money on jobs marked Paid.
+    refreshServerLedgerTotals(),
   ]);
-  if (aggregateResult.status === "fulfilled") dashboardAggregateTotals = aggregateResult.value;
   return leadResult.status === "fulfilled" || jobResult.status === "fulfilled";
 }
 
@@ -3812,13 +3934,14 @@ function ensureServerRecordPage(kind) {
 
 function invalidateServerRecordPages() {
   Object.values(serverRecordPages).forEach((page) => { page.queryKey = ""; });
-  // Keep the previous server totals until the refreshed ones arrive. Clearing
-  // them here made the dashboard fall back to whatever was in memory.
-  if (recordPageClient) {
-    void recordPageClient.aggregates().then((totals) => {
-      dashboardAggregateTotals = totals;
-      if (state.view === "dashboard" && coreRecordsArePartial()) renderDashboard();
-    }).catch((error) => console.warn("Dashboard totals could not be refreshed", error));
+  // While records are still loading, the screens may be showing the database's
+  // money totals, so bring those up to date. The previous figures stay on
+  // screen until the new ones arrive. Once everything is loaded the browser's
+  // own ledger is used and there is nothing to ask the database for.
+  if (coreRecordsArePartial()) {
+    void refreshServerLedgerTotals().then((totals) => {
+      if (totals && coreRecordsArePartial()) renderDurableUpdateWhenIdle();
+    });
   }
 }
 
@@ -3937,8 +4060,11 @@ async function ensureCompleteCoreRecordsLoaded() {
       if (!(await settleDurableWritesBeforeTrustedMutation())) return false;
     }
     const revision = localEditRevision;
+    const counter = durableChangeCounter;
     const { rows, auditRows } = await fetchCompleteDurableSnapshot();
-    if (revision !== localEditRevision || durableSaveInFlight || hasPendingDurableChanges()) return false;
+    // Not applied if anything here moved on while it was being read; the
+    // load is tried again shortly.
+    if (revision !== localEditRevision || counter !== durableChangeCounter || durableSaveInFlight || hasPendingDurableChanges()) return false;
     applyingCloudState = true;
     applyDurableRows(rows, auditRows);
     rememberDurableRows(rows, auditRows);
@@ -3953,9 +4079,10 @@ async function ensureCompleteCoreRecordsLoaded() {
     // now, so start one: otherwise the correction waited for the user's next
     // edit and the save indicator sat on "Still saving…".
     if (hasPendingDurableChanges()) queueDurableRecordsSave();
-    // Leads beyond the first page were not in memory when numbers were
-    // checked at startup.
-    void repairSalesNumbersAfterCompleteLoad();
+    // Every record is in: check this browser's money totals against the
+    // database's, so the database's can be trusted for an early answer next time.
+    serverLedgerCheckAttempts = 0;
+    scheduleServerLedgerCheck();
     return true;
   })().then((loaded) => {
     // The load is skipped while a save is in flight. Try again shortly rather
@@ -4004,7 +4131,7 @@ function retryCompleteCoreRecordsNow() {
 // Coming back online, or back to the tab, is when a stalled load is most likely
 // to work.
 function watchForCompleteLoadRetry() {
-  window.addEventListener("online", () => { void retryCompleteCoreRecordsNow(); });
+  window.addEventListener("online", () => { void retryCompleteCoreRecordsNow(); retryWaitingEstimatePdfFilings(); });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && companyTotalsState() === "stalled") void retryCompleteCoreRecordsNow();
   });
@@ -4077,7 +4204,21 @@ async function reloadDurableRecords({ showUpdateToast = false, allowInFlight = f
   try {
     const revision = localEditRevision;
     if (!force && ((!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges())) return null;
-    const { rows, auditRows } = await fetchDurableRows();
+    let rows;
+    let auditRows;
+    for (let attempt = 0; ; attempt += 1) {
+      const counter = durableChangeCounter;
+      ({ rows, auditRows } = await fetchDurableRows());
+      if (counter === durableChangeCounter) break;
+      // Something was saved here, or arrived from someone else, while the
+      // records were being read. What was read may be older than what is on
+      // screen: applying it would undo that change here and put back its old
+      // version number. A forced refresh reads again; any other is put off.
+      if (force && attempt < 3) continue;
+      if (force) break;
+      queueDurableRecordsReload({ showUpdateToast: false });
+      return null;
+    }
     if (durableWriteBlocked || (!force && (revision !== localEditRevision || (!allowInFlight && durableSaveInFlight) || hasPendingDurableChanges()))) {
       // Do not advance fingerprints for a response we did not apply.
       queueDurableRecordsReload({ showUpdateToast: false });
@@ -4378,6 +4519,8 @@ async function persistDurableRecordNow(recordType, recordId, verify, { syncLegac
   if (!row) return false;
 
   const expectedData = JSON.parse(JSON.stringify(row.data));
+  const mergeKey = `${recordType}:${recordId}`;
+  if (typeof recentlyMergedDurableKeys !== "undefined") recentlyMergedDurableKeys.delete(mergeKey);
   durableSaveInFlight = true;
   try {
     markRecentLocalDurableWrite(row);
@@ -4388,7 +4531,11 @@ async function persistDurableRecordNow(recordType, recordId, verify, { syncLegac
     }
 
     const confirmed = commitResult.rows.find(saved => saved.record_type === recordType && saved.id === recordId);
-    if (!verify(confirmed?.data || {}, expectedData)) return false;
+    // A save that was combined with a teammate's is saved: what came back
+    // holds both people's work, so it is not what this editor sent. It used
+    // to be reported as "Not saved", although it was.
+    const combined = typeof recentlyMergedDurableKeys !== "undefined" && recentlyMergedDurableKeys.delete(mergeKey);
+    if (!combined && !verify(confirmed?.data || {}, expectedData)) return false;
 
     // Later nested edits must remain dirty until a subsequent acknowledgement.
     if (syncLegacy) queueCloudSave();
@@ -4450,6 +4597,10 @@ async function persistLeadDocumentRecords(documentIds, updateId) {
 
     const confirmed = commitResult.rows;
     if (new Set((confirmed || []).map((row) => row.id)).size !== wantedIds.size) return false;
+    // A file is saved only when its record came back under the lead and job it
+    // was sent to. A record filed anywhere else is not a saved file.
+    const sent = new Map(documentRows.map((row) => [row.id, row]));
+    if (!confirmed.every((row) => sent.has(row.id) && row.lead_id === sent.get(row.id).lead_id && (row.job_id || null) === (sent.get(row.id).job_id || null))) return false;
     // Preserve the writer's immutable acknowledgement when uploads overlap edits.
     return true;
   } finally {
@@ -4496,7 +4647,21 @@ function applyDurableRealtimeRecord(row, eventType = "UPDATE") {
   if (type === "contact") {
     const index = state.contacts.findIndex((item) => item.id === row.id);
     if (deleted) {
-      if (index >= 0) state.contacts.splice(index, 1);
+      if (index >= 0) {
+        // The lead's jobs and files are kept inside it here, so they leave the
+        // screen with it. Whoever deleted the lead deleted them too, in the
+        // same save. They must be forgotten as well: left on the list of
+        // records this tab holds, they looked like records this tab had
+        // removed, and it sent its own delete for each. The database refused
+        // those as out of date and saving in the tab was paused. That is how
+        // one person deleting a lead paused saving for everyone else.
+        const gone = state.contacts[index];
+        [...(gone.jobs || []).map((job) => `job:${job.id}`), ...(gone.documents || []).map((document) => `document:${document.id}`)].forEach((key) => {
+          durableRecordFingerprints.delete(key);
+          durableFinancialBaseline.delete(key);
+        });
+        state.contacts.splice(index, 1);
+      }
     } else {
       const current = index >= 0 ? state.contacts[index] : null;
       const incomingJobs = current?.jobs || row.data?.jobs || [];
@@ -4514,24 +4679,30 @@ function applyDurableRealtimeRecord(row, eventType = "UPDATE") {
     }
   } else if (type === "job") {
     const contact = state.contacts.find((item) => item.id === row.lead_id);
-    if (!contact) return false;
-    // Do not materialize contactJobs()'s display-only fallback while a
-    // contact and its first real job are arriving as separate realtime rows.
-    contact.jobs = Array.isArray(contact.jobs) ? contact.jobs : [];
-    const index = contact.jobs.findIndex((item) => item.id === row.id);
-    if (deleted) {
-      if (index >= 0) contact.jobs.splice(index, 1);
-    } else {
-      const normalized = normalizeJob({ ...row.data, id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "" }, contact);
-      if (index >= 0) contact.jobs[index] = normalized;
-      else contact.jobs.push(normalized);
+    // A deleted job of a lead that is already gone here needs nothing done to
+    // the screen. Any other job without its lead needs a fresh read.
+    if (!contact && !deleted) return false;
+    if (contact) {
+      // Do not materialize contactJobs()'s display-only fallback while a
+      // contact and its first real job are arriving as separate realtime rows.
+      contact.jobs = Array.isArray(contact.jobs) ? contact.jobs : [];
+      const index = contact.jobs.findIndex((item) => item.id === row.id);
+      if (deleted) {
+        if (index >= 0) contact.jobs.splice(index, 1);
+      } else {
+        const normalized = normalizeJob({ ...row.data, id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "" }, contact);
+        if (index >= 0) contact.jobs[index] = normalized;
+        else contact.jobs.push(normalized);
+      }
     }
   } else if (type === "document") {
     const collection = row.lead_id === COMPANY_DOCUMENT_LEAD_ID
       ? state.companyDocuments
       : state.contacts.find((item) => item.id === row.lead_id)?.documents;
-    if (!collection) return false;
-    const index = collection.findIndex((item) => item.id === row.id);
+    // As for a job: a deleted file of a lead that is gone, or whose files are
+    // not loaded here, needs nothing done to the screen.
+    if (!collection && !deleted) return false;
+    const index = collection ? collection.findIndex((item) => item.id === row.id) : -1;
     if (deleted) {
       if (index >= 0) collection.splice(index, 1);
     } else {
@@ -4577,6 +4748,8 @@ function applyDurableRealtimeRecord(row, eventType = "UPDATE") {
     durableRecordFingerprints.set(durableRecordKey(row), durableFingerprint(normalizedRow));
   }
   getDurableCommitWriter().remember([row]);
+  // What is on screen is now newer than anything read before this moment.
+  durableChangeCounter += 1;
   saveState({ localOnly: true });
   renderDurableUpdateWhenIdle();
   return true;
@@ -4606,6 +4779,17 @@ function applyDurableRealtimeAudit(row, eventType = "INSERT") {
   return true;
 }
 
+// A record was changed somewhere else: by another person, or in another tab.
+function handleDurableRecordEvent(payload) {
+  const row = payload?.new || payload?.old;
+  if (consumeRecentLocalDurableEcho(row)) return;
+  if (durableSaveInFlight || hasPendingDurableChanges()) {
+    queueDurableRecordsSave();
+    return;
+  }
+  if (!applyDurableRealtimeRecord(row, payload.eventType)) queueDurableRecordsReload();
+}
+
 async function initializeDurableRecords() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) return;
   const rows = await reloadDurableRecords();
@@ -4625,15 +4809,7 @@ async function initializeDurableRecords() {
   if (!cloudClient.channel || durableRecordsSubscription) return;
   durableRecordsSubscription = cloudClient
     .channel(`crm-records-${supabaseStateId()}-${authSession.user.id}`)
-    .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
-      const row = payload.new || payload.old;
-      if (consumeRecentLocalDurableEcho(row)) return;
-      if (durableSaveInFlight || hasPendingDurableChanges()) {
-        queueDurableRecordsSave();
-        return;
-      }
-      if (!applyDurableRealtimeRecord(row, payload.eventType)) queueDurableRecordsReload();
-    })
+    .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_RECORDS_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => handleDurableRecordEvent(payload))
     .on("postgres_changes", { event: "*", schema: "public", table: SUPABASE_AUDIT_TABLE, filter: `company_state_id=eq.${supabaseStateId()}` }, async (payload) => {
       const row = payload.new || payload.old;
       // Internal commit telemetry is never rendered and the matching record
@@ -4683,7 +4859,7 @@ async function initializeFinancialLedger() {
       ...invoice,
       items: (itemsByInvoice.get(invoice.id) || []).sort((a, b) => number(a.position) - number(b.position)),
     }));
-    state.financialPayments = paymentRows.map(normalizeFinancialPayment);
+    state.financialPayments = paymentRows.filter(isInvoicePaymentRow).map(normalizeFinancialPayment);
     state.paymentAllocations = allocationRows.map(normalizePaymentAllocation);
     state.financialExpenses = expenseRows.map(normalizeFinancialExpense);
     state.creditNotes = creditRows.map(normalizeCreditNote);
@@ -5344,12 +5520,20 @@ function canSaveExistingRecord(recordType, ownerUserId) {
   return false;
 }
 
-async function ensureExistingSharedSalesNumbers() {
+// Gives a number to records that should have one and do not: an estimate
+// without its numbers, a job whose reserved number never reached its record,
+// a sold job with no number. `only` limits the check to the records named in
+// it ({ jobIds, estimateIds }), which is how it is used: on the records a user
+// has just saved (see queueNumberingAfterSave). It is never run because a
+// page was opened.
+async function ensureExistingSharedSalesNumbers(only = null) {
+  const wanted = (ids, id) => !only || Boolean(ids?.has(id));
   const missing = [];
   for (const estimate of state.estimates) {
     const contact = getEstimateContact(estimate);
     const job = getEstimateJob(estimate);
     if (!contact || !job) continue;
+    if (!wanted(only?.estimateIds, estimate.id) && !wanted(only?.jobIds, job.id)) continue;
     if (contact.leadNumber && job.projectNumber && estimate.leadNumber === contact.leadNumber &&
         estimate.projectNumber === job.projectNumber && estimate.estimateNumber) continue;
     // Restoring a number changes the lead, the job or the estimate. Leave it
@@ -5372,6 +5556,7 @@ async function ensureExistingSharedSalesNumbers() {
   for (const contact of state.contacts) {
     for (const job of contactJobs(contact)) {
       if (job.projectNumber || alreadyListed.has(job.id) || !jobIsSold(job)) continue;
+      if (!wanted(only?.jobIds, job.id)) continue;
       if (!canSaveExistingRecord("job", job.ownerUserId || contact.ownerUserId)) continue;
       if (!contact.leadNumber && !canSaveExistingRecord("contact", contact.ownerUserId)) continue;
       missing.push({ contactId: contact.id, jobId: job.id, estimateId: "" });
@@ -5393,23 +5578,41 @@ async function ensureExistingSharedSalesNumbers() {
   return { repaired: missing.length - failures.length, failures };
 }
 
-// The startup number check above only sees the first page of leads and jobs,
-// so a job further down the list whose reserved number never reached its own
-// record was never looked at. Run the check once more when every lead and job
-// has loaded and save what it restored. It goes through the normal save, so
-// the usual version checks and audit trail apply. Once a job holds its number
-// the check has nothing left to do for it.
-async function repairSalesNumbersAfterCompleteLoad() {
-  if (!canUseCloudSync()) return 0;
+// Numbers are given out as part of a user's own save, never because a page
+// was opened. This check used to run at startup and again when every record
+// had loaded, and saved whatever it restored: opening the CRM changed records.
+// Now, after a save goes through, the jobs and estimates in it are checked.
+// One that should have a number and does not (a job that has just been sold,
+// or one whose number was lost by an earlier release) gets it, and is saved
+// again through the normal save. Once it holds its number there is nothing
+// left to do for it, so this cannot repeat.
+const numberingAfterSaveQueue = { jobIds: new Set(), estimateIds: new Set() };
+let numberingAfterSaveTimer = null;
+function queueNumberingAfterSave(changes = []) {
+  if (!canUseCloudSync()) return;
+  changes.forEach((row) => {
+    if (!row || row.operation === "delete") return;
+    if (row.record_type === "job") numberingAfterSaveQueue.jobIds.add(row.id);
+    if (row.record_type === "estimate") numberingAfterSaveQueue.estimateIds.add(row.id);
+  });
+  if (!numberingAfterSaveQueue.jobIds.size && !numberingAfterSaveQueue.estimateIds.size) return;
+  window.clearTimeout(numberingAfterSaveTimer);
+  numberingAfterSaveTimer = window.setTimeout(() => { void numberRecordsJustSaved(); }, 0);
+}
+
+async function numberRecordsJustSaved() {
+  const only = { jobIds: new Set(numberingAfterSaveQueue.jobIds), estimateIds: new Set(numberingAfterSaveQueue.estimateIds) };
+  numberingAfterSaveQueue.jobIds.clear();
+  numberingAfterSaveQueue.estimateIds.clear();
   try {
-    const { repaired } = await ensureExistingSharedSalesNumbers();
+    const { repaired } = await ensureExistingSharedSalesNumbers(only);
     if (repaired) {
       queueDurableRecordsSave();
       renderDurableUpdateWhenIdle();
     }
     return repaired;
   } catch (error) {
-    console.warn("Job and estimate numbers could not be checked after the full load", error);
+    console.warn("Numbers could not be given to the records just saved", error);
     return 0;
   }
 }
@@ -6179,10 +6382,123 @@ function ledgerTotals(entries = financialLedgerEntries()) {
   return { payments, refunds, collected: Math.max(payments - refunds, 0), expenses: sum("Expense"), credits: sum("Credit") };
 }
 
+// ---- The same totals, worked out by the database ----------------------------
+// crm_ledger_totals() adds up the same ledger on the server, for the records
+// the signed-in user is allowed to see. It is used for two things:
+//   1. as a check: once every record has loaded, this browser's ledger and the
+//      database's must agree to the cent;
+//   2. as an early answer: while records are still loading, the money figures
+//      can be shown at once instead of "…", but only if the last check in this
+//      browser agreed. Until then the screens wait for the full load, as before.
+let serverLedgerTotals = null;
+let serverLedgerTotalsLoad = null;
+const SERVER_LEDGER_CHECK_KEY = "jobcrest-ledger-check-v1";
+const SERVER_LEDGER_CHECK_MAX_AGE = 30 * 86400000;
+
+function normalizeServerLedgerTotals(payload) {
+  const keys = ["payments", "refunds", "collected", "expenses"];
+  if (!payload || typeof payload !== "object" || keys.some((key) => payload[key] === undefined || payload[key] === null)) return null;
+  // Money on a job's record that has no row in the payments table. The
+  // database files that row in the same save as the job, so this is 0 unless
+  // something is wrong there. It is still counted in the totals above.
+  if (number(payload.unsyncedJobPayments) > 0.005) {
+    console.warn("Payments recorded on jobs are missing from the payments table. The totals still include them.", { amount: number(payload.unsyncedJobPayments) });
+  }
+  return { payments: number(payload.payments), refunds: number(payload.refunds), collected: number(payload.collected), expenses: number(payload.expenses), credits: number(payload.credits) };
+}
+
+async function refreshServerLedgerTotals() {
+  if (!canUseCloudSync() || !cloudClient || !authSession?.user?.id) return null;
+  if (serverLedgerTotalsLoad) return serverLedgerTotalsLoad;
+  serverLedgerTotalsLoad = (async () => {
+    const { data, error } = await cloudClient.rpc("crm_ledger_totals");
+    if (error) throw error;
+    serverLedgerTotals = normalizeServerLedgerTotals(data);
+    return serverLedgerTotals;
+  })().catch((error) => {
+    // Not installed yet, or unreachable: the screens wait for the full load.
+    console.warn("The database's ledger totals could not be read", error);
+    return null;
+  }).finally(() => { serverLedgerTotalsLoad = null; });
+  return serverLedgerTotalsLoad;
+}
+
+function serverLedgerCheckKey() {
+  return `${SERVER_LEDGER_CHECK_KEY}:${authSession?.user?.id || "anonymous"}`;
+}
+
+function readServerLedgerCheck() {
+  try {
+    return JSON.parse(window.localStorage.getItem(serverLedgerCheckKey()) || "null");
+  } catch {
+    return null;
+  }
+}
+
+// True when this browser compared the database's totals with its own ledger
+// recently and they agreed.
+function serverLedgerIsTrusted(now = Date.now()) {
+  const check = readServerLedgerCheck();
+  return Boolean(check?.matched) && now - number(check.checkedAt) < SERVER_LEDGER_CHECK_MAX_AGE;
+}
+
+function ledgerFiguresAgree(local, server) {
+  return ["payments", "refunds", "collected", "expenses"].every((key) => Math.abs(number(local?.[key]) - number(server?.[key])) < 0.005);
+}
+
+// Runs once every record is in memory and nothing is waiting to be saved.
+// Returns true or false when the two were compared, null when the moment was
+// wrong (a save in progress: worth trying again), and undefined when the
+// database gave no answer (not installed yet: nothing to try again for).
+async function compareServerLedgerWithLocal() {
+  const settled = () => !coreRecordsArePartial() && financialLedgerReady && !durableSaveInFlight && !hasPendingDurableChanges();
+  if (!settled()) return null;
+  const revision = localEditRevision;
+  const server = await refreshServerLedgerTotals();
+  if (!server) return undefined;
+  // A payment recorded while the question was being asked would be a false alarm.
+  if (revision !== localEditRevision || !settled()) return null;
+  const local = ledgerTotals();
+  const matched = ledgerFiguresAgree(local, server);
+  try {
+    window.localStorage.setItem(serverLedgerCheckKey(), JSON.stringify({
+      matched, checkedAt: Date.now(), local: { payments: local.payments, refunds: local.refunds, collected: local.collected, expenses: local.expenses }, server,
+    }));
+  } catch {
+    // A private window cannot remember the result; the next visit just waits for the full load.
+  }
+  if (!matched) console.warn("The database's ledger totals differ from this browser's. The browser's figures are shown.", { local, server });
+  return matched;
+}
+
+// The check often lands while the app is still saving something from startup.
+// Try a few more times, a few seconds apart, until it can be made.
+let serverLedgerCheckAttempts = 0;
+function scheduleServerLedgerCheck() {
+  if (serverLedgerCheckAttempts >= 6) return;
+  serverLedgerCheckAttempts += 1;
+  void compareServerLedgerWithLocal().then((verdict) => {
+    if (verdict === null && !coreRecordsArePartial()) window.setTimeout(scheduleServerLedgerCheck, 5000);
+  });
+}
+
+// The money figures for the Dashboard, Billing and Reports, decided in one place:
+//   every record loaded  -> this browser's ledger, which updates the moment a
+//                           payment is recorded;
+//   still loading        -> the database's figure, if it has been checked here;
+//   otherwise            -> nothing yet.
+function moneyTotalsForDisplay(entries) {
+  if (!coreRecordsArePartial()) return { ready: true, source: "local", ...ledgerTotals(entries) };
+  if (serverLedgerTotals && serverLedgerIsTrusted()) return { ready: true, source: "server", ...serverLedgerTotals };
+  return { ready: false, source: "pending", payments: 0, refunds: 0, collected: 0, expenses: 0, credits: 0 };
+}
+
 function dashboardMetrics() {
   const source = dashboardDataSource();
   if (source === "pending") {
-    return { source, pending: true, leads: 0, openLeads: 0, totalJobs: 0, estimatesSent: 0, openContracts: 0, openValue: 0, closedJobs: 0, closedValue: 0, pipelineValue: 0 };
+    // Counts need every record. Money may already be known from the database.
+    const early = moneyTotalsForDisplay();
+    return { source, pending: true, moneyReady: early.ready, leads: 0, openLeads: 0, totalJobs: 0, estimatesSent: 0, openContracts: 0, openValue: 0, closedJobs: 0, closedValue: early.ready ? early.collected : 0, pipelineValue: 0 };
   }
   const contacts = visibleContacts();
   const estimates = visibleEstimates();
@@ -6199,6 +6515,7 @@ function dashboardMetrics() {
     .reduce((sum, job) => sum + number(job.value), 0);
   return {
     source,
+    moneyReady: true,
     leads,
     openLeads,
     totalJobs: jobs.length,
@@ -6915,7 +7232,8 @@ function renderSummary() {
     ["Total Leads", shown(metrics.leads), note(`${metrics.openLeads} with open jobs · all time`), "user", "blue"],
     ["Estimates Sent", shown(metrics.estimatesSent), note("Sent or won estimates · all time"), "file", "green"],
     ["Jobs Paid", shown(metrics.closedJobs), note("Contracts paid in full · all time"), "check", "purple"],
-    ["Revenue Collected", shown(money.format(metrics.closedValue)), note("All confirmed payments · all time"), "dollar", "orange"],
+    // Money can be known before the counts are: see moneyTotalsForDisplay.
+    ["Revenue Collected", metrics.moneyReady ? money.format(metrics.closedValue) : "…", metrics.moneyReady ? "All confirmed payments · all time" : companyTotalsCaption(), "dollar", "orange"],
     ["Pipeline Value", shown(money.format(metrics.pipelineValue)), note("Value of all jobs not lost"), "bar-chart", "cyan"],
   ];
 
@@ -7813,7 +8131,10 @@ function pipelineRowAttention(row, now = Date.now()) {
   const isNewStage = stage === salesPipelineStagesFor(job.division, job.propertyType)[0];
   return {
     unassigned: String(contact.source || "").toLowerCase() === "website" && (!job.salesRep || job.salesRep === "Unassigned"),
-    uncontacted: isNewStage && (!contact.lastContact || !(contact.updates || []).some((update) => update.jobId === job.id || !update.jobId)),
+    // A logged call is recorded on the job itself. A lead's notes are loaded
+    // only when the lead is opened, so they cannot be what says it was called.
+    uncontacted: isNewStage && !(job.lastTouchAt || contact.lastTouchAt)
+      && (!contact.lastContact || !(contact.updates || []).some((update) => update.jobId === job.id || !update.jobId)),
     overdue: Boolean(task && !task.completed && localTimestamp(task.dueAt) < now),
     inactive: inactiveDays >= state.pipelineStaleDays,
     noDecision: ["Estimate Sent", "Proposal Sent", "Follow-Up/Decision", "Revisions/Decision"].includes(stage) && !(job.decisionDate || job.nextDecisionDate),
@@ -7838,6 +8159,226 @@ function pipelineFilteredRows({ ignoreAttention = false } = {}) {
     if (ignoreAttention || state.pipelineAttention === "all") return true;
     return Boolean(pipelineRowAttention({ contact, job, ...row }, now)[state.pipelineAttention]);
   });
+}
+
+// ---- Today's worklist -------------------------------------------------------
+// The "Needs attention" counts as a list a rep can work through: who to call,
+// why, and a place to log the call and set the next step without leaving the
+// pipeline. Each call ends with a dated follow-up, or says there is none.
+const PIPELINE_ATTENTION_ORDER = ["overdue", "unassigned", "uncontacted", "noDecision", "stuck", "inactive"];
+const PIPELINE_ATTENTION_LABELS = {
+  overdue: "Follow-up overdue",
+  unassigned: "Unassigned website request",
+  uncontacted: "Not contacted yet",
+  noDecision: "No decision date",
+  stuck: "Stuck in this stage",
+  inactive: "Gone quiet",
+};
+const PIPELINE_CALL_OUTCOMES = [
+  ["spoke", "Spoke with the customer"],
+  ["voicemail", "Left a voicemail"],
+  ["no-answer", "No answer"],
+  ["message", "Sent a text or email"],
+  ["not-interested", "Not interested"],
+];
+const PIPELINE_DECISION_STAGES = ["Estimate Sent", "Proposal Sent", "Follow-Up/Decision", "Revisions/Decision"];
+const PIPELINE_WAITING_REASONS = ["noDecision", "stuck", "inactive"];
+let pipelineWorklistFormKey = "";
+
+// Open opportunities that need something, most pressing first: the longest
+// overdue follow-up at the top. Lost and handed-off work is not sales work.
+function pipelineWorklistRows(now = Date.now()) {
+  const rank = (item) => PIPELINE_ATTENTION_ORDER.indexOf(item.reasons[0]);
+  return pipelineFilteredRows({ ignoreAttention: true }).map((row) => {
+    const { contact, job } = row;
+    const division = job.division || contact.division || "roofing";
+    const stage = normalizeSalesStage(job, contact, division, job.propertyType);
+    if (stage === "Lost" || stage === salesPipelineStagesFor(division, job.propertyType || contact.propertyType).at(-1)) return null;
+    const attention = pipelineRowAttention(row, now);
+    const task = pipelineNextTask(contact, job);
+    // An opportunity with a follow-up already set for a later time has its
+    // next step: it is not on today's list for being slow, quiet or undecided.
+    // An overdue follow-up, a new lead nobody has called and a website request
+    // nobody owns always are.
+    const hasNextStep = Boolean(task) && localTimestamp(task.dueAt) > now;
+    const reasons = PIPELINE_ATTENTION_ORDER.filter((key) => attention[key] && !(hasNextStep && PIPELINE_WAITING_REASONS.includes(key)));
+    if (!reasons.length) return null;
+    if (state.pipelineAttention !== "all" && !reasons.includes(state.pipelineAttention)) return null;
+    return {
+      ...row, stage, attention, reasons, task,
+      overdueBy: attention.overdue && task ? now - localTimestamp(task.dueAt) : 0,
+      stageDays: pipelineDaysInStage(contact, job, now),
+    };
+  }).filter(Boolean).sort((left, right) =>
+    rank(left) - rank(right)
+    || right.overdueBy - left.overdueBy
+    || right.stageDays - left.stageDays
+    || String(left.contact.name || "").localeCompare(String(right.contact.name || "")));
+}
+
+// Nine in the morning on the next working day.
+function pipelineDefaultFollowUp(now = new Date()) {
+  const next = new Date(now);
+  next.setDate(next.getDate() + 1);
+  while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+  next.setHours(9, 0, 0, 0);
+  return dateTimeLocalValue(next.toISOString());
+}
+
+function pipelineWorklistRowMarkup(row, canLog) {
+  const { contact, job, key, task, reasons, stage, attention } = row;
+  const phone = String(contact.phone || "").replace(/\D/g, "");
+  const formOpen = canLog && pipelineWorklistFormKey === key;
+  const touchedAt = job.lastTouchAt || contact.lastTouchAt || "";
+  const touchLabel = PIPELINE_CALL_OUTCOMES.find(([id]) => id === (job.lastTouchOutcome || contact.lastTouchOutcome))?.[1] || "";
+  const form = !formOpen ? "" : `
+      <form class="pipeline-call-form" data-pipeline-call-form data-contact-id="${escapeHtml(contact.id)}" data-job-id="${escapeHtml(job.id)}">
+        <label>What happened<select name="outcome" required>${PIPELINE_CALL_OUTCOMES.map(([id, label]) => `<option value="${id}">${escapeHtml(label)}</option>`).join("")}</select></label>
+        <label>Note<input type="text" name="note" maxlength="500" placeholder="Optional" autocomplete="off" /></label>
+        <label>Next follow-up<input type="datetime-local" name="nextAt" value="${pipelineDefaultFollowUp()}" /></label>
+        ${PIPELINE_DECISION_STAGES.includes(stage) ? `<label>Decision expected by<input type="date" name="decisionDate" value="${escapeHtml(job.decisionDate || "")}" /></label>` : ""}
+        <label class="pipeline-call-check"><input type="checkbox" name="noFollowUp" /> No further follow-up</label>
+        ${task ? `<label class="pipeline-call-check"><input type="checkbox" name="completeTask" ${attention.overdue ? "checked" : ""} /> Mark &ldquo;${escapeHtml(task.title)}&rdquo; done</label>` : ""}
+        <div class="pipeline-call-actions"><button class="primary-button" type="submit">Save call</button><button class="secondary-button" type="button" data-pipeline-call-cancel>Cancel</button></div>
+      </form>`;
+  return `
+    <li class="pipeline-worklist-row ${formOpen ? "is-open" : ""}" data-pipeline-worklist-row="${escapeHtml(key)}">
+      <div class="pipeline-worklist-who">
+        <strong>${escapeHtml(contact.name)}</strong>
+        <span>${escapeHtml(job.name)} · ${escapeHtml(stage)} · ${escapeHtml(job.salesRep || contact.salesRep || "Unassigned")}</span>
+        <span class="pipeline-worklist-reasons">${reasons.map((reason) => `<em class="pipeline-reason ${reason}">${escapeHtml(PIPELINE_ATTENTION_LABELS[reason])}</em>`).join("")}</span>
+      </div>
+      <div class="pipeline-worklist-when">
+        <span>${task ? `Next: ${escapeHtml(task.title)} · ${escapeHtml(formatDateTime(task.dueAt))}` : "No follow-up scheduled"}</span>
+        <span>${touchedAt ? `Last call: ${escapeHtml(formatDateTime(touchedAt))}${touchLabel ? ` · ${escapeHtml(touchLabel)}` : ""}` : "No call logged yet"}</span>
+      </div>
+      <div class="pipeline-worklist-actions">
+        ${phone ? `<a class="secondary-button" href="tel:${escapeHtml(phone)}"><span data-icon="phone"></span> ${escapeHtml(contact.phone)}</a>` : '<span class="pipeline-worklist-nophone">No phone number</span>'}
+        ${canLog ? `<button class="primary-button" type="button" data-pipeline-log-call="${escapeHtml(key)}" aria-expanded="${formOpen}">Log call</button>` : ""}
+        <button class="link-button" type="button" data-pipeline-open="${escapeHtml(key)}">Details</button>
+      </div>${form}
+    </li>`;
+}
+
+function pipelineWorklistMarkup() {
+  const rows = pipelineWorklistRows();
+  const open = Boolean(state.pipelineWorklist);
+  const canLog = canAction("manageJobs") && canAction("manageTasks");
+  const shown = rows.slice(0, 40);
+  const summary = rows.length
+    ? `${rows.length} ${rows.length === 1 ? "opportunity needs" : "opportunities need"} a call or a next step`
+    : "Nothing is waiting for a call or a next step";
+  return `
+      <section class="pipeline-worklist" aria-label="Today's worklist">
+        <header>
+          <div><strong>Today's worklist</strong><span>${summary}</span></div>
+          ${rows.length ? `<button class="secondary-button" type="button" data-pipeline-worklist-toggle aria-expanded="${open}">${open ? "Hide the list" : "Work the list"}</button>` : ""}
+        </header>
+        ${open && rows.length ? `<ol class="pipeline-worklist-rows">${shown.map((row) => pipelineWorklistRowMarkup(row, canLog)).join("")}</ol>${rows.length > shown.length ? `<p class="pipeline-worklist-more">Showing the ${shown.length} most pressing of ${rows.length}. The rest appear as these are dealt with.</p>` : ""}` : ""}
+      </section>`;
+}
+
+// The board is redrawn whenever records change, including by someone else.
+// What a rep has typed into the call form is carried across the redraw.
+function pipelineCallFormDraft() {
+  const form = els.pipelineBoard?.querySelector?.("[data-pipeline-call-form]");
+  if (!form) return null;
+  const values = {};
+  [...form.elements].forEach((field) => { if (field.name) values[field.name] = field.type === "checkbox" ? field.checked : field.value; });
+  const focused = document.activeElement;
+  return { key: pipelineOpportunityKey(form.dataset.contactId, form.dataset.jobId), values, focus: focused && form.contains(focused) ? focused.name || "" : "" };
+}
+
+function restorePipelineCallFormDraft(draft) {
+  const form = els.pipelineBoard?.querySelector?.("[data-pipeline-call-form]");
+  if (!draft || !form || pipelineOpportunityKey(form.dataset.contactId, form.dataset.jobId) !== draft.key) return;
+  Object.entries(draft.values).forEach(([name, value]) => {
+    const field = form.elements[name];
+    if (!field) return;
+    if (field.type === "checkbox") field.checked = Boolean(value); else field.value = value;
+  });
+  if (form.elements.nextAt) form.elements.nextAt.disabled = Boolean(form.elements.noFollowUp?.checked);
+  if (draft.focus) form.elements[draft.focus]?.focus?.();
+}
+
+// Records a call on an opportunity and what happens next. One save holds the
+// note, the date of the call, the finished task if there was one, and the next
+// follow-up, so a call never ends without a dated next step unless the rep
+// says there is none.
+async function logPipelineCall(contactId, jobId, entry = {}) {
+  if (!requireAction("manageJobs") || !requireAction("manageTasks")) return false;
+  const contact = getContact(contactId);
+  const job = contact ? contactJobs(contact).find((item) => item.id === jobId) : null;
+  if (!contact || !job) {
+    showToast("That opportunity could not be found");
+    return false;
+  }
+  const outcome = PIPELINE_CALL_OUTCOMES.find(([id]) => id === entry.outcome);
+  if (!outcome) {
+    showToast("Choose what happened on the call");
+    return false;
+  }
+  const followUp = !entry.noFollowUp;
+  const nextAt = String(entry.nextAt || "");
+  if (followUp && !(localTimestamp(nextAt) > Date.now())) {
+    showToast("Choose a time in the future for the next follow-up, or tick \"No further follow-up\"");
+    return false;
+  }
+  const decisionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(entry.decisionDate || "")) ? entry.decisionDate : "";
+  const now = new Date().toISOString();
+  const typed = String(entry.note || "").trim().slice(0, 500);
+  const note = typed && !/[.!?]$/.test(typed) ? `${typed}.` : typed;
+  const finishedTask = entry.completeTask ? pipelineNextTask(contact, job) : null;
+  const hasOwnJob = (contact.jobs || []).some((item) => item.id === jobId);
+  const touch = { lastContact: todayISO(), lastTouchAt: now, lastTouchOutcome: outcome[0] };
+
+  const nextTask = followUp ? normalizeCalendarTask({
+    id: uid("task"),
+    title: `Follow up with ${contact.name}`,
+    rep: job.salesRep || contact.salesRep || currentOwner().name,
+    ownerUserId: job.ownerUserId || contact.ownerUserId || currentOwner().userId,
+    ownerEmail: job.ownerEmail || contact.ownerEmail || currentOwner().email,
+    ownerName: job.ownerName || contact.ownerName || currentOwner().name,
+    contactId: contact.id,
+    jobId: hasOwnJob ? job.id : "",
+    dueAt: nextAt,
+    duration: 15,
+    reminder: "popup",
+    notes: `${outcome[1]} on ${formatDate(todayISO())}.${note ? ` ${note}` : ""}`,
+    workflowStatus: "not_started",
+    createdAt: now,
+    updatedAt: now,
+    googleSyncStatus: "pending",
+  }) : null;
+
+  // The lead: when it was called and how it went. Only a job the lead really
+  // has is written to; the stand-in job shown for an old lead-only record is not.
+  updateContact(contact.id, (current) => ({
+    ...current,
+    ...touch,
+    jobs: hasOwnJob
+      ? current.jobs.map((item) => (item.id === jobId ? { ...item, ...touch, ...(decisionDate ? { decisionDate } : {}), updatedAt: now } : item))
+      : current.jobs,
+  }));
+  const message = [
+    `Call: ${outcome[1].toLowerCase()}.`,
+    note,
+    nextTask ? `Next follow-up ${formatDateTime(nextAt)}.` : "No further follow-up.",
+    decisionDate ? `Decision expected by ${formatDate(decisionDate)}.` : "",
+  ].filter(Boolean).join(" ");
+  addContactUpdate(contact.id, { jobId: hasOwnJob ? job.id : "", message });
+  if (nextTask) state.calendarTasks.unshift(nextTask);
+  pipelineWorklistFormKey = "";
+  saveState({ localOnly: true });
+  queueDurableRecordsSave();
+  queueCloudSave();
+  renderPipeline();
+  showToast(nextTask ? `Call logged. Next follow-up ${formatDateTime(nextAt)}.` : "Call logged. No further follow-up.");
+
+  // The finished task and the new one go to Google the way every task does.
+  if (finishedTask) await completeCalendarTask(finishedTask.id);
+  if (nextTask) await syncCalendarTaskToGoogle(nextTask);
+  return true;
 }
 
 function pipelineStageWeight(stage, stages) {
@@ -7952,6 +8493,7 @@ function renderPipeline() {
     ["inactive", `Inactive ${state.pipelineStaleDays}+ days`], ["noDecision", "Estimates without decision date"], ["stuck", "Stuck beyond stage target"],
   ];
   const selectedRow = rows.find((row) => row.key === state.pipelineSelectedOpportunity) || allRows.find((row) => row.key === state.pipelineSelectedOpportunity);
+  const callFormDraft = pipelineCallFormDraft();
 
   els.pipelineBoard.innerHTML = `
     <section class="sales-pipeline-shell">
@@ -7976,7 +8518,7 @@ function renderPipeline() {
       <section class="pipeline-attention-strip" aria-label="Opportunities needing attention">
         <div class="pipeline-attention-title"><span data-icon="alert-triangle"></span><div><strong>Needs attention</strong><label>Inactive after <input type="number" min="1" max="90" value="${state.pipelineStaleDays}" data-pipeline-stale-days/> days</label></div></div>
         <div class="pipeline-attention-items"><button type="button" data-pipeline-attention="all" class="${state.pipelineAttention === "all" ? "active" : ""}"><strong>${attentionBaseRows.length}</strong><span>All opportunities</span></button>${attentionDefinitions.map(([key, label]) => `<button type="button" data-pipeline-attention="${key}" class="${state.pipelineAttention === key ? "active" : ""}"><strong>${attentionRows.filter((item) => item.attention[key]).length}</strong><span>${escapeHtml(label)}</span></button>`).join("")}</div>
-      </section>
+      </section>${pipelineWorklistMarkup()}
       <section class="sales-pipeline-board-wrap" aria-label="Sales opportunity board">
         <div class="sales-pipeline-board" style="--pipeline-columns:${stages.length}">${stages.map((stage, index) => {
           const stageRows = rows.filter(({ job }) => job.salesStage === stage);
@@ -7995,6 +8537,7 @@ function renderPipeline() {
   // drawer's title and close button; step it back while the drawer is open.
   document.body?.classList?.toggle("pipeline-drawer-open", Boolean(selectedRow));
   hydrateIcons(els.pipelineBoard);
+  restorePipelineCallFormDraft(callFormDraft);
 }
 
 async function movePipelineOpportunity(contactId, jobId, targetStage) {
@@ -10810,6 +11353,7 @@ function renderLeadDocuments(contact) {
       ? '<div class="empty-state">No active document categories. An administrator can add one in CRM Settings.</div>'
       : '<div class="empty-state">Add or select a job before managing documents.</div>';
   hydrateIcons(els.leadDocumentsList);
+  renderLeadUploads();
 }
 
 function photosForJob(contact, jobId) {
@@ -10818,18 +11362,34 @@ function photosForJob(contact, jobId) {
     .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
 }
 
-async function managedPhotoPreviewUrl(photo) {
+// The address of the picture shown in a photo's card: its small copy when it
+// has one, the original when it does not (photos from before small copies, or
+// kinds this browser could not draw) or when `original` is asked for.
+async function managedPhotoPreviewUrl(photo, { original = false } = {}) {
   if (photo.dataUrl) return photo.dataUrl;
-  if (!photo.storagePath || !cloudClient?.storage) return "";
-  const cached = photoPreviewCache.get(photo.id);
-  if (cached?.url && cached.expiresAt > Date.now()) return cached.url;
-  const { data, error } = await cloudClient.storage
-    .from(SUPABASE_DOCUMENT_BUCKET)
-    .createSignedUrl(photo.storagePath, 300);
-  if (error) throw error;
-  const url = data?.signedUrl || "";
-  if (url) photoPreviewCache.set(photo.id, { url, expiresAt: Date.now() + 240000 });
-  return url;
+  if (!cloudClient?.storage) return "";
+  const signed = async (path, cacheKey) => {
+    const cached = photoPreviewCache.get(cacheKey);
+    if (cached?.url && cached.expiresAt > Date.now()) return cached.url;
+    const { data, error } = await cloudClient.storage
+      .from(SUPABASE_DOCUMENT_BUCKET)
+      .createSignedUrl(path, 300);
+    if (error) throw error;
+    const url = data?.signedUrl || "";
+    if (url) photoPreviewCache.set(cacheKey, { url, expiresAt: Date.now() + 240000 });
+    return url;
+  };
+  if (!original && photo.previewPath && !unreadablePhotoPreviews.has(photo.id)) {
+    try {
+      const url = await signed(photo.previewPath, `${photo.id}:preview`);
+      if (url) return url;
+    } catch {
+      // This user may not read the small copy, or it is gone. The original is
+      // shown instead, and the small copy is not asked for again in this tab.
+    }
+    unreadablePhotoPreviews.add(photo.id);
+  }
+  return photo.storagePath ? signed(photo.storagePath, photo.id) : "";
 }
 
 // Shows one photo's thumbnail in its card. The <img> stays hidden until it has
@@ -10847,6 +11407,16 @@ async function showLeadPhotoPreview(image, photo, stillCurrent = () => true) {
       placeholder?.classList.add("hidden");
     }, { once: true });
     image.addEventListener("error", () => {
+      // The small copy is missing or unreadable: show the original instead.
+      if (photo.previewPath && image.dataset.previewFallback !== "true") {
+        image.dataset.previewFallback = "true";
+        managedPhotoPreviewUrl(photo, { original: true }).then((fallback) => {
+          if (!fallback || !stillCurrent() || image.isConnected === false) return;
+          image.addEventListener("error", () => { image.classList.add("hidden"); placeholder?.classList.remove("hidden"); }, { once: true });
+          image.src = fallback;
+        }).catch(() => {});
+        return;
+      }
       image.classList.add("hidden");
       placeholder?.classList.remove("hidden");
     }, { once: true });
@@ -10948,6 +11518,7 @@ function renderLeadPhotos(contact) {
     : '<div class="empty-state">Add a job before uploading photos.</div>';
   hydrateIcons(els.leadPhotosGrid);
   if (selectedJob) void hydrateLeadPhotoPreviews(contact.id, selectedJob.id, displayLimit);
+  renderLeadUploads();
 }
 
 function renderLeadConversation(contact) {
@@ -11240,7 +11811,7 @@ async function uploadDocumentFileResumable(file, storagePath) {
   });
 }
 
-async function storeDocumentFile(file, { documentId, leadId = "company", jobId = "", categoryId = "other" } = {}) {
+async function storeDocumentFile(file, { documentId, leadId = "company", jobId = "", categoryId = "other", estimatePdfKey = "" } = {}) {
   if (!documentId || !leadId || !categoryId) throw new Error("Document, lead and category identifiers are required");
   if (!cloudReady || !cloudClient?.storage || !authSession?.user?.id) {
     if (canUseCloudSync()) throw new Error("Shared file storage is not ready. Reconnect before uploading.");
@@ -11252,8 +11823,11 @@ async function storeDocumentFile(file, { documentId, leadId = "company", jobId =
   const jobSegment = safeStoragePathSegment(jobId, "job");
   const categorySegment = safeStoragePathSegment(categoryId, "other");
   const documentSegment = safeStoragePathSegment(documentId, "document");
-  const versionSegment = safeStoragePathSegment(uid("version"), "version");
+  const contentAddressed = /^[a-f0-9]{64}$/.test(estimatePdfKey);
+  const versionSegment = contentAddressed ? estimatePdfKey : safeStoragePathSegment(uid("version"), "version");
   const recordScope = jobId ? `${leadSegment}/jobs/${jobSegment}` : leadSegment;
+  // The file keeps its own name either way: it is what a browser offers when
+  // someone opens the filed PDF and saves it.
   const storagePath = `${companySegment}/${recordScope}/${categorySegment}/${documentSegment}/${versionSegment}/${safeStorageFileName(file.name)}`;
   const uploadFileSize = Number.isFinite(Number(file.size)) ? Number(file.size) : 0;
   if (uploadFileSize >= RESUMABLE_UPLOAD_THRESHOLD) {
@@ -11274,7 +11848,8 @@ async function storeDocumentFile(file, { documentId, leadId = "company", jobId =
       uploadTimeout = setTimeout(() => reject(new Error("File upload timed out. Check the connection and retry.")), uploadTimeoutMs);
     }),
   ]).finally(() => clearTimeout(uploadTimeout));
-  if (error) throw error;
+  // Only a duplicate-object response for this exact content address is success.
+  if (error && !(contentAddressed && /^(Duplicate|ResourceAlreadyExists|The resource already exists\.?|Asset Already Exists)$/i.test(String(error.error || error.message || "")))) throw error;
   return { dataUrl: "", storagePath };
 }
 
@@ -11535,6 +12110,305 @@ function rasterizeLogoDataUrlOnMainThread(dataUrl) {
   });
 }
 
+// ---- Uploads to a lead: one status per file ---------------------------------
+// Every file a person picks gets its own line: Waiting, Sending, then either
+// "Saved to <job>" or the reason it failed with "Retry this file". A file is
+// called saved only when two things are confirmed: the file is in storage,
+// and its record came back from the database under the right lead and job.
+// One file failing does not hold up or undo the others, and retrying it sends
+// that one file again, not the batch. It used to be one line for the whole
+// batch, and a failed file had to be found and picked again by hand.
+const leadUploads = [];
+const LEAD_UPLOAD_ACTIVE = ["waiting", "sending", "confirming"];
+const PHOTO_PREVIEW_SIDE = 480;
+let leadUploadsRunning = null;
+let leadUploadConfirmTail = Promise.resolve();
+let leadUploadRefreshTimer = null;
+
+// A small copy of a photo for the gallery, made in the browser as it is sent.
+// The gallery used to load every full-size original as its own thumbnail.
+async function makePhotoPreview(file) {
+  try {
+    if (typeof createImageBitmap !== "function") return null;
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, PHOTO_PREVIEW_SIDE / Math.max(bitmap.width, bitmap.height, 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
+    return blob?.size ? blob : null;
+  } catch {
+    return null; // A kind of photo this browser cannot draw: the gallery uses the original.
+  }
+}
+
+// Stores the small copy beside the original. Never a reason for an upload to
+// fail: without one the gallery simply shows the original, as before.
+async function storePhotoPreview(file, storagePath) {
+  if (!storagePath || !cloudClient?.storage) return "";
+  const blob = await makePhotoPreview(file);
+  if (!blob || blob.size >= Number(file.size || 0)) return "";
+  const previewPath = `${storagePath.slice(0, storagePath.lastIndexOf("/"))}/preview.jpg`;
+  try {
+    const { error } = await cloudClient.storage.from(SUPABASE_DOCUMENT_BUCKET)
+      .upload(previewPath, blob, { cacheControl: "31536000", contentType: "image/jpeg", upsert: false });
+    return error ? "" : previewPath;
+  } catch {
+    return "";
+  }
+}
+
+function leadUploadFailureMessage(error) {
+  const message = String(error?.message || error || "");
+  if (message === "record_not_confirmed") return "The file was sent, but saving it to this job could not be confirmed.";
+  if (message === "target_removed") return "The lead or job was removed before this file was saved.";
+  if (message === "device_storage_full") return "Not saved: this device is out of offline storage. Connect shared storage and retry.";
+  return documentUploadErrorMessage(error);
+}
+
+// Files the record under its lead and job, and waits for the database to say
+// so. If that cannot be confirmed the record is taken off the lead again, so
+// nothing is shown as saved that is not.
+async function fileLeadUpload(item) {
+  const contact = getContact(item.contactId);
+  const job = contact ? contactJobs(contact).find((entry) => entry.id === item.jobId) : null;
+  if (!contact || !job) throw new Error("target_removed");
+  const isPhoto = item.kind === "photo";
+  const record = normalizeDocument({
+    id: item.documentId,
+    name: item.name,
+    type: item.type,
+    size: item.size,
+    ...item.stored,
+    ...(item.previewPath ? { previewPath: item.previewPath } : {}),
+    uploadedAt: new Date().toISOString(),
+    leadId: contact.id,
+    contactId: contact.id,
+    jobId: job.id,
+    categoryId: item.categoryId,
+    category: item.categoryName,
+    ...(isPhoto ? { kind: "photo" } : {}),
+    uploadedBy: isPhoto ? state.currentUser.name || state.currentUser.email || "CRM user" : currentActorName(),
+    versionNumber: 1,
+  }, { leadId: contact.id, categoryId: item.categoryId, categories: state.company.documentCategories });
+  const takeBack = () => {
+    const current = getContact(item.contactId);
+    if (current) current.documents = (current.documents || []).filter((document) => document.id !== record.id);
+    photoPreviewCache.delete(record.id);
+    saveState({ localOnly: true });
+  };
+  // Added straight to the lead's files, as loading them does. Going through
+  // updateContact would re-save the lead itself once for every file.
+  contact.documents = [record, ...(contact.documents || []).filter((document) => document.id !== record.id)];
+  const localSaved = saveState({ localOnly: true });
+  if (!canUseCloudSync()) {
+    if (!localSaved) {
+      takeBack();
+      throw new Error("device_storage_full");
+    }
+    return record;
+  }
+  window.clearTimeout(durableSaveTimer);
+  let saved = false;
+  try {
+    saved = await persistLeadDocumentRecords([record.id], "");
+  } catch (error) {
+    console.warn("Upload record could not be confirmed", error);
+  }
+  if (!saved) {
+    takeBack();
+    throw new Error("record_not_confirmed");
+  }
+  return record;
+}
+
+async function sendLeadUpload(item) {
+  item.status = "sending";
+  item.message = "";
+  renderLeadUploads();
+  try {
+    // A retry after the file itself went through does not send it twice.
+    if (!item.stored) {
+      item.stored = await storeDocumentFile(item.file, { documentId: item.documentId, leadId: item.contactId, jobId: item.jobId, categoryId: item.categoryId });
+    }
+    if (item.kind === "photo" && item.stored.storagePath && item.previewPath === undefined) {
+      item.previewPath = await storePhotoPreview(item.file, item.stored.storagePath);
+    }
+    item.status = "confirming";
+    renderLeadUploads();
+    // Records are confirmed one at a time, in the order the files finish.
+    const filed = leadUploadConfirmTail.then(() => fileLeadUpload(item));
+    leadUploadConfirmTail = filed.catch(() => {});
+    item.record = await filed;
+    item.status = "saved";
+    item.file = null;
+    return true;
+  } catch (error) {
+    console.warn(`Upload of ${item.name} failed`, error);
+    item.status = "failed";
+    item.message = leadUploadFailureMessage(error);
+    return false;
+  } finally {
+    renderLeadUploads();
+    scheduleLeadUploadRefresh(item.contactId);
+  }
+}
+
+// One line in the lead's history for what a run saved, not one per file.
+function noteLeadUploads(items) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const key = `${item.contactId}|${item.jobId}|${item.kind}|${item.categoryId}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  groups.forEach((group) => {
+    const [first] = group;
+    if (!getContact(first.contactId)) return;
+    addContactUpdate(first.contactId, {
+      jobId: first.jobId,
+      message: first.kind === "photo"
+        ? `Uploaded ${group.length} job photo${group.length === 1 ? "" : "s"} to ${first.jobName}.`
+        : `Uploaded ${group.length === 1 ? first.name : `${group.length} documents`} to ${first.jobName} / ${first.categoryName}.`,
+    });
+  });
+  if (!groups.size) return;
+  saveState({ localOnly: true });
+  queueDurableRecordsSave();
+  queueCloudSave();
+}
+
+// Sends what is waiting, two files at a time (one at a time when any is large).
+function runLeadUploads() {
+  if (leadUploadsRunning) return leadUploadsRunning;
+  leadUploadsRunning = (async () => {
+    const saved = [];
+    try {
+      for (;;) {
+        const waiting = leadUploads.filter((item) => item.status === "waiting");
+        if (!waiting.length) break;
+        const group = waiting.slice(0, waiting.some((item) => item.size >= RESUMABLE_UPLOAD_THRESHOLD) ? 1 : 2);
+        await Promise.all(group.map(async (item) => { if (await sendLeadUpload(item)) saved.push(item); }));
+      }
+    } finally {
+      leadUploadsRunning = null;
+      noteLeadUploads(saved);
+      renderLeadUploads();
+      if (saved.length) showToast(`${saved.length} file${saved.length === 1 ? "" : "s"} saved to ${saved[0].jobName}`);
+    }
+  })();
+  return leadUploadsRunning;
+}
+
+function queueLeadUploads(kind, files, target) {
+  const items = files.map((file) => ({
+    id: uid("upload"),
+    kind,
+    file,
+    name: file.name || "file",
+    size: Number(file.size) || 0,
+    type: file.type || (kind === "photo" ? "image/jpeg" : "application/octet-stream"),
+    documentId: uid(kind === "photo" ? "photo" : "doc"),
+    ...target,
+    stored: null,
+    previewPath: undefined,
+    record: null,
+    status: "waiting",
+    message: "",
+  }));
+  leadUploads.push(...items);
+  renderLeadUploads();
+  return items;
+}
+
+// The lists of files and photos are redrawn shortly after a file lands, not
+// once per file while twenty are arriving.
+function scheduleLeadUploadRefresh(contactId) {
+  window.clearTimeout(leadUploadRefreshTimer);
+  leadUploadRefreshTimer = window.setTimeout(() => {
+    if (state.view === "leadDetail" && state.selectedContactId === contactId && !activeTextEditor()) renderLeadDetail();
+  }, leadUploads.some((item) => LEAD_UPLOAD_ACTIVE.includes(item.status)) ? 1200 : 0);
+}
+
+function leadUploadSummary(items, noun) {
+  const count = (status) => items.filter((item) => item.status === status).length;
+  const saved = count("saved");
+  const failed = count("failed");
+  const active = items.length - saved - failed;
+  const plural = `${noun}${items.length === 1 ? "" : "s"}`;
+  if (active) return { tone: "saving", message: `Sending ${items.length} ${plural}: ${saved} saved${failed ? `, ${failed} failed` : ""}, ${active} to go.` };
+  if (failed) return { tone: "error", message: `${saved} of ${items.length} ${plural} saved. ${failed} did not go through: use "Retry this file" below. The saved ones do not need sending again.` };
+  return { tone: "success", message: `${items.length} ${plural} saved to ${items[0].jobName}.` };
+}
+
+function leadUploadListMarkup(items) {
+  const failed = items.filter((item) => item.status === "failed").length;
+  const finished = items.filter((item) => item.status === "saved").length;
+  const label = (item) => ({
+    waiting: "Waiting",
+    sending: "Sending…",
+    confirming: "Saving to the job…",
+    saved: `Saved to ${item.jobName}`,
+    failed: item.message || "Not saved",
+  })[item.status];
+  return `
+    <ul class="upload-status-list">${items.map((item) => `
+      <li class="upload-status-row is-${item.status}" data-upload-row="${escapeHtml(item.id)}">
+        <span class="upload-status-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
+        <span class="upload-status-size">${escapeHtml(formatBytes(item.size))}</span>
+        <span class="upload-status-state">${escapeHtml(label(item))}</span>
+        ${item.status === "failed" ? `<span class="upload-status-actions"><button class="secondary-button" type="button" data-upload-retry="${escapeHtml(item.id)}">Retry this file</button><button class="link-button" type="button" data-upload-remove="${escapeHtml(item.id)}">Remove</button></span>` : ""}
+      </li>`).join("")}
+    </ul>
+    <div class="upload-status-footer">
+      ${failed > 1 ? `<button class="secondary-button" type="button" data-upload-retry-all>Retry all ${failed} failed</button>` : ""}
+      ${finished ? '<button class="link-button" type="button" data-upload-clear>Clear the saved ones from this list</button>' : ""}
+    </div>`;
+}
+
+function renderLeadUploads() {
+  [["photo", els.leadPhotoUploadStatus, "leadPhotoUploadList", "photo"], ["document", els.leadDocumentUploadStatus, "leadDocumentUploadList", "file"]].forEach(([kind, statusElement, listId, noun]) => {
+    if (!statusElement?.insertAdjacentElement) return;
+    const items = leadUploads.filter((item) => item.kind === kind && item.contactId === state.selectedContactId);
+    let list = document.getElementById(listId);
+    if (!items.length) {
+      list?.remove();
+      return;
+    }
+    if (!list) {
+      list = document.createElement("div");
+      list.id = listId;
+      list.className = "upload-status";
+      list.dataset.uploadKind = kind;
+      statusElement.insertAdjacentElement("afterend", list);
+    }
+    list.innerHTML = leadUploadListMarkup(items);
+    const summary = leadUploadSummary(items, noun);
+    setSaveState(statusElement, summary.message, summary.tone, { showSuccess: true });
+  });
+}
+
+function retryLeadUploads(ids) {
+  const wanted = new Set(ids);
+  leadUploads.forEach((item) => {
+    if (wanted.has(item.id) && item.status === "failed" && (item.file || item.stored)) {
+      item.status = "waiting";
+      item.message = "";
+    }
+  });
+  renderLeadUploads();
+  return runLeadUploads();
+}
+
+function clearLeadUploads(predicate) {
+  for (let index = leadUploads.length - 1; index >= 0; index -= 1) {
+    if (predicate(leadUploads[index])) leadUploads.splice(index, 1);
+  }
+  renderLeadUploads();
+}
+
 async function uploadLeadDocuments(files) {
   if (!requireAction("manageDocuments")) return;
   const contact = getSelectedContact();
@@ -11551,101 +12425,17 @@ async function uploadLeadDocuments(files) {
     showToast("Choose an active document category");
     return;
   }
-
-  els.uploadLeadDocumentButton.disabled = true;
-  setSaveState(
-    els.leadDocumentUploadStatus,
-    `Uploading ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} to secure storage...`,
-    "saving",
-  );
-
-  try {
-    const { documents, failures } = await uploadDocumentBatch(
-      selectedFiles, async (file) => {
-        const id = uid("doc");
-        const stored = await storeDocumentFile(file, {
-          documentId: id,
-          leadId: contact.id,
-          jobId: job.id,
-          categoryId: category.id,
-        });
-        return normalizeDocument({
-          id,
-          name: file.name,
-          type: file.type || "application/octet-stream",
-          size: file.size,
-          ...stored,
-          uploadedAt: new Date().toISOString(),
-          leadId: contact.id,
-          contactId: contact.id,
-          jobId: job.id,
-          categoryId: category.id,
-          category: category.name,
-          uploadedBy: currentActorName(),
-          versionNumber: 1,
-        }, { leadId: contact.id, categoryId: category.id, categories: state.company.documentCategories });
-      },
-    );
-
-    updateContact(contact.id, (current) => ({
-      ...current,
-      documents: [...documents, ...(current.documents || [])],
-    }));
-    const documentUpdateContact = addContactUpdate(contact.id, {
-      jobId: job.id,
-      message: `Uploaded ${documents.length === 1 ? documents[0].name : `${documents.length} documents`} to ${job.name} / ${category.name}.`,
-    });
-    const localSaved = saveState({ localOnly: true });
-    if (!canUseCloudSync() && !localSaved) {
-      state.contacts = state.contacts.map((item) => (item.id === contact.id ? contact : item));
-      render();
-      setSaveState(els.leadDocumentUploadStatus, "Upload was not saved because this device is out of offline storage. Connect shared storage and retry.", "error");
-      showToast("Upload was not saved. This device is out of offline storage.");
-      return false;
-    }
-    window.clearTimeout(durableSaveTimer);
-    render();
-    setSaveState(els.leadDocumentUploadStatus, "File stored. Confirming the shared CRM record...", "saving");
-    let saved = !canUseCloudSync();
-    if (canUseCloudSync()) {
-      saved = await persistLeadDocumentRecords(
-        documents.map((document) => document.id),
-        documentUpdateContact?.updates?.[0]?.id || "",
-      );
-    }
-    if (!saved) {
-      rollbackUnconfirmedLeadUploads(
-        contact.id,
-        documents.map((document) => document.id),
-        documentUpdateContact?.updates?.[0]?.id || "",
-      );
-      setSaveState(
-        els.leadDocumentUploadStatus,
-        "Upload could not be confirmed. The unconfirmed file was removed; select it again to retry.",
-        "error",
-      );
-      showToast("Upload was not confirmed and was removed from the lead. Please retry.");
-      return false;
-    }
-    queueCloudSave();
-    setSaveState(
-      els.leadDocumentUploadStatus,
-      canUseCloudSync()
-        ? `${documents.length} document${documents.length === 1 ? "" : "s"} saved to ${job.name} and shared with the team.`
-        : `${documents.length} document${documents.length === 1 ? "" : "s"} saved to ${job.name} on this device.`,
-      "success",
-    );
-    showToast(`${documents.length} document${documents.length === 1 ? "" : "s"} saved to the shared CRM`);
-    const allSaved = reportUploadFailures(failures, els.leadDocumentUploadStatus);
-    if (els.leadDocumentSmartAfterUpload?.checked) {
-      els.leadDocumentSmartAfterUpload.checked = false;
-      if (documents.length === 1) openZohoSignDialog(documents[0]);
-      else showToast("Use the Smart Doc button beside each saved file when uploading multiple documents.");
-    }
-    return allSaved;
-  } finally {
-    els.uploadLeadDocumentButton.disabled = false;
+  const items = queueLeadUploads("document", selectedFiles, {
+    contactId: contact.id, jobId: job.id, jobName: job.name, categoryId: category.id, categoryName: category.name,
+  });
+  await runLeadUploads();
+  const saved = items.filter((item) => item.status === "saved");
+  if (els.leadDocumentSmartAfterUpload?.checked && saved.length) {
+    els.leadDocumentSmartAfterUpload.checked = false;
+    if (items.length === 1) openZohoSignDialog(saved[0].record);
+    else showToast("Use the Smart Doc button beside each saved file when uploading multiple documents.");
   }
+  return saved.length === items.length;
 }
 
 async function uploadLeadPhotos(files) {
@@ -11655,100 +12445,12 @@ async function uploadLeadPhotos(files) {
   const job = contactJobs(contact).find((item) => item.id === state.selectedLeadJobId);
   if (!job) return false;
   const selectedFiles = validatePhotoFiles(files);
-
-  els.uploadLeadPhotoButton.disabled = true;
-  setSaveState(
-    els.leadPhotoUploadStatus,
-    `Uploading ${selectedFiles.length} photo${selectedFiles.length === 1 ? "" : "s"} to ${job.name}...`,
-    "saving",
-  );
-
-  try {
-    const { documents: photos, failures } = await uploadDocumentBatch(
-      selectedFiles, async (file) => {
-        const id = uid("photo");
-        const stored = await storeDocumentFile(file, {
-          documentId: id,
-          leadId: contact.id,
-          jobId: job.id,
-          categoryId: JOB_PHOTO_CATEGORY_ID,
-        });
-        return normalizeDocument(
-          {
-            id,
-            name: file.name,
-            type: file.type || "image/jpeg",
-            size: file.size,
-            ...stored,
-            uploadedAt: new Date().toISOString(),
-            leadId: contact.id,
-            contactId: contact.id,
-            jobId: job.id,
-            categoryId: JOB_PHOTO_CATEGORY_ID,
-            category: "Photos",
-            kind: "photo",
-            uploadedBy: state.currentUser.name || state.currentUser.email || "CRM user",
-            versionNumber: 1,
-          },
-          { leadId: contact.id, categoryId: JOB_PHOTO_CATEGORY_ID, categories: state.company.documentCategories },
-        );
-      },
-    );
-
-    updateContact(contact.id, (current) => ({
-      ...current,
-      documents: [...photos, ...(current.documents || [])],
-    }));
-    const photoUpdateContact = addContactUpdate(contact.id, {
-      jobId: job.id,
-      message: `Uploaded ${photos.length} job photo${photos.length === 1 ? "" : "s"} to ${job.name}.`,
-    });
-    state.leadDetailTab = "photos";
-    const localSaved = saveState({ localOnly: true });
-    if (!canUseCloudSync() && !localSaved) {
-      state.contacts = state.contacts.map((item) => (item.id === contact.id ? contact : item));
-      render();
-      setSaveState(els.leadPhotoUploadStatus, "Photos were not saved because this device is out of offline storage. Connect shared storage and retry.", "error");
-      showToast("Photos were not saved. This device is out of offline storage.");
-      return false;
-    }
-    window.clearTimeout(durableSaveTimer);
-    render();
-    setSaveState(els.leadPhotoUploadStatus, "Photos stored. Confirming their shared CRM records...", "saving");
-
-    let saved = !canUseCloudSync();
-    if (canUseCloudSync()) {
-      saved = await persistLeadDocumentRecords(
-        photos.map((photo) => photo.id),
-        photoUpdateContact?.updates?.[0]?.id || "",
-      );
-    }
-    if (!saved) {
-      rollbackUnconfirmedLeadUploads(
-        contact.id,
-        photos.map((photo) => photo.id),
-        photoUpdateContact?.updates?.[0]?.id || "",
-      );
-      setSaveState(
-        els.leadPhotoUploadStatus,
-        "Upload could not be confirmed. The unconfirmed photos were removed; select them again to retry.",
-        "error",
-      );
-      showToast("Photo upload was not confirmed and was removed from the job. Please retry.");
-      return false;
-    }
-
-    queueCloudSave();
-    setSaveState(
-      els.leadPhotoUploadStatus,
-      `${photos.length} photo${photos.length === 1 ? "" : "s"} saved only to ${job.name}.`,
-      "success",
-    );
-    showToast(`${photos.length} job photo${photos.length === 1 ? "" : "s"} saved to ${job.name}`);
-    return reportUploadFailures(failures, els.leadPhotoUploadStatus);
-  } finally {
-    els.uploadLeadPhotoButton.disabled = !canAction("manageDocuments");
-  }
+  state.leadDetailTab = "photos";
+  const items = queueLeadUploads("photo", selectedFiles, {
+    contactId: contact.id, jobId: job.id, jobName: job.name, categoryId: JOB_PHOTO_CATEGORY_ID, categoryName: "Photos",
+  });
+  await runLeadUploads();
+  return items.every((item) => item.status === "saved");
 }
 
 async function removeLeadDocument(documentId) {
@@ -14600,21 +15302,30 @@ function financialLedgerEntries() {
   const entries = [];
   const paymentIds = new Set();
   const expenseIds = new Set();
-  (state.invoices || []).forEach((invoice) => entries.push({
+  // A row from the money tables counts when its lead is one this user can see
+  // and is not archived: the rule payments recorded on a job always followed.
+  // An archived lead is left out of the totals however its money was recorded.
+  // The database's own total (crm_ledger_totals) applies the same rule.
+  const contacts = visibleContacts();
+  const countedLeads = new Set(contacts.map((contact) => contact.id));
+  const counts = (row) => !row.contactId || countedLeads.has(row.contactId);
+  (state.invoices || []).filter(counts).forEach((invoice) => entries.push({
     id: `invoice-${invoice.id}`, at: invoice.issueDate, kind: "Invoice", contactId: invoice.contactId,
     jobId: invoice.jobId, label: invoice.invoiceNumber, detail: invoice.status, amount: invoice.totalAmount, direction: "debit",
   }));
-  (state.financialPayments || []).forEach((payment) => {
+  (state.financialPayments || []).filter(isInvoicePaymentRow).forEach((payment) => {
     paymentIds.add(payment.id);
+    if (!counts(payment)) return;
     entries.push({ id: `payment-${payment.id}`, at: payment.receivedAt, kind: "Payment", contactId: payment.contactId,
       jobId: payment.jobId, label: payment.method, detail: payment.reference || payment.provider, amount: payment.amount, direction: "credit", paymentId: payment.id });
   });
   (state.financialExpenses || []).forEach((expense) => {
     expenseIds.add(expense.id);
+    if (!counts(expense)) return;
     entries.push({ id: `expense-${expense.id}`, at: expense.expenseDate, kind: "Expense", contactId: expense.contactId,
       jobId: expense.jobId, label: expense.category, detail: expense.vendor || expense.description, amount: expense.amount, direction: "expense" });
   });
-  visibleContacts().forEach((contact) => contactJobs(contact).forEach((job) => {
+  contacts.forEach((contact) => contactJobs(contact).forEach((job) => {
     (job.manualPayments || []).filter((payment) => !paymentIds.has(payment.id)).forEach((payment) => entries.push({
       id: `manual-${payment.id}`, at: payment.date || payment.createdAt, kind: "Payment", contactId: contact.id, jobId: job.id,
       label: payment.method || "Manual", detail: payment.reference || "Recorded in CRM", amount: number(payment.amount), direction: "credit",
@@ -14628,11 +15339,11 @@ function financialLedgerEntries() {
       label: expense.category || "Job cost", detail: expense.vendor || expense.description || "Recorded job cost", amount: number(expense.amount), direction: "expense",
     }));
   }));
-  (state.creditNotes || []).forEach((credit) => entries.push({
+  (state.creditNotes || []).filter(counts).forEach((credit) => entries.push({
     id: `credit-${credit.id}`, at: credit.issuedAt, kind: "Credit", contactId: credit.contactId, jobId: credit.jobId,
     label: credit.creditNumber, detail: credit.reason, amount: credit.amount, direction: "credit",
   }));
-  (state.financialRefunds || []).forEach((refund) => entries.push({
+  (state.financialRefunds || []).filter(counts).forEach((refund) => entries.push({
     id: `refund-${refund.id}`, at: refund.refundedAt, kind: "Refund", contactId: refund.contactId, jobId: refund.jobId,
     label: "Payment refund", detail: refund.reason, amount: refund.amount, direction: "refund", paymentId: refund.paymentId,
   }));
@@ -14999,7 +15710,8 @@ function renderInvoicesView() {
     .filter((estimate) => estimate.squareInvoiceId)
     .sort((a, b) => String(a.paymentUpdatedAt || "").localeCompare(String(b.paymentUpdatedAt || "")))
     .map((estimate) => [estimate.squareInvoiceId, estimate])).values()];
-  const internalInvoices = [...(state.invoices || [])].sort((a, b) => activityTimestamp(b.issueDate) - activityTimestamp(a.issueDate));
+  const internalInvoices = (state.invoices || []).filter((invoice) => !leadIsArchived(invoice.contactId))
+    .sort((a, b) => activityTimestamp(b.issueDate) - activityTimestamp(a.issueDate));
   // Voided invoices stay in the list below but are left out of every total.
   const liveInvoices = internalInvoices.filter((invoice) => invoice.status !== "void");
   const convertedEstimateIds = new Set(liveInvoices.map((invoice) => invoice.estimateId).filter(Boolean));
@@ -15007,7 +15719,9 @@ function renderInvoicesView() {
     .filter((estimate) => !convertedEstimateIds.has(estimate.id))
     .reduce((sum, estimate) => sum + (number(estimate.contractValue) || totalsFor(estimate).total), 0);
   const ledgerEntries = financialLedgerEntries();
-  const ledger = ledgerTotals(ledgerEntries);
+  // The same answer the Dashboard and Reports get: this browser's ledger once
+  // every record is in, the database's checked figure before that, else none.
+  const ledger = moneyTotalsForDisplay(ledgerEntries);
   const totalRefunds = ledger.refunds;
   const totalPaid = ledger.collected;
   const totalExpenses = ledger.expenses;
@@ -15022,6 +15736,8 @@ function renderInvoicesView() {
   // Totals wait for every job to load; half the jobs gives half the money.
   const pendingTotals = coreRecordsArePartial();
   const cash = (value) => (pendingTotals ? "…" : money.format(value));
+  // Collected, refunded, expenses and margin can be known before the rest.
+  const moneyCash = (value) => (ledger.ready ? money.format(value) : "…");
 
   const summaryBar = `
     <div class="invoice-summary-bar">
@@ -15031,11 +15747,11 @@ function renderInvoicesView() {
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label" title="Every confirmed payment on every job, with or without an invoice, less refunds. All time.">Collected</span>
-        <span class="invoice-summary-value" style="color:var(--green)">${cash(totalPaid)}</span>
+        <span class="invoice-summary-value" style="color:var(--green)">${moneyCash(totalPaid)}</span>
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label">Refunded</span>
-        <span class="invoice-summary-value">${cash(totalRefunds)}</span>
+        <span class="invoice-summary-value">${moneyCash(totalRefunds)}</span>
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label" title="Unpaid balance on issued invoices">Owed on invoices</span>
@@ -15043,11 +15759,11 @@ function renderInvoicesView() {
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label" title="Job costs and recorded expenses, all time">Expenses</span>
-        <span class="invoice-summary-value">${cash(totalExpenses)}</span>
+        <span class="invoice-summary-value">${moneyCash(totalExpenses)}</span>
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label" title="Collected minus expenses">Gross cash margin</span>
-        <span class="invoice-summary-value">${cash(totalPaid - totalExpenses)}</span>
+        <span class="invoice-summary-value">${moneyCash(totalPaid - totalExpenses)}</span>
       </div>
       <div class="invoice-summary-stat">
         <span class="invoice-summary-label">Overdue</span>
@@ -15366,7 +16082,8 @@ function renderReportsView() {
   // payments and recorded expenses. Reports used to read only the invoice
   // tables and showed $0 collected beside a Billing page showing six figures.
   const ledgerEntries = financialLedgerEntries();
-  const ledger = ledgerTotals(ledgerEntries);
+  // The same answer the Dashboard and Billing get (see moneyTotalsForDisplay).
+  const ledger = moneyTotalsForDisplay(ledgerEntries);
   const expenses = ledger.expenses, refunds = ledger.refunds, collected = ledger.collected, grossProfit = collected - expenses;
   const sourceRows=aggregateCounts(visibleContacts(),(contact)=>leadSourceLabel(contact.source),(contact)=>contactJobs(contact).filter((job)=>soldJobStatuses.includes(job.status) || jobIsSold(job)).length);
   const paymentMethodRows=aggregateCounts(ledgerEntries.filter((entry)=>entry.kind==="Payment"),(entry)=>entry.label||"Other",(entry)=>number(entry.amount));
@@ -15387,8 +16104,8 @@ function renderReportsView() {
     </article>
     <article class="report-card">
       <span class="eyebrow">Revenue Collected</span>
-      <strong>${shown(money.format(metrics.closedValue))}</strong>
-      <span>${metrics.pending ? companyTotalsCaption() : `All confirmed payments · ${metrics.closedJobs} jobs paid in full`}</span>
+      <strong>${metrics.moneyReady ? money.format(metrics.closedValue) : "…"}</strong>
+      <span>${metrics.pending ? (metrics.moneyReady ? "All confirmed payments" : companyTotalsCaption()) : `All confirmed payments · ${metrics.closedJobs} jobs paid in full`}</span>
     </article>
     <article class="report-card">
       <span class="eyebrow">Estimates Sent</span>
@@ -15422,7 +16139,7 @@ function renderReportsView() {
         </table>
       </div>
     </article>
-    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${shown(money.format(grossProfit))}</strong><span>${metrics.pending ? companyTotalsCaption() : `${money.format(collected)} collected · ${money.format(expenses)} expenses${refunds ? ` · ${money.format(refunds)} refunded` : ""}`}</span></article>
+    <article class="report-card"><span class="eyebrow">Gross cash margin</span><strong>${ledger.ready ? money.format(grossProfit) : "…"}</strong><span>${!ledger.ready ? companyTotalsCaption() : `${money.format(collected)} collected · ${money.format(expenses)} expenses${refunds ? ` · ${money.format(refunds)} refunded` : ""}`}</span></article>
     <article class="report-card"><span class="eyebrow">Billable time</span><strong>${billableHours.toFixed(1)} hours</strong><span>${state.jobTimeEntries.length} time entries</span></article>
     <article class="report-card"><span class="eyebrow">Goals</span><strong>${activeGoals.length}</strong><span>active sales and production goals</span></article>
     <article class="report-card wide"><span class="eyebrow">Invoice aging</span><div class="report-metric-row"><span>Current <strong>${shown(money.format(aging.current))}</strong></span><span>1–30 days <strong>${shown(money.format(aging.days30))}</strong></span><span>31–60 days <strong>${shown(money.format(aging.days60))}</strong></span><span>61+ days <strong>${shown(money.format(aging.days90))}</strong></span></div></article>
@@ -15447,12 +16164,17 @@ async function exportPerformanceReport(){if(coreRecordsArePartial()&&!(await ens
 
 async function exportPerformanceReportToGoogleSheets() {
   if (!requireAction("manageCompany")) return;
+  if (coreRecordsArePartial() && !(await ensureCompleteCoreRecordsLoaded())) return showToast("The report was not exported because the full record set is still loading. Try again in a moment.");
   const metrics = dashboardMetrics();
+  // The same figures the Dashboard, Billing, Reports and the CSV export show.
+  // "Collected" and "Expenses" here used to add up the invoice tables only,
+  // which left out every payment and cost recorded on a job.
+  const exportLedger = ledgerTotals();
   const headers = ["Report", "Value"];
   const rows = [
     ["Pipeline", metrics.pipelineValue],
-    ["Collected", state.financialPayments.reduce((sum, item) => sum + number(item.amount), 0)],
-    ["Expenses", state.financialExpenses.reduce((sum, item) => sum + number(item.amount), 0)],
+    ["Collected", exportLedger.collected],
+    ["Expenses", exportLedger.expenses],
     ["Billable hours", Number((state.jobTimeEntries.filter((item) => item.billable).reduce((sum, item) => sum + number(item.minutes), 0) / 60).toFixed(2))],
     ...aggregateCounts(allJobs().filter((job) => soldJobStatuses.includes(job.status)), (job) => canonicalRepresentativeName(job.salesRep || "Unassigned", job) || "Unassigned", (job) => number(job.contractValue) || number(job.value))
       .map((rep) => [`Sold · ${rep.label} · ${rep.count} jobs`, rep.value]),
@@ -15639,7 +16361,7 @@ function renderEstimateActiveSummary(estimate) {
 
 function estimateLineItemMarkup(item, index) {
   return `
-    <div class="line-item" data-line-index="${index}">
+    <div class="line-item" data-line-index="${index}" data-line-id="${escapeHtml(item.id ?? "")}">
       <label class="line-item-title">
         Product Title
         <input data-line-field="title" value="${escapeHtml(item.title)}" />
@@ -15676,11 +16398,247 @@ function renderEstimateLineItems(estimate) {
   hydrateIcons(els.lineItems);
 }
 
+// Redraws the lines without throwing the person typing out of their field:
+// the same field of the same line has the cursor afterwards, where it was.
+function renderEstimateLineItemsKeepingFocus(estimate) {
+  if (!estimate || !els.lineItems) return;
+  const active = document.activeElement;
+  const row = active?.closest?.("#lineItems [data-line-index]");
+  const focus = row ? { id: row.dataset.lineId || "", field: active.dataset.lineField || "", start: active.selectionStart, end: active.selectionEnd } : null;
+  renderEstimateLineItems(estimate);
+  if (!focus?.id || !focus.field) return;
+  const field = [...els.lineItems.querySelectorAll("[data-line-index]")].find((item) => item.dataset.lineId === focus.id)?.querySelector(`[data-line-field="${focus.field}"]`);
+  if (!field) return;
+  field.focus();
+  try { if (focus.start !== null && focus.start !== undefined) field.setSelectionRange(focus.start, focus.end); } catch { /* not a text field */ }
+}
+
 function appendEstimateLineItem(estimate, index) {
   els.lineItems.insertAdjacentHTML("beforeend", estimateLineItemMarkup(estimate.items[index], index));
   const row = els.lineItems.lastElementChild;
   hydrateIcons(row);
   row?.querySelector('[data-line-field="title"]')?.focus();
+}
+
+// ---- Recovering unsaved estimate lines --------------------------------------
+// While changes are waiting to be saved, a copy of the work is kept on this
+// device. If a save is then refused (someone else saved the estimate first) or
+// the tab is closed, the page reloads with the shared version and what was
+// typed is no longer on screen. It is still in that copy. For the estimate
+// that is open, the lines in the copy that the estimate does not have are
+// offered back behind one button, a line at a time. Putting a line back is an
+// ordinary edit of the current estimate, so nobody else's change is replaced.
+const ESTIMATE_RECOVERY_DISMISSED_KEY = "jobcrest-estimate-recovery-dismissed";
+const estimateRecoveryCopies = new Map(); // estimate id -> { items, capturedAt, stamp }
+let estimateRecoverySources = [];
+let estimateRecoveryPanelFor = "";
+
+function estimateLineSignature(item = {}) {
+  return JSON.stringify([
+    String(item.title || "").trim().toLowerCase(), String(item.description || "").trim(),
+    number(item.quantity), String(item.unit || "ea").trim().toLowerCase(), number(item.rate),
+  ]);
+}
+
+function estimateRecoveryDismissed() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`${ESTIMATE_RECOVERY_DISMISSED_KEY}:${authSession?.user?.id || "local"}`) || "[]");
+    return new Set(Array.isArray(stored) ? stored : []);
+  } catch {
+    return new Set();
+  }
+}
+
+// The lines of an unsaved copy that the estimate does not have now. A line
+// the estimate already has, word for word and number for number, is not one.
+function estimateLinesToRecover(estimate, copy) {
+  if (!estimate || !copy || !Array.isArray(copy.items)) return [];
+  const have = new Map();
+  (estimate.items || []).forEach((item) => {
+    const signature = estimateLineSignature(item);
+    have.set(signature, (have.get(signature) || 0) + 1);
+  });
+  const titleOf = (item) => String(item.title || "").trim().toLowerCase();
+  return copy.items.map(normalizeLineItem).filter((item) => {
+    const blank = (!titleOf(item) || titleOf(item) === "line item") && !String(item.description || "").trim() && !number(item.rate);
+    if (blank || (typeof isPlaceholderEstimateItem === "function" && isPlaceholderEstimateItem(item))) return false;
+    const signature = estimateLineSignature(item);
+    if (!have.get(signature)) return true;
+    have.set(signature, have.get(signature) - 1);
+    return false;
+  }).map((item) => {
+    const targets = estimateRecoveryTargets(estimate, item);
+    return {
+      item,
+      // The one line of the estimate this unsaved line belongs to, when that is certain.
+      replacesIndex: targets.length === 1 ? targets[0] : -1,
+      // Two or more lines it could belong to. The rep chooses; the CRM does not guess.
+      choices: targets.length > 1 ? targets : [],
+    };
+  });
+}
+
+// Which line of the estimate an unsaved line belongs to.
+// A line keeps its id for life, so the id decides, whatever the lines are
+// called: two lines named "Labor" are told apart, and a line that was renamed
+// is still found. An unsaved line whose id the estimate does not have was new
+// (or has since been removed), so it replaces nothing.
+// The one case an id cannot be relied on is a line numbered by its position
+// ("line-2": see ensureEstimateLineIds). Someone may have saved a different
+// list since, and then the same position is a different line. For those the
+// name is checked as well, and when more than one line has that name every one
+// of them is returned for the rep to choose from.
+function estimateRecoveryTargets(estimate, item) {
+  const items = estimate?.items || [];
+  const titleOf = (line) => String(line?.title || "").trim().toLowerCase();
+  const id = item?.id === undefined || item?.id === null ? "" : String(item.id);
+  const byId = id ? items.findIndex((line) => String(line?.id ?? "") === id) : -1;
+  const numberedByPosition = /^line-\d+$/.test(id);
+  if (id && !numberedByPosition) return byId >= 0 ? [byId] : [];
+  const sameName = [];
+  items.forEach((line, index) => { if (titleOf(line) && titleOf(line) === titleOf(item)) sameName.push(index); });
+  if (byId >= 0 && sameName.length === 1 && sameName[0] === byId) return [byId];
+  return sameName;
+}
+
+// Reads the copies of earlier unsaved work kept on this device and remembers,
+// per estimate, the lines of the most recent one. Done after the CRM is up,
+// one copy at a time, so starting the CRM is not slowed down.
+async function indexEstimateRecoveryCopies(entries = estimateRecoverySources) {
+  const dismissed = estimateRecoveryDismissed();
+  for (const entry of entries) {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    let saved;
+    try { saved = typeof entry.raw === "string" ? JSON.parse(entry.raw) : entry.raw; } catch { continue; }
+    const capturedAt = String(saved?.updatedAt || "");
+    // Only an estimate that was unsaved when the copy was taken counts. A copy
+    // from before copies recorded that cannot tell, so it is left out.
+    const pending = new Set(Array.isArray(saved?.pending) ? saved.pending : []);
+    for (const estimate of Array.isArray(saved?.state?.estimates) ? saved.state.estimates : []) {
+      if (!estimate?.id || !Array.isArray(estimate.items) || !pending.has(`estimate:${estimate.id}`)) continue;
+      const stamp = `${estimate.id}:${capturedAt}`;
+      const known = estimateRecoveryCopies.get(estimate.id);
+      if (dismissed.has(stamp) || (known && known.capturedAt >= capturedAt)) continue;
+      estimateRecoveryCopies.set(estimate.id, { items: estimate.items, capturedAt, stamp });
+    }
+  }
+  const waiting = visibleEstimates().filter((estimate) => estimateLinesToRecover(estimate, estimateRecoveryCopies.get(estimate.id)).length);
+  if (!waiting.length) return 0;
+  if (state.view === "estimates") renderEstimateRecovery(getSelectedEstimate());
+  showToast(waiting.length === 1
+    ? `Estimate ${waiting[0].estimateNumber || ""} has lines you typed that were not saved. Open it and choose "Recover unsaved lines".`
+    : `${waiting.length} estimates have lines you typed that were not saved. Open each one and choose "Recover unsaved lines".`);
+  return waiting.length;
+}
+
+function estimateRecoveryPanelMarkup(estimate, copy, lines) {
+  const describe = (item) => `${number(item.quantity)} ${escapeHtml(item.unit || "ea")} × ${money.format(number(item.rate))} = ${money.format(number(item.quantity) * number(item.rate))}`;
+  return `
+    <p><strong>${lines.length === 1 ? "One line" : `${lines.length} lines`} typed on this device${copy.capturedAt ? ` on ${escapeHtml(formatDateTime(copy.capturedAt))}` : ""} ${lines.length === 1 ? "was" : "were"} not saved.</strong>
+      Putting a line back changes only that line. Nothing anyone else saved is replaced.</p>
+    <ul>${lines.map(({ item, replacesIndex, choices = [] }, index) => {
+      const current = replacesIndex >= 0 ? estimate.items[replacesIndex] : null;
+      // Says which line is meant, so a line is never replaced unseen.
+      const named = (line) => `${line.description ? `${escapeHtml(line.description)} · ` : ""}${describe(line)}`;
+      const replaceButton = (line, label) => `<button class="secondary-button" type="button" data-recover-line="${index}" data-recover-mode="replace" data-recover-target="${escapeHtml(String(line.id ?? ""))}">${label}</button>`;
+      return `
+      <li>
+        <div><strong>${escapeHtml(item.title)}</strong>${item.description ? `<span>${escapeHtml(item.description)}</span>` : ""}<span>${describe(item)}</span>${
+          current ? `<span class="estimate-recovery-now">In the estimate now: ${named(current)}</span>` : ""}${
+          choices.length ? `<span class="estimate-recovery-now">${choices.length} lines in the estimate are named "${escapeHtml(item.title)}". Choose the one this belongs to, or add it as another line.</span>` : ""}</div>
+        <div class="estimate-recovery-actions">
+          ${current ? replaceButton(current, "Use these numbers") : ""}
+          ${choices.map((choice) => replaceButton(estimate.items[choice], `Replace line ${choice + 1}: ${named(estimate.items[choice])}`)).join("")}
+          <button class="${current || choices.length ? "ghost-button" : "secondary-button"}" type="button" data-recover-line="${index}" data-recover-mode="add">${current || choices.length ? "Add as another line" : "Put this line back"}</button>
+        </div>
+      </li>`;
+    }).join("")}</ul>
+    <div class="estimate-recovery-actions">
+      ${lines.length > 1 && lines.every((line) => line.replacesIndex < 0 && !(line.choices || []).length) ? '<button class="secondary-button" type="button" data-recover-all>Put all of them back</button>' : ""}
+      <button class="ghost-button" type="button" data-recover-dismiss>I do not need these</button>
+    </div>`;
+}
+
+// One button beside "Add Item", shown only when there is something to recover.
+function renderEstimateRecovery(estimate = getSelectedEstimate()) {
+  const anchor = els.addLineItemButton;
+  if (!anchor?.parentElement || !els.lineItems?.parentElement) return;
+  let button = document.getElementById("estimateRecoverButton");
+  let panel = document.getElementById("estimateRecoveryPanel");
+  const copy = estimate ? estimateRecoveryCopies.get(estimate.id) : null;
+  const lines = copy && canAction("manageEstimates") ? estimateLinesToRecover(estimate, copy) : [];
+  if (!lines.length) {
+    button?.remove();
+    panel?.remove();
+    if (estimate && estimateRecoveryPanelFor === estimate.id) estimateRecoveryPanelFor = "";
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.id = "estimateRecoverButton";
+    button.className = "ghost-button estimate-recover-button";
+    button.dataset.recoverToggle = "";
+    anchor.parentElement.insertBefore(button, anchor);
+  }
+  const open = estimateRecoveryPanelFor === estimate.id;
+  button.textContent = `Recover unsaved lines (${lines.length})`;
+  button.setAttribute("aria-expanded", String(open));
+  if (!open) {
+    panel?.remove();
+    return;
+  }
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "estimateRecoveryPanel";
+    panel.className = "estimate-recovery-panel";
+    els.lineItems.parentElement.insertBefore(panel, els.lineItems);
+  }
+  panel.innerHTML = estimateRecoveryPanelMarkup(estimate, copy, lines);
+}
+
+// Puts one unsaved line (or all of them) back into the open estimate, as an
+// ordinary edit that is then saved the way any other edit is.
+function recoverEstimateLines(indexes, mode = "add", targetId = "") {
+  if (!requireAction("manageEstimates")) return 0;
+  const estimate = getSelectedEstimate();
+  const lines = estimate ? estimateLinesToRecover(estimate, estimateRecoveryCopies.get(estimate.id)) : [];
+  let chosen = indexes.map((index) => lines[index]).filter(Boolean);
+  if (mode === "replace") {
+    // Only a line that was offered for this one can be replaced: the single
+    // line it belongs to, or the one of several that the rep pointed at.
+    chosen = chosen.map((line) => {
+      const offered = line.replacesIndex >= 0 ? [line.replacesIndex] : line.choices || [];
+      const wanted = targetId ? offered.find((index) => String(estimate.items[index]?.id ?? "") === String(targetId)) : (offered.length === 1 ? offered[0] : undefined);
+      return wanted === undefined ? null : { ...line, target: wanted };
+    }).filter(Boolean);
+  }
+  if (!chosen.length) return 0;
+  chosen.forEach(({ item, target }) => {
+    const restored = { title: item.title, description: item.description, quantity: item.quantity, unit: item.unit, rate: item.rate };
+    if (mode === "replace") estimate.items[target] = { ...estimate.items[target], ...restored };
+    else estimate.items.push({ id: uid("line"), ...restored });
+  });
+  queueLocalStateSave();
+  renderEstimateLineItems(estimate);
+  queueEstimateVerifiedSave(estimate.id);
+  scheduleEstimateVisualRefresh(estimate.id);
+  renderEstimateRecovery(estimate);
+  showToast(chosen.length === 1 ? `"${chosen[0].item.title}" is back in the estimate` : `${chosen.length} lines are back in the estimate`);
+  return chosen.length;
+}
+
+function dismissEstimateRecovery() {
+  const estimate = getSelectedEstimate();
+  const copy = estimate ? estimateRecoveryCopies.get(estimate.id) : null;
+  if (!copy) return;
+  try {
+    const key = `${ESTIMATE_RECOVERY_DISMISSED_KEY}:${authSession?.user?.id || "local"}`;
+    localStorage.setItem(key, JSON.stringify([...estimateRecoveryDismissed(), copy.stamp].slice(-200)));
+  } catch { /* The browser may deny storage; the lines are simply offered again next time. */ }
+  estimateRecoveryCopies.delete(estimate.id);
+  estimateRecoveryPanelFor = "";
+  renderEstimateRecovery(estimate);
 }
 
 function renderEstimateForm(estimate) {
@@ -15694,6 +16652,7 @@ function renderEstimateForm(estimate) {
 
   if (!estimate) {
     setSaveState(els.estimateSaveStatus, "", "");
+    renderEstimateRecovery(null);
     return;
   }
   renderEstimateSaveState(estimate.id);
@@ -15731,6 +16690,7 @@ function renderEstimateForm(estimate) {
   els.estimateNotes.value = estimate.notes;
 
   renderEstimateLineItems(estimate);
+  renderEstimateRecovery(estimate);
 }
 
 function renderEstimatePreview(estimate) {
@@ -16686,6 +17646,7 @@ async function createEstimate(contactId, shouldRender = true, jobId = "", { forc
     sentAt: "",
     items: [
       {
+        id: uid("line"),
         title: wording.line,
         description: ESTIMATE_PLACEHOLDER_DESCRIPTION,
         quantity: 1,
@@ -16854,12 +17815,27 @@ function updateSelectedEstimateFromField(fieldName, value) {
   scheduleEstimateVisualRefresh(estimate.id);
 }
 
+// Which line of the estimate a row on screen is. The row carries the line's
+// id: a teammate's line can be combined into the estimate while this editor
+// is still showing the rows it drew before, and the position alone would then
+// point at a different line.
+function estimateLineIndex(estimate, row) {
+  const id = row?.dataset?.lineId || "";
+  if (id) {
+    const byId = (estimate?.items || []).findIndex((item) => String(item.id ?? "") === id);
+    if (byId >= 0) return byId;
+    // The line this row showed is gone (a teammate removed it).
+    if ((estimate?.items || []).some((item) => item.id !== undefined && item.id !== "")) return -1;
+  }
+  return Number(row?.dataset?.lineIndex);
+}
+
 function updateLineItem(input) {
   if (!canAction("manageEstimates")) return;
   const estimate = getSelectedEstimate();
   if (!estimate) return;
   const row = input.closest("[data-line-index]");
-  const index = Number(row?.dataset.lineIndex);
+  const index = estimateLineIndex(estimate, row);
   const field = input.dataset.lineField;
   if (!estimate.items[index] || !field) return;
 
@@ -16953,6 +17929,192 @@ function estimateFileName(estimate = getSelectedEstimate()) {
     .concat(".pdf");
 }
 
+// The copy of an estimate's PDF that is already filed under its lead, if any.
+// A lead's documents are loaded only when someone opens them, so on the
+// Estimates screen the filed copy was usually not known about: each download
+// then filed a second, separate copy of the same PDF under the lead instead of
+// updating the first. When the documents are not loaded this asks the database
+// for that one record.
+//
+// The answer has two parts, and the second matters as much as the first:
+//   document  the filed copy, or null;
+//   known     true when that is certain. False when the question could not be
+//             asked (the connection failed, the lead's documents could not be
+//             loaded). "Could not look" is not "there is none": treating it as
+//             none filed a second copy of a PDF that was already there.
+async function findFiledEstimatePdf(contactId, estimateId, jobId = null) {
+  const authoritative = jobId !== null && canUseCloudSync();
+  const local = () => (getContact(contactId)?.documents || []).find((document) => document.source === "Estimate PDF" && document.estimateId === estimateId) || null;
+  const answer = (known) => { const document = local(); return { document, known: Boolean(document) || known === true }; };
+  if (!authoritative && local()) return answer(true);
+  // Without the shared CRM, what is on this device is all there is.
+  if (!canUseCloudSync()) return answer(true);
+  if (!durableRecordsReady || !cloudClient) return { known: false, document: null };
+  if (!authoritative && durableHeavyLeadLoads.has(contactId)) {
+    // The lead's documents are loaded or loading. That load says whether it worked.
+    return answer((await durableHeavyLeadLoads.get(contactId)) === true);
+  }
+  try {
+    const query = cloudClient.from(SUPABASE_RECORDS_TABLE).select("*")
+      .eq("company_state_id", supabaseStateId()).eq("record_type", "document").eq("lead_id", contactId)
+      .is("deleted_at", null).eq("data->>estimateId", estimateId).eq("data->>source", "Estimate PDF");
+    if (authoritative) query.eq("job_id", jobId);
+    const { data, error } = await query.order("id", { ascending: true }).limit(1);
+    if (error || !Array.isArray(data)) {
+      console.warn("The filed estimate PDF could not be looked up", error);
+      return { known: false, document: null };
+    }
+    const row = data[0];
+    const contact = getContact(contactId);
+    if (!contact) return { known: false, document: null };
+    if (!row) return authoritative ? { known: true, document: null } : answer(true);
+    if (!authoritative && local()) return answer(true);
+    const filed = normalizeDocument(
+      { ...row.data, id: row.id, jobId: row.job_id || row.data?.jobId || "" },
+      { leadId: contactId, categoryId: row.data?.categoryId || "", categories: state.company.documentCategories },
+    );
+    // Set directly, as loading a lead's documents does: finding a record is not
+    // an edit, so the lead is not marked as changed.
+    contact.documents = [filed, ...(contact.documents || []).filter((document) => document.id !== filed.id)];
+    rememberAdditionalDurableRows([row]);
+    return authoritative ? { known: true, document: filed, row } : answer(true);
+  } catch (error) {
+    console.warn("The filed estimate PDF could not be looked up", error);
+    return { known: false, document: null };
+  }
+}
+
+// ---- Filing a PDF later, when it could not be checked for a copy ------------
+// The rep still gets the PDF straight away. It is filed under the lead once
+// the CRM can say whether a copy is already there: as a new version of that
+// copy if so, as the first copy if not. Kept only while this tab is open.
+const ESTIMATE_PDF_FILING_RETRY_DELAYS = [15000, 45000, 120000, 300000, 600000];
+const estimatePdfFilingRetries = new Map(); // estimate id -> { estimate, doc, attempt, timer }
+
+function clearEstimatePdfFilingRetry(estimateId) {
+  const waiting = estimatePdfFilingRetries.get(estimateId);
+  if (waiting) window.clearTimeout(waiting.timer);
+  estimatePdfFilingRetries.delete(estimateId);
+}
+
+function queueEstimatePdfFiling(estimate, doc, attempt = 0) {
+  clearEstimatePdfFilingRetry(estimate.id);
+  if (attempt >= ESTIMATE_PDF_FILING_RETRY_DELAYS.length) return false;
+  const timer = window.setTimeout(() => { void retryEstimatePdfFiling(estimate.id); }, ESTIMATE_PDF_FILING_RETRY_DELAYS[attempt]);
+  estimatePdfFilingRetries.set(estimate.id, { estimate, doc, attempt, timer });
+  return true;
+}
+
+async function retryEstimatePdfFiling(estimateId) {
+  const waiting = estimatePdfFilingRetries.get(estimateId);
+  if (!waiting) return false;
+  clearEstimatePdfFilingRetry(estimateId);
+  const contact = getEstimateContact(waiting.estimate);
+  // The estimate or its lead has gone, or this person may no longer file documents.
+  if (!contact || !state.estimates.some((item) => item.id === estimateId) || !canAction("manageDocuments")) return false;
+  try {
+    const filed = await saveEstimatePdfDocument(waiting.estimate, contact, waiting.doc);
+    if (!filed) return false;
+    setEstimateSaveState(estimateId, "The estimate's PDF is now filed under the lead.", "success");
+    showToast(`The PDF of estimate ${waiting.estimate.estimateNumber || ""} is now filed under the lead`.replace("  ", " "));
+    return true;
+  } catch (error) {
+    if (error?.code === "estimate_pdf_lookup_unavailable") {
+      // Still cannot look. Try again later, a few times, and then leave it:
+      // the next download or save of this estimate files it.
+      if (!queueEstimatePdfFiling(waiting.estimate, waiting.doc, waiting.attempt + 1)) {
+        setEstimateSaveState(estimateId, "The estimate's PDF is still not filed under the lead. Download it again once the CRM is reachable.", "error");
+      }
+      return false;
+    }
+    console.warn("Estimate PDF could not be filed on a later try", error);
+    return false;
+  }
+}
+
+// When the connection comes back, do not wait out the timers.
+function retryWaitingEstimatePdfFilings() {
+  [...estimatePdfFilingRetries.keys()].forEach((estimateId) => { void retryEstimatePdfFiling(estimateId); });
+}
+
+// Identifies a PDF by what is in it. The same estimate always produces the
+// same file apart from the moment it was made and a random file id, so those
+// two are left out. Blank when it cannot be worked out, which only means the
+// PDF is filed again.
+async function estimatePdfContentKey(doc) {
+  try {
+    if (!globalThis.crypto?.subtle) return "";
+    const content = doc.output()
+      .replace(/\/CreationDate \(D:[^)]*\)/g, "")
+      .replace(/\/ID \[\s*<[0-9A-Fa-f]*>\s*<[0-9A-Fa-f]*>\s*\]/g, "");
+    const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(content, (character) => character.charCodeAt(0) & 255));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return "";
+  }
+}
+
+async function estimatePdfDocumentId(contactId, jobId, estimateId) {
+  // Stable across tabs/devices, bounded, and safe as a storage path segment.
+  const bytes = new TextEncoder().encode(JSON.stringify([contactId, jobId, estimateId]));
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return "doc-estpdf-" + Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// How many times an estimate's PDF can be filed afresh after being removed
+// from its lead. See the series of ids in commitSharedEstimatePdf.
+const ESTIMATE_PDF_ID_SERIES_LIMIT = 25;
+
+async function commitSharedEstimatePdf(estimate, contact, saved, previousRow, targetIsCurrent) {
+  const actor = authSession.user.id;
+  const company = supabaseStateId();
+  const firstId = saved.id;
+  const note = previousRow ? null : { id: uid("update"), company_state_id: company, lead_id: contact.id,
+    job_id: saved.jobId, event_type: "note", actor_user_id: actor, actor_name: currentActorName(),
+    message: `Saved estimate PDF ${estimate.estimateNumber} to documents.`, status: "", metadata: {}, created_at: saved.uploadedAt };
+  let confirmed = null;
+  for (let turn = 1; ; turn += 1) {
+    const row = { company_state_id: company, record_type: "document", id: saved.id, lead_id: contact.id,
+      job_id: saved.jobId, owner_id: previousRow?.owner_id || contactOwnerId(contact) || actor,
+      data: durableRecordData(saved), updated_by: actor, deleted_at: null };
+    // Independent optimistic write: never publish a speculative document to the
+    // main save queue, which could otherwise reapply it over the other rep's version.
+    const writer = window.CrmRecordWrites.create({ rpc: (name, args) => cloudClient.rpc(name, args),
+      requestId: () => crypto.randomUUID(), transientRetries: 1 });
+    if (previousRow) writer.remember([previousRow]);
+    const result = await writer.commit([row], note ? [note] : []);
+    confirmed = result.data?.rows?.[0];
+    if (!targetIsCurrent()) throw new Error("The estimate's lead or job changed while filing its PDF.");
+    if (!result.error && confirmed && confirmed.lead_id === contact.id && confirmed.job_id === saved.jobId) break;
+    const latest = await findFiledEstimatePdf(contact.id, estimate.id, saved.jobId);
+    // The copy now filed for this estimate is this very PDF: someone else filed
+    // it a moment ago, or this save went through and only its answer was lost.
+    // It is judged by what is in it, not by its id, which the other person's
+    // filing may have moved along the series first.
+    if (saved.pdfContentKey && latest.known && latest.document?.pdfContentKey === saved.pdfContentKey && latest.document.storagePath) return latest.document;
+    if (!latest.known) throw Object.assign(new Error("Could not confirm the shared PDF."), { code: "estimate_pdf_lookup_unavailable" });
+    // No copy is filed under the lead, and still the database refused this id.
+    // That is a PDF of this estimate that was filed before and then removed
+    // from the lead: a removed record keeps its id, and the database never
+    // writes to a removed record again. Without this, an estimate whose PDF had
+    // once been removed could never have a PDF filed again. The filing takes
+    // the next id in the same series instead. The series is the same in every
+    // tab, so two people filing at once still make one record.
+    const idHeldByRemovedRecord = !previousRow && !latest.document && ["PT409", "40001"].includes(result.error?.code);
+    if (!idHeldByRemovedRecord || turn >= ESTIMATE_PDF_ID_SERIES_LIMIT) throw new Error("The shared estimate PDF was not confirmed. Retry from the current estimate.");
+    saved = { ...saved, id: `${firstId}-${turn + 1}` };
+  }
+  const current = getContact(contact.id);
+  current.documents = [saved, ...(current.documents || []).filter(d => d.id !== saved.id)];
+  if (note && !(current.updates || []).some(u => u.id === note.id)) {
+    current.updates = [{ id: note.id, jobId: note.job_id, author: note.actor_name, message: note.message, status: "", createdAt: note.created_at }, ...(current.updates || [])];
+  }
+  durableChangeCounter += 1;
+  rememberAdditionalDurableRows([confirmed], note ? [note] : []);
+  saveState({ localOnly: true });
+  return saved;
+}
+
 async function saveEstimatePdfDocument(estimate, contact, doc) {
   if (!canAction("manageDocuments")) return null;
   const job = getEstimateJob(estimate);
@@ -16965,13 +18127,23 @@ async function saveEstimatePdfDocument(estimate, contact, doc) {
   const category = categories.find((item) => item.id === "doccat_estimates") || categoryForLegacyName("Estimates", categories);
   if (!category) throw new Error("The Estimates document category is unavailable");
   const fileName = estimateFileName(estimate);
-  const documents = getContact(contact.id)?.documents || [];
-  const existing = documents.find((document) => document.source === "Estimate PDF" && document.estimateId === estimate.id);
-  const id = existing?.id || uid("doc");
+  const lookup = await findFiledEstimatePdf(contact.id, estimate.id, job.id);
+  // Not being able to look for the filed copy is not the same as there being
+  // none. Filing now could put a second copy of this PDF under the lead, so
+  // nothing is filed; whoever called decides when to try again.
+  if (!lookup.known) throw Object.assign(new Error("The PDF already filed for this estimate could not be looked for"), { code: "estimate_pdf_lookup_unavailable" });
+  const existing = lookup.document;
+  const pdfContentKey = await estimatePdfContentKey(doc);
+  // Downloading an estimate that has not changed since its PDF was filed:
+  // the filed copy is this PDF. Nothing is uploaded, no new version is added
+  // and the lead is not saved again.
+  if (existing && pdfContentKey && existing.pdfContentKey === pdfContentKey && (existing.storagePath || existing.dataUrl) && targetIsCurrent()) return existing;
+  const id = existing?.id || await estimatePdfDocumentId(contact.id, job.id, estimate.id);
   const blob = doc.output("blob");
   const file = new File([blob], fileName, { type: "application/pdf" });
   const stored = await storeDocumentFile(file, {
     documentId: id,
+    estimatePdfKey: pdfContentKey,
     leadId: contact.id,
     jobId: estimate.jobId || job?.id || "",
     categoryId: category.id,
@@ -17002,40 +18174,27 @@ async function saveEstimatePdfDocument(estimate, contact, doc) {
     }] : [],
     source: "Estimate PDF",
     estimateId: estimate.id,
+    pdfContentKey,
     leadId: contact.id,
     contactId: contact.id,
     jobId: estimate.jobId || job?.id || "",
   }, { leadId: contact.id, categoryId: category.id, categories });
 
+  if (canUseCloudSync()) return commitSharedEstimatePdf(estimate, contact, savedDocument, lookup.row, targetIsCurrent);
   updateContact(contact.id, (current) => {
     const currentDocuments = current.documents || [];
     return {
       ...current,
-      documents: existing
-        ? currentDocuments.map((document) => (document.id === existing.id ? savedDocument : document))
-        : [savedDocument, ...currentDocuments],
+      documents: [savedDocument, ...currentDocuments.filter(document => document.id !== savedDocument.id)],
     };
   });
 
-  const documentUpdateContact = !existing
-    ? addContactUpdate(contact.id, {
+  if (!existing) addContactUpdate(contact.id, {
       author: state.currentUser.name || "CRM",
       jobId: estimate.jobId || job?.id || "",
       message: `Saved estimate PDF ${estimate.estimateNumber} to documents.`,
-    })
-    : null;
+    });
   saveState({ localOnly: true });
-
-  let saved = !canUseCloudSync();
-  if (canUseCloudSync()) {
-    saved = await persistLeadDocumentRecords([savedDocument.id], documentUpdateContact?.updates?.[0]?.id || "");
-  }
-  if (!saved) {
-    queueDurableRecordsSave();
-    queueCloudSave();
-    throw new Error("The estimate PDF record could not be confirmed in the shared CRM");
-  }
-  queueCloudSave();
 
   return savedDocument;
 }
@@ -17497,21 +18656,34 @@ async function downloadEstimatePdf(options = {}) {
   if (footerRight) doc.text(footerRight, right, PDF_PAGE_HEIGHT - 9, { align: "right" });
 
   let savedDocument = null;
+  let filingWaits = false;
   if (options.saveToDocuments !== false) {
     try {
       savedDocument = await saveEstimatePdfDocument(estimate, contact, doc);
     } catch (error) {
       console.warn("Estimate PDF could not be saved to lead documents", error);
-      setEstimateSaveState(estimate.id, "The estimate was saved, but its PDF could not be attached to the lead. Please retry.", "error");
-      showToast("Estimate PDF was not saved to the lead documents. Please retry.");
+      if (error?.code === "estimate_pdf_lookup_unavailable") {
+        // The CRM could not say whether a copy is already filed. The rep still
+        // gets the PDF; it is filed afterwards, against the original if there is one.
+        filingWaits = queueEstimatePdfFiling(estimate, doc);
+        setEstimateSaveState(estimate.id, "The PDF is not filed under the lead yet: the CRM could not be reached to check for the copy already there. It will be filed when the connection is back.", "error");
+        if (options.download === false) showToast("The estimate's PDF is not filed under the lead yet. The CRM will try again by itself.");
+      } else {
+        setEstimateSaveState(estimate.id, "The estimate was saved, but its PDF could not be attached to the lead. Please retry.", "error");
+        showToast("Estimate PDF was not saved to the lead documents. Please retry.");
+      }
       if (options.download === false) return false;
     }
+    // This PDF is filed: an earlier one of the same estimate still waiting to be filed is out of date.
+    if (savedDocument) clearEstimatePdfFilingRetry(estimate.id);
   }
   if (options.download !== false) {
     doc.save(estimateFileName(estimate));
   }
   if (!options.silent && options.download !== false) {
-    showToast(savedDocument ? "Estimate PDF downloaded and saved to the lead" : "Estimate PDF downloaded");
+    showToast(savedDocument ? "Estimate PDF downloaded and saved to the lead"
+      : filingWaits ? "Estimate PDF downloaded. It will be filed under the lead when the CRM can be reached."
+        : "Estimate PDF downloaded");
   }
   return options.saveToDocuments === false || Boolean(savedDocument);
 }
@@ -17944,6 +19116,69 @@ function bindEvents() {
       return;
     }
 
+    const uploadRetry = event.target.closest("[data-upload-retry]");
+    if (uploadRetry) {
+      void retryLeadUploads([uploadRetry.dataset.uploadRetry]);
+      return;
+    }
+    const uploadList = event.target.closest("[data-upload-kind]");
+    if (uploadList && event.target.closest("[data-upload-retry-all]")) {
+      void retryLeadUploads(leadUploads.filter((item) => item.kind === uploadList.dataset.uploadKind && item.contactId === state.selectedContactId && item.status === "failed").map((item) => item.id));
+      return;
+    }
+    const uploadRemove = event.target.closest("[data-upload-remove]");
+    if (uploadRemove) {
+      clearLeadUploads((item) => item.id === uploadRemove.dataset.uploadRemove && item.status === "failed");
+      return;
+    }
+    if (uploadList && event.target.closest("[data-upload-clear]")) {
+      clearLeadUploads((item) => item.kind === uploadList.dataset.uploadKind && item.contactId === state.selectedContactId && item.status === "saved");
+      return;
+    }
+
+    if (event.target.closest("[data-recover-toggle]")) {
+      const estimate = getSelectedEstimate();
+      estimateRecoveryPanelFor = estimate && estimateRecoveryPanelFor !== estimate.id ? estimate.id : "";
+      renderEstimateRecovery(estimate);
+      return;
+    }
+    const recoverLine = event.target.closest("[data-recover-line]");
+    if (recoverLine) {
+      recoverEstimateLines([Number(recoverLine.dataset.recoverLine)], recoverLine.dataset.recoverMode, recoverLine.dataset.recoverTarget || "");
+      return;
+    }
+    if (event.target.closest("[data-recover-all]")) {
+      const estimate = getSelectedEstimate();
+      recoverEstimateLines(estimateLinesToRecover(estimate, estimateRecoveryCopies.get(estimate?.id)).map((_line, index) => index));
+      return;
+    }
+    if (event.target.closest("[data-recover-dismiss]")) {
+      if (await appConfirm("These unsaved lines will not be offered again on this device.", { title: "Discard unsaved lines", confirmLabel: "Discard them" })) dismissEstimateRecovery();
+      return;
+    }
+
+    if (event.target.closest("[data-pipeline-worklist-toggle]")) {
+      state.pipelineWorklist = !state.pipelineWorklist;
+      pipelineWorklistFormKey = "";
+      saveUiState();
+      renderPipeline();
+      return;
+    }
+
+    const pipelineLogCall = event.target.closest("[data-pipeline-log-call]");
+    if (pipelineLogCall) {
+      pipelineWorklistFormKey = pipelineWorklistFormKey === pipelineLogCall.dataset.pipelineLogCall ? "" : pipelineLogCall.dataset.pipelineLogCall;
+      renderPipeline();
+      document.querySelector("[data-pipeline-call-form] select")?.focus();
+      return;
+    }
+
+    if (event.target.closest("[data-pipeline-call-cancel]")) {
+      pipelineWorklistFormKey = "";
+      renderPipeline();
+      return;
+    }
+
     const pipelineGuidance = event.target.closest("[data-pipeline-guidance]");
     if (pipelineGuidance) {
       const stage = pipelineGuidance.dataset.pipelineGuidance;
@@ -18126,8 +19361,9 @@ function bindEvents() {
     }
     if (action === "remove-line") {
       const estimate = getSelectedEstimate();
-      if (estimate && estimate.items.length > 1) {
-        estimate.items.splice(Number(lineIndex), 1);
+      const removeIndex = estimate ? estimateLineIndex(estimate, actionButton.closest(".line-item") || { dataset: { lineIndex } }) : -1;
+      if (estimate && estimate.items.length > 1 && estimate.items[removeIndex]) {
+        estimate.items.splice(removeIndex, 1);
         queueLocalStateSave();
         renderEstimateLineItems(estimate);
         queueEstimateVerifiedSave(estimate.id);
@@ -18237,6 +19473,20 @@ function bindEvents() {
   });
 
   document.addEventListener("submit", async (event) => {
+    const callForm = event.target.closest?.("[data-pipeline-call-form]");
+    if (callForm) {
+      event.preventDefault();
+      const data = new FormData(callForm);
+      const button = callForm.querySelector('button[type="submit"]');
+      if (button) button.disabled = true;
+      const saved = await logPipelineCall(callForm.dataset.contactId, callForm.dataset.jobId, {
+        outcome: data.get("outcome"), note: data.get("note"), nextAt: data.get("nextAt"),
+        noFollowUp: data.get("noFollowUp") === "on", decisionDate: data.get("decisionDate"), completeTask: data.get("completeTask") === "on",
+      });
+      // A refused entry leaves the form as the rep filled it in.
+      if (!saved && button?.isConnected) button.disabled = false;
+      return;
+    }
     const form = event.target.closest?.("[data-task-comment-form]");
     if (!form) return;
     event.preventDefault();
@@ -18679,6 +19929,11 @@ function bindEvents() {
       }
       return;
     }
+    if (event.target.matches('[data-pipeline-call-form] [name="noFollowUp"]')) {
+      const nextAt = event.target.form?.elements?.nextAt;
+      if (nextAt) nextAt.disabled = event.target.checked;
+      return;
+    }
     if (event.target.matches("[data-pipeline-stale-days]")) {
       state.pipelineStaleDays = Math.min(90, Math.max(1, Math.round(number(event.target.value) || 7)));
       saveUiState();
@@ -18810,7 +20065,7 @@ function bindEvents() {
     const estimate = getSelectedEstimate();
     if (!estimate) return;
     const index = estimate.items.length;
-    estimate.items.push({ title: "", description: "", quantity: 1, unit: "ea", rate: 0 });
+    estimate.items.push({ id: uid("line"), title: "", description: "", quantity: 1, unit: "ea", rate: 0 });
     queueLocalStateSave();
     appendEstimateLineItem(estimate, index);
     queueEstimateVerifiedSave(estimate.id);
@@ -18846,7 +20101,7 @@ function bindEvents() {
     if (!tpl) return;
     // The template replaces the untouched instruction line a new estimate
     // starts with; lines the user has written are kept.
-    estimate.items = [...estimate.items.filter((item) => !isPlaceholderEstimateItem(item)), ...tpl.items.map((item) => ({ ...item }))];
+    estimate.items = [...estimate.items.filter((item) => !isPlaceholderEstimateItem(item)), ...tpl.items.map((item) => ({ ...item, id: uid("line") }))];
     queueLocalStateSave();
     renderEstimateLineItems(estimate);
     queueEstimateVerifiedSave(estimate.id);
@@ -18904,7 +20159,9 @@ function bindEvents() {
     // The banner's reload is the way out of a paused tab, and the unconfirmed
     // change is already in the recovery copy, so do not stand in its way.
     if (savePausedReloadRequested || (durableWriteBlocked && durableRecoveryStored && !durableSaveInFlight && !cloudSaveInFlight)) return;
-    if (window.RooflineAuth.isEditorSessionCurrent() && (state.companyFormDraft || (canUseCloudSync() && durableRecordsReady && (durableWriteBlocked || durableSaveInFlight || cloudSaveInFlight || hasPendingDurableChanges() || hasPendingCompanyChanges())))) {
+    // Files still being sent are lost if the page is left now.
+    const uploadsUnderWay = leadUploads.some((item) => LEAD_UPLOAD_ACTIVE.includes(item.status));
+    if (window.RooflineAuth.isEditorSessionCurrent() && (state.companyFormDraft || uploadsUnderWay || (canUseCloudSync() && durableRecordsReady && (durableWriteBlocked || durableSaveInFlight || cloudSaveInFlight || hasPendingDurableChanges() || hasPendingCompanyChanges())))) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -19145,6 +20402,7 @@ async function startApp() {
       cachedRecoveryState = await recoveryCache.get(activeStorageKey());
       draftRecoveryStore = recoveryCache.createDraftStore({ companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
       const earlier = await draftRecoveryStore.list();
+      estimateRecoverySources = earlier.entries || [];
       if (!earlier.available) showDraftStorageWarning();
     } catch {
       recoveryCache = null;
@@ -19152,6 +20410,7 @@ async function startApp() {
       try { recoveryStorage = localStorage; } catch { /* Browser may deny storage. */ }
       draftRecoveryStore = window.CrmDraftRecovery.create({ storage: recoveryStorage, companyId: supabaseStateId(), userId: authSession.user.id, sessionId: crypto.randomUUID() });
       const earlier = draftRecoveryStore.list();
+      estimateRecoverySources = earlier.entries || [];
       if (!earlier.available) showDraftStorageWarning();
     }
   }
@@ -19234,7 +20493,7 @@ async function startApp() {
   // another. Running them one after another made startup wait for ~10
   // database round trips in a row; together they take about as long as the
   // slowest one.
-  const [, , , , , , , , , numbering] = await Promise.all([
+  await Promise.all([
     initializeRecordPages(),
     initializeFinancialLedger(),
     initializeProjectDelivery(),
@@ -19244,11 +20503,12 @@ async function startApp() {
     initializeDocumentOperations(),
     initializeReportsAndGoals(),
     initializeAdministration(),
-    canUseCloudSync() ? ensureExistingSharedSalesNumbers() : null,
   ]);
-  if (canUseCloudSync()) {
-    if (numbering.failures.length) showToast("The CRM is ready, but some job or estimate numbers need administrator attention.");
-  } else if (ensureExistingSalesNumbers()) saveState();
+  // Record numbers are no longer checked (and written) here. In the shared
+  // CRM they are given out as part of a user's own save: see
+  // queueNumberingAfterSave. The copy that runs without a database still
+  // numbers its own records on this device.
+  if (!canUseCloudSync() && ensureExistingSalesNumbers()) saveState();
   void migrateInlineDocumentsToStorage();
   hydrateIcons();
   bindEvents();
@@ -19291,6 +20551,8 @@ async function startApp() {
   // guess when the core application is ready from a short polling window.
   window.JobCrestApp.ready = true;
   window.dispatchEvent(new CustomEvent("jobcrest:app-ready"));
+  // Unsaved estimate lines from an earlier session, if any, are offered back.
+  if (durableRecordsReady && estimateRecoverySources.length) void indexEstimateRecoveryCopies().catch(() => {});
   durableWritesEnabled = durableRecordsReady;
   if (durableWritesEnabled) queueDurableRecordsSave();
   await playSignInUnlockTransition();

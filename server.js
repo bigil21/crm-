@@ -80,6 +80,89 @@ const types = {
   ".png": "image/png",
 };
 
+// Asset versions. A page or script refers to another file as "file.js?v=…".
+// Whatever the source has after "?v=" is replaced, as the file is served, with
+// a fingerprint of the content of the file it points to. A file that changed
+// therefore always gets a new address and one that did not keeps its old one,
+// so nobody bumps a number by hand: a missed bump served old code to everyone.
+const stampedAssetTypes = new Set([".html", ".js", ".mjs", ".css", ".webmanifest"]);
+const ASSET_REFERENCE = /(["'`(])((?:\.\/|\/)?[\w\-./]+\.(?:js|mjs|css|svg|png|webmanifest))\?v=[\w.-]+/g;
+const SERVICE_WORKER_CACHE_NAME = /const CACHE_NAME = "jobcrest-crm-[^"]*";/;
+// A deployed release does not change while it runs, so each file is read and
+// fingerprinted once. On a developer's computer files are read every time.
+const releaseIsFixed = Boolean(process.env.RENDER_GIT_COMMIT || process.env.VERCEL || process.env.NODE_ENV === "production");
+const servedAssetCache = new Map();
+
+function publicAssetFilePath(requested) {
+  return publicAssetFiles.get(requested) || path.normalize(path.join(root, requested));
+}
+
+function assetReferenceTarget(reference) {
+  const target = `/${reference.replace(/^\.?\//, "")}`;
+  return publicAssets.has(target) && path.extname(target) !== ".html" ? target : "";
+}
+
+function contentFingerprint(content) {
+  return crypto.createHash("sha256").update(content).digest("hex").slice(0, 12);
+}
+
+function readPublicAsset(requested) {
+  return new Promise((resolve, reject) => {
+    fs.readFile(publicAssetFilePath(requested), (error, content) => (error ? reject(error) : resolve(content)));
+  });
+}
+
+// `trail` is the chain of files being worked out. A file that refers back to
+// one already in the chain keeps that reference as written, so two files that
+// point at each other can never wait on each other.
+async function buildServedAsset(requested, trail) {
+  let content = await readPublicAsset(requested);
+  let partial = false;
+  if (stampedAssetTypes.has(path.extname(requested)) && !requested.startsWith("/vendor/")) {
+    const text = content.toString("utf8");
+    const within = [...trail, requested];
+    const targets = new Set();
+    for (const match of text.matchAll(ASSET_REFERENCE)) {
+      const target = assetReferenceTarget(match[2]);
+      if (!target || target === requested) continue;
+      if (trail.includes(target)) partial = true;
+      else targets.add(target);
+    }
+    const versions = new Map();
+    const versionOf = async (target) => {
+      try {
+        const asset = await servedAsset(target, within);
+        if (asset.partial) partial = true;
+        return asset.version;
+      } catch {
+        return ""; // A file that cannot be read keeps its reference as written.
+      }
+    };
+    await Promise.all([...targets].map(async (target) => { versions.set(target, await versionOf(target)); }));
+    let stamped = text.replace(ASSET_REFERENCE, (whole, lead, reference) => {
+      const version = versions.get(assetReferenceTarget(reference));
+      return version ? `${lead}${reference}?v=${version}` : whole;
+    });
+    if (requested === "/sw.js" && SERVICE_WORKER_CACHE_NAME.test(stamped)) {
+      // The offline cache is named after everything it can hold, so a release
+      // that changes any file starts a new cache and clears the old one.
+      const names = [...publicAssets].filter((name) => name !== requested && path.extname(name) !== ".html").sort();
+      const held = await Promise.all(names.map(async (name) => `${name}:${await versionOf(name)}`));
+      stamped = stamped.replace(SERVICE_WORKER_CACHE_NAME, `const CACHE_NAME = "jobcrest-crm-${contentFingerprint(held.join("\n"))}";`);
+    }
+    if (stamped !== text) content = Buffer.from(stamped, "utf8");
+  }
+  return { content, version: contentFingerprint(content), partial };
+}
+
+async function servedAsset(requested, trail = []) {
+  const kept = servedAssetCache.get(requested);
+  if (kept) return kept;
+  const built = await buildServedAsset(requested, trail);
+  if (releaseIsFixed && !built.partial) servedAssetCache.set(requested, built);
+  return built;
+}
+
 function send(res, status, body, type = "text/plain; charset=utf-8") {
   res.writeHead(status, {
     "Content-Type": type,
@@ -2296,11 +2379,7 @@ const handleRequest = (req, res) => {
     return;
   }
 
-  fs.readFile(filePath, (error, content) => {
-    if (error) {
-      send(res, 404, "Not found");
-      return;
-    }
+  servedAsset(requested).then(({ content, version }) => {
     const ext = path.extname(filePath);
     const mimeType = types[ext] || "application/octet-stream";
     // Never cache HTML — always serve fresh so version-bumped assets load immediately
@@ -2314,16 +2393,20 @@ const handleRequest = (req, res) => {
       });
       res.end(req.method === "HEAD" ? undefined : content);
     } else {
-      // Pages reference scripts and styles with a version (?v=N) that is
-      // bumped on every change, so a versioned file never changes and can be
-      // kept by the browser. Before, every page load downloaded ~1.3 MB of
-      // JavaScript and CSS again. Unversioned files are re-checked each time.
+      // Pages reference scripts and styles with the fingerprint of their
+      // content (?v=…), so an address that carries the right fingerprint never
+      // changes and can be kept by the browser instead of downloading ~1.3 MB
+      // again on every page load. A request without a version, or with one
+      // that is not this file's (an older page, or a release that is still
+      // rolling out), is re-checked each time and never kept as if it matched.
       res.writeHead(200, {
         "Content-Type": mimeType,
-        "Cache-Control": url.searchParams.has("v") ? "public, max-age=31536000, immutable" : "no-cache",
+        "Cache-Control": url.searchParams.get("v") === version ? "public, max-age=31536000, immutable" : "no-cache",
       });
       res.end(req.method === "HEAD" ? undefined : content);
     }
+  }).catch(() => {
+    if (!res.headersSent) send(res, 404, "Not found");
   });
 };
 const server = http.createServer(handleRequest);

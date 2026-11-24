@@ -63,14 +63,17 @@
         const prefix = `jobcrest-pending:v2:${encodeURIComponent(companyId)}:${encodeURIComponent(userId)}:`;
         const ownKey = prefix + encodeURIComponent(sessionId);
         return {
-          captureSerialized(stateJson) {
+          // `details.pending` lists the records ("type:id") that were unsaved
+          // when the copy was taken, so the rest is never mistaken for lost work.
+          captureSerialized(stateJson, details) {
             let state;
             try { state = JSON.parse(stateJson); } catch { return Promise.resolve(false); }
-            return this.capture(state);
+            return this.capture(state, details);
           },
-          async capture(state) {
+          async capture(state, details) {
             try {
-              await api.put(ownKey, { format: 2, companyId, userId, sessionId, updatedAt: now(), state });
+              const pending = Array.isArray(details?.pending) ? details.pending.map(String) : null;
+              await api.put(ownKey, { format: 2, companyId, userId, sessionId, updatedAt: now(), ...(pending ? { pending } : {}), state });
               return true;
             } catch { return false; }
           },

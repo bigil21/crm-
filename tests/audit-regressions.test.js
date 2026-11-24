@@ -158,7 +158,7 @@ test('reload does not overwrite an edit made while fetching', async () => {
   let resolve;
   const c = functions('app.js', ['reloadDurableRecords'], {
     fetchDurableRows: () => new Promise(done => { resolve = done; }),
-    localEditRevision: 0, durableSaveInFlight: false, durableReloadQueued: false,
+    localEditRevision: 0, durableChangeCounter: 0, durableSaveInFlight: false, durableReloadQueued: false,
     hasPendingDurableChanges: () => false, applyingCloudState: false,
     applyDurableRows() { c.notes = 'stale'; }, rememberDurableRows() {}, saveState() {},
     queueDurableRecordsReload() {}, notes: 'initial',
@@ -173,7 +173,7 @@ test('successful empty reload is authoritative', async () => {
   let applied = false;
   const c = functions('app.js', ['reloadDurableRecords'], {
     fetchDurableRows: async () => ({ rows: [], auditRows: [] }),
-    localEditRevision: 0, durableSaveInFlight: false, hasPendingDurableChanges: () => false,
+    localEditRevision: 0, durableChangeCounter: 0, durableSaveInFlight: false, hasPendingDurableChanges: () => false,
     applyingCloudState: false, applyDurableRows() { applied = true; },
     rememberDurableRows() {}, saveState() {},
   });
@@ -246,6 +246,7 @@ test('orphan jobs and documents survive hydration without implicit deletion or r
     supabaseStateId: () => 'coastal-crest', authSession: { user: { id: 'test' } },
     preserveReadOnlyPaymentFields: value => value,
     preserveImmutableSalesNumbers: value => value,
+    preserveStoredPaidStageForNonManagers: value => value,
     durableRecordKey: row => `${row.record_type}:${row.id}`,
     durableRecordsReady: true, durableRecordFingerprints: new Map(),
     durableAuditRowsFromState: () => [], durableAuditIds: new Set(),
@@ -660,24 +661,26 @@ test('local saves report cache quota failures instead of claiming persistence', 
   assert.equal(c.saveState({ localOnly: true }), false);
 });
 
+// Lead documents and photos are now filed one file at a time by fileLeadUpload
+// (tests/upload-status.test.js exercises it); both entry points go through it.
 test('local file uploads roll back their in-memory cards when offline storage is full', () => {
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const filing = source.match(/async function fileLeadUpload\([^]*?^}/m);
+  assert.ok(filing, 'fileLeadUpload exists');
+  assert.match(filing[0], /if \(!canUseCloudSync\(\)\) \{\s*if \(!localSaved\) \{\s*takeBack\(\);\s*throw new Error\("device_storage_full"\);/);
   for (const name of ['uploadLeadDocuments', 'uploadLeadPhotos']) {
     const match = source.match(new RegExp(`async function ${name}\\([^]*?^}`, 'm'));
     assert.ok(match, `${name} exists`);
-    assert.match(match[0], /!canUseCloudSync\(\) && !localSaved/);
-    assert.match(match[0], /state\.contacts = state\.contacts\.map/);
+    assert.match(match[0], /queueLeadUploads\(/);
   }
 });
 
 test('unconfirmed shared uploads are removed from lead, photo, and company views', () => {
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  for (const name of ['uploadLeadDocuments', 'uploadLeadPhotos']) {
-    const match = source.match(new RegExp(`async function ${name}\\([^]*?^}`, 'm'));
-    assert.ok(match, `${name} exists`);
-    assert.match(match[0], /if \(!saved\) \{[^]*?rollbackUnconfirmedLeadUploads\(/);
-    assert.doesNotMatch(match[0], /if \(!saved\) \{\s*queueDurableRecordsSave\(\)/);
-  }
+  const filing = source.match(/async function fileLeadUpload\([^]*?^}/m);
+  assert.ok(filing, 'fileLeadUpload exists');
+  assert.match(filing[0], /if \(!saved\) \{\s*takeBack\(\);\s*throw new Error\("record_not_confirmed"\);/);
+  assert.doesNotMatch(filing[0], /if \(!saved\) \{\s*queueDurableRecordsSave\(\)/);
   const company = source.match(/async function uploadCompanyDocuments\([^]*?^}/m);
   assert.ok(company, 'uploadCompanyDocuments exists');
   assert.match(company[0], /if \(!saved\) \{[^]*?rollbackUnconfirmedCompanyUploads\(/);

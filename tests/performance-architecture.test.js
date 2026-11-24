@@ -77,7 +77,8 @@ test('large authenticated recovery snapshots use IndexedDB instead of localStora
 
 test('realtime record events patch one record before falling back to a full reload', () => {
   const initialize = functionSource('initializeDurableRecords');
-  assert.match(initialize, /applyDurableRealtimeRecord\(row, payload\.eventType\)/);
+  assert.match(initialize, /handleDurableRecordEvent\(payload\)/);
+  assert.match(functionSource('handleDurableRecordEvent'), /if \(!applyDurableRealtimeRecord\(row, payload\.eventType\)\) queueDurableRecordsReload\(\);/);
   assert.match(initialize, /applyDurableRealtimeAudit\(row, payload\.eventType\)/);
   assert.doesNotMatch(functionSource('applyDurableRealtimeRecord'), /fetchDurableRows|reloadDurableRecords/);
   assert.doesNotMatch(functionSource('applyDurableRealtimeAudit'), /fetchDurableRows|reloadDurableRecords/);
@@ -98,6 +99,7 @@ test('lead-only realtime rows cannot synthesize a second durable job', () => {
     durableRecordData: value => ({ ...value }),
     durableRecordKey: row => `${row.record_type}:${row.id}`,
     preserveImmutableSalesNumbers: rows => rows,
+    preserveStoredPaidStageForNonManagers: rows => rows,
     preserveReadOnlyPaymentFields: rows => rows,
     contactJobs: () => { throw new Error('display fallback must not become durable'); },
     COMPANY_DOCUMENT_LEAD_ID: '__company__',

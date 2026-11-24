@@ -26,7 +26,12 @@ test('Paid requires a positive contract and confirmed full payment in UI and dat
   assert.match(migration, /old_row\.data->>'paidAmount'/);
   assert.match(migration, /raise exception 'full_payment_required'/);
   assert.match(app, /status === "Paid" && !\(contractValue > 0 && paidAmount \+ 0\.005 >= contractValue\)[^]*?\? "Completed"/);
-  assert.match(app, /repairsInvalidPaidStatus[^]*?durableFingerprint\(row\)/);
+  // A job saved as Paid without full payment is shown at the stage before Paid.
+  // That correction is no longer written just because the CRM was opened: it
+  // goes out with a manager's next save of the job, and is held back for
+  // everyone else so their own edits are not refused.
+  assert.doesNotMatch(app, /repairsInvalidPaidStatus/);
+  assert.match(app, /function preserveStoredPaidStageForNonManagers\(rows\)/);
   assert.match(app, /durableRecordsReady = true;[^]*?hasPendingDurableChanges\(\)[^]*?queueDurableRecordsSave\(\)/);
   assert.match(workflow, /\$\{automatic \|\| !editable \? "disabled" : ""\}/);
   assert.doesNotMatch(workflow, /Can confirm manually/);

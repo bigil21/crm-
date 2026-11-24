@@ -177,6 +177,7 @@ test('PDF renderer uses a detached explicit snapshot without changing the drawin
     saveEstimatePdfDocument: (item, contact) => {
       attached = { item, contact }; started.resolve(); return saved.promise;
     },
+    clearEstimatePdfFilingRetry() {},
   });
   c.state.selectedEstimateId = 'B';
   const snapshot = clone(c.state.estimates[0]);
@@ -197,7 +198,7 @@ test('PDF upload cannot attach to a removed or reassigned estimate target', asyn
   for (const invalidate of ['estimate', 'lead', 'job', 'assignment']) {
     const upload = deferred(); let attached = 0; let leadExists = true; let jobExists = true;
     const c = load(['saveEstimatePdfDocument'], {
-      canAction: () => true,
+      canAction: () => true, estimatePdfDocumentId: async () => 'document-A',
       getContact: id => leadExists ? { id, documents: [] } : null,
       getEstimateJob: item => jobExists ? { id: item.jobId } : null,
       defaultDocumentCategories: [{ id: 'doccat_estimates', name: 'Estimates' }],
@@ -205,6 +206,7 @@ test('PDF upload cannot attach to a removed or reassigned estimate target', asyn
       File: class { constructor() { this.size = 12; } },
       storeDocumentFile: () => upload.promise,
       normalizeDocument: item => item, updateContact: () => attached++,
+      findFiledEstimatePdf: async () => ({ document: null, known: true }), estimatePdfContentKey: async () => '',
     });
     const snapshot = clone(c.state.estimates[0]);
     const pending = c.saveEstimatePdfDocument(snapshot, { id: 'lead-A' }, { output: () => 'PDF bytes' });
