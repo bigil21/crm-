@@ -688,6 +688,11 @@ function corsHeaders(req) {
 }
 function startCloudServer() {
   const server = http.createServer(async (req, res) => {
+    // The drill rebuilds an in-memory database on this same event loop between
+    // service reads. On busy runners that can outlast a pooled socket's idle
+    // deadline. End each synthetic server-key connection after its response;
+    // real browser sessions and production network behavior are unchanged.
+    if (req.headers.apikey === SERVICE_KEY) res.setHeader('Connection', 'close');
     Object.entries(corsHeaders(req)).forEach(([key, value]) => res.setHeader(key, value));
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
     const url = new URL(req.url, CLOUD_ORIGIN);

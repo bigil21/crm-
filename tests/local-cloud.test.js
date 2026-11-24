@@ -16,6 +16,10 @@ test('to-do 1: the local test copy starts, signs a test user in and enforces the
     const totals = await copy.truth();
     assert.equal(totals.leads, 236);
     assert.equal(totals.jobs, 283);
+    const backupRead = await fetch(`${copy.cloudUrl}/rest/v1/crm_backups?limit=1`, { headers: { apikey: copy.serviceKey } });
+    assert.equal(backupRead.status, 200);
+    assert.equal(backupRead.headers.get('connection'), 'close', 'the next synthetic backup read must use a fresh connection');
+    await backupRead.arrayBuffer();
     const skipped = copy.state.bootLog.filter((line) => line.includes('skipped'));
     // Every one applies. One used to be skipped: it alters the website's quote
     // requests table, which the repo's schema did not make until 2026-11-24.
