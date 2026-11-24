@@ -30,7 +30,10 @@ test("server recovery backup captures all paginated records and ignores a daily 
     const url = new URL(input);
     calls.push({ url, options });
     const table = url.pathname.split("/").pop();
-    if (table === "crm_backups") return response(null, 201);
+    if (table === "crm_backups") return response([]);
+    if (table === "crm_store_split_backup") return response(true);
+    // The Square tables are asked of a database function, not read as tables.
+    if (url.pathname.endsWith(`/rpc/${backup.SQUARE_BACKUP_FUNCTION}`)) return response({ total: 0, rows: [] });
     const [from, to] = String(options.headers.Range).split("-").map(Number);
     return response((rows[table] || []).slice(from, to + 1));
   };
@@ -41,13 +44,13 @@ test("server recovery backup captures all paginated records and ignores a daily 
 
   assert.deepEqual(result, { backupDate: "2026-10-11", recordCount: 2 });
   const insert = calls.at(-1);
-  const body = JSON.parse(insert.options.body);
+  const {p_backup: body,p_replace} = JSON.parse(insert.options.body);
   assert.equal(body.created_by, null);
   assert.equal(body.payload.source, "server");
   assert.deepEqual(body.payload.storagePaths, ["a.pdf", "old.pdf"]);
   assert.equal(body.payload.auditEvents.length, 3);
-  assert.match(insert.options.headers.Prefer, /resolution=ignore-duplicates/);
-  assert.equal(insert.url.searchParams.get("on_conflict"), "company_state_id,backup_date");
+  assert.equal(p_replace,false);
+  assert.equal(insert.url.pathname,"/rest/v1/rpc/crm_store_split_backup");
   assert.ok(calls.filter((call) => call.url.pathname.endsWith("crm_records")).length >= 2);
 });
 

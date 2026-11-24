@@ -1,0 +1,90 @@
+{
+  "readFrom": "The live project (PostgreSQL 17.6), on 2026-11-24, with the query in tests/quote-requests-schema.test.js. Nothing here is a secret: the office-notification trigger, which holds one, is deliberately not part of this description.",
+  "columns": [
+    { "name": "id", "type": "uuid", "default": "gen_random_uuid()", "notNull": true },
+    { "name": "created_at", "type": "timestamp with time zone", "default": "now()", "notNull": true },
+    { "name": "reference", "type": "text", "default": null, "notNull": true },
+    { "name": "status", "type": "text", "default": "'new'::text", "notNull": true },
+    { "name": "segment", "type": "text", "default": null, "notNull": true },
+    { "name": "division", "type": "text", "default": null, "notNull": true },
+    { "name": "services", "type": "text[]", "default": "'{}'::text[]", "notNull": true },
+    { "name": "urgency", "type": "text", "default": null, "notNull": true },
+    { "name": "insurance_claim", "type": "text", "default": null, "notNull": false },
+    { "name": "details", "type": "jsonb", "default": "'{}'::jsonb", "notNull": true },
+    { "name": "first_name", "type": "text", "default": null, "notNull": true },
+    { "name": "last_name", "type": "text", "default": null, "notNull": true },
+    { "name": "phone", "type": "text", "default": null, "notNull": true },
+    { "name": "email", "type": "text", "default": null, "notNull": true },
+    { "name": "company", "type": "text", "default": null, "notNull": false },
+    { "name": "street", "type": "text", "default": null, "notNull": true },
+    { "name": "city", "type": "text", "default": null, "notNull": true },
+    { "name": "zip", "type": "text", "default": null, "notNull": true },
+    { "name": "contact_pref", "type": "text", "default": null, "notNull": true },
+    { "name": "best_time", "type": "text", "default": null, "notNull": false },
+    { "name": "source", "type": "text", "default": null, "notNull": false },
+    { "name": "consent", "type": "boolean", "default": "false", "notNull": true },
+    { "name": "photo_paths", "type": "text[]", "default": "'{}'::text[]", "notNull": true },
+    { "name": "page_url", "type": "text", "default": null, "notNull": false },
+    { "name": "user_agent", "type": "text", "default": null, "notNull": false },
+    { "name": "office_notes", "type": "text", "default": null, "notNull": false }
+  ],
+  "constraints": {
+    "quote_requests_pkey": "PRIMARY KEY (id)",
+    "quote_requests_reference_key": "UNIQUE (reference)",
+    "quote_requests_reference_check": "CHECK ((reference ~ '^CC-[0-9]{6}-[0-9]{4}$'::text))",
+    "quote_requests_status_check": "CHECK ((status = ANY (ARRAY['new'::text, 'imported'::text, 'contacted'::text, 'inspection_scheduled'::text, 'proposal_sent'::text, 'won'::text, 'lost'::text, 'spam'::text])))",
+    "quote_requests_segment_check": "CHECK ((segment = ANY (ARRAY['residential'::text, 'commercial'::text])))",
+    "quote_requests_division_check": "CHECK ((division = ANY (ARRAY['roofing'::text, 'construction'::text, 'services'::text])))",
+    "quote_requests_urgency_check": "CHECK ((urgency = ANY (ARRAY['Emergency (active leak / damage)'::text, 'Within 2 weeks'::text, '1–3 months'::text, 'Just planning / budgeting'::text])))",
+    "quote_requests_insurance_claim_check": "CHECK ((insurance_claim = ANY (ARRAY['Yes'::text, 'No'::text, 'Not sure'::text])))",
+    "quote_requests_first_name_check": "CHECK (((char_length(first_name) >= 1) AND (char_length(first_name) <= 80)))",
+    "quote_requests_last_name_check": "CHECK (((char_length(last_name) >= 1) AND (char_length(last_name) <= 80)))",
+    "quote_requests_phone_check": "CHECK (((char_length(phone) >= 7) AND (char_length(phone) <= 30)))",
+    "quote_requests_email_check": "CHECK (((char_length(email) >= 3) AND (char_length(email) <= 200)))",
+    "quote_requests_company_check": "CHECK ((char_length(company) <= 200))",
+    "quote_requests_street_check": "CHECK ((char_length(street) <= 200))",
+    "quote_requests_city_check": "CHECK ((char_length(city) <= 100))",
+    "quote_requests_zip_check": "CHECK ((zip ~ '^\\d{5}$'::text))",
+    "quote_requests_contact_pref_check": "CHECK ((contact_pref = ANY (ARRAY['Phone call'::text, 'Text message'::text, 'Email'::text])))",
+    "quote_requests_best_time_check": "CHECK ((best_time = ANY (ARRAY['Morning'::text, 'Midday'::text, 'Afternoon'::text, 'Evening'::text])))",
+    "quote_requests_source_check": "CHECK ((source = ANY (ARRAY['Google search'::text, 'Google Maps / reviews'::text, 'Facebook / Instagram'::text, 'Friend or neighbor'::text, 'Yard sign / truck'::text, 'Insurance adjuster'::text, 'Repeat customer'::text, 'Other'::text])))",
+    "quote_requests_page_url_check": "CHECK ((char_length(page_url) <= 2000))",
+    "quote_requests_user_agent_check": "CHECK ((char_length(user_agent) <= 300))"
+  },
+  "indexes": {
+    "quote_requests_pkey": "CREATE UNIQUE INDEX quote_requests_pkey ON public.quote_requests USING btree (id)",
+    "quote_requests_reference_key": "CREATE UNIQUE INDEX quote_requests_reference_key ON public.quote_requests USING btree (reference)",
+    "quote_requests_created_at_idx": "CREATE INDEX quote_requests_created_at_idx ON public.quote_requests USING btree (created_at DESC)",
+    "quote_requests_status_idx": "CREATE INDEX quote_requests_status_idx ON public.quote_requests USING btree (status)"
+  },
+  "rowSecurity": true,
+  "policies": [
+    {
+      "name": "Visitors can submit quote requests",
+      "command": "INSERT",
+      "roles": ["anon", "authenticated"],
+      "permissive": "PERMISSIVE",
+      "using": null,
+      "check": "((status = 'new'::text) AND (consent = true) AND (office_notes IS NULL) AND ((cardinality(services) >= 1) AND (cardinality(services) <= 20)) AND (cardinality(photo_paths) <= 10) AND (pg_column_size(details) < 20000))"
+    }
+  ],
+  "may": {
+    "anon SELECT": false, "anon INSERT": true, "anon UPDATE": false, "anon DELETE": false, "anon TRUNCATE": false,
+    "authenticated SELECT": false, "authenticated INSERT": true, "authenticated UPDATE": false, "authenticated DELETE": false, "authenticated TRUNCATE": false,
+    "service_role SELECT": true, "service_role INSERT": true, "service_role UPDATE": true, "service_role DELETE": true, "service_role TRUNCATE": true
+  },
+  "bucket": {
+    "public": false,
+    "limit": 10485760,
+    "types": ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif"]
+  },
+  "storagePolicies": [
+    {
+      "name": "Visitors can upload quote photos",
+      "command": "INSERT",
+      "roles": ["anon", "authenticated"],
+      "using": null,
+      "check": "((bucket_id = 'quote-photos'::text) AND ((storage.foldername(name))[1] ~* '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text))"
+    }
+  ]
+}

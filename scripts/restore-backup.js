@@ -20,6 +20,9 @@
 //       A person reads the SQL and runs it in the database's SQL editor.
 //
 //   node --env-file=.env scripts/restore-backup.js export --to <folder> [--date 2026-11-22]
+//   Default: manager copy, with no raw Square rows. For a full disaster-recovery
+//   copy, run ONLY on the trusted server and add --include-private-square.
+//   Keep its <date>-server-only directory in restricted backup storage; never share it.
 //       Copies a day's backup and every file it lists (photos, PDFs) out of
 //       the live project into a folder. It only reads. This is the copy of
 //       the files that the daily backup does not hold. Needs SUPABASE_URL and
@@ -132,6 +135,15 @@ const TEST_ROW_VALUES = {
   crm_custom_fields: { applies_to: 'job', field_type: 'text' },
   crm_custom_field_values: { record_type: 'job' },
   crm_goals: { metric: 'collected_revenue' },
+  // Square's tables take only the two environments Square has.
+  crm_square_invoice_reviews: { environment: 'production', note: 'TEST reviewed before the first Square invoice was sent' },
+  crm_square_invoice_intents: { environment: 'production' },
+  crm_square_invoice_watermarks: { environment: 'production' },
+  crm_square_webhook_events: { environment: 'production', event_type: 'invoice.payment_made' },
+  // A website quote request, with one photo so the copy of the files has a quote photo to bring back.
+  quote_requests: { reference: 'CC-202611-0001', segment: 'residential', division: 'roofing', urgency: 'Within 2 weeks', services: ['Roof repair'],
+    first_name: 'TEST', last_name: 'Visitor', phone: '(555) 010-0199', email: 'visitor@example.com', street: '1 Example Street', city: 'Naples', zip: '34102',
+    contact_pref: 'Email', consent: true, photo_paths: ['0f8fad5b-d9cb-469f-a165-70867728950e/TEST-quote-photo.png'] },
 };
 
 async function seedEveryTable(runner, { companyId = DEFAULT_COMPANY, userId, values = TEST_ROW_VALUES } = {}) {
@@ -203,6 +215,9 @@ async function tableShape(db, table) {
 // were saved: the database's own rules, which would re-stamp each row's date,
 // version and author on the way in, are switched off for this one transaction.
 async function restoreAll(db, payload, { companyId = DEFAULT_COMPANY } = {}) {
+  if (payload.privateSquareSnapshot && !squareKeys.every(k => Array.isArray(payload.tables?.[k]))) {
+    throw new Error('A full rebuild needs the server-only Square snapshot; a manager copy cannot be used.');
+  }
   const existing = Number((await db.query('select count(*)::int as n from public.crm_records where company_state_id = $1', [companyId])).rows[0].n);
   if (existing) throw new Error(`This database already holds ${existing} records. A whole backup only goes into an empty database, so nothing can be overwritten by mistake. To put back chosen records, use the "records" command.`);
   const report = { tables: [], tablesNotInDatabase: [] };
@@ -373,9 +388,48 @@ function localFileName(storagePath) {
     return !safe || safe === '.' || safe === '..' ? '_' : safe;
   }).join('/');
 }
-const objectUrl = (origin, storagePath) => `${origin}/storage/v1/object/${BUCKET}/${String(storagePath).split('/').map(encodeURIComponent).join('/')}`;
+const objectUrl = (origin, storagePath, bucket = BUCKET) => `${origin}/storage/v1/object/${bucket}/${String(storagePath).split('/').map(encodeURIComponent).join('/')}`;
 
-async function exportBackup({ origin, key, companyId = DEFAULT_COMPANY, fetch: fetcher = fetch, date = '', folder, log = () => {} }) {
+// Every stored file a backup points to, and the bucket each is in: the CRM's
+// documents and photos, and the photos sent in with website quote requests,
+// which are kept in a bucket of their own. "name" is how a file is referred to
+// in lists; it is the path itself for a document, as it always was.
+const QUOTE_PHOTO_FOLDER = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function filesNamedBy(payload, companyId) {
+  const plain = (storagePath) => typeof storagePath === 'string' && !storagePath.includes('\\') && storagePath.split('/').every((part) => part && part !== '.' && part !== '..');
+  const documents = [...new Set([...(payload.storagePaths || []), ...backup.storagePaths(payload.records || [], payload.tables)])]
+    // Never fetch outside this company's part of the bucket.
+    .map((storagePath) => ({ bucket: BUCKET, path: storagePath, name: storagePath, local: `files/${plain(storagePath) ? localFileName(storagePath) : '_'}`,
+      allowed: plain(storagePath) && storagePath.startsWith(`${companyId}/`) }));
+  const quotePhotos = [...new Set([...(payload.quotePhotoPaths || []), ...backup.quotePhotoPaths(payload.tables)])]
+    // A visitor's photo is always inside a folder named with a random id.
+    .map((storagePath) => ({ bucket: backup.QUOTE_PHOTO_BUCKET, path: storagePath, name: `${backup.QUOTE_PHOTO_BUCKET}/${storagePath}`,
+      local: `files/_${backup.QUOTE_PHOTO_BUCKET}/${plain(storagePath) ? localFileName(storagePath) : '_'}`,
+      allowed: plain(storagePath) && QUOTE_PHOTO_FOLDER.test(storagePath.split('/')[0]) && storagePath.split('/').length >= 2 }));
+  return [...documents, ...quotePhotos];
+}
+// The same name for a file already copied, from its line in a copy's list. A
+// document's line has no bucket, as before quote photos were copied too.
+const entryName = (entry) => (entry.bucket && entry.bucket !== BUCKET ? `${entry.bucket}/${entry.path}` : entry.path);
+
+const squareKeys = backup.EXTRA_TABLES.filter(t => t.via === backup.SQUARE_BACKUP_FUNCTION).map(t => t.table);
+// Fetch the matching archived snapshot, never today's live provider tables.
+async function completeServerPayload(config, row) {
+  const payload = row.payload;
+  if (!payload.privateSquareSnapshot) return payload; // older backup
+  const response = await (config.fetch || fetch)(new URL(`${config.origin}/rest/v1/rpc/crm_private_square_snapshot`), {
+    method: 'POST', signal: AbortSignal.timeout(120000), headers: backup.serviceHeaders(config.key, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ p_company: config.companyId, p_day: row.backup_date, p_snapshot: payload.privateSquareSnapshot }),
+  });
+  if (!response.ok) throw new Error('Cannot read the matching server-only Square backup.');
+  const square = await response.json();
+  if (!square || typeof square !== 'object' || Array.isArray(square) || Object.keys(square).some(k => !squareKeys.includes(k))
+      || !squareKeys.every(k => Array.isArray(square[k]) || (!Object.hasOwn(square,k) && payload.skippedTables?.includes(k)))) {
+    throw new Error('Invalid server-only Square backup.');
+  }
+  return { ...payload, tables: { ...payload.tables, ...square } };
+}
+async function exportBackup({ origin, key, companyId = DEFAULT_COMPANY, fetch: fetcher = fetch, date = '', folder, includePrivateSquare = false, log = () => {} }) {
   if (!folder) throw new Error('Say where the copy should go, with --to <folder>.');
   const url = new URL(`${origin}/rest/v1/crm_backups`);
   url.searchParams.set('select', 'backup_date,record_count,payload');
@@ -387,40 +441,43 @@ async function exportBackup({ origin, key, companyId = DEFAULT_COMPANY, fetch: f
   const [row] = await response.json();
   if (!row?.payload) throw new Error(date ? `There is no backup dated ${date}.` : 'There is no backup yet.');
   const day = String(row.backup_date);
-  const target = path.join(folder, day);
-  fs.mkdirSync(path.join(target, 'files'), { recursive: true });
+  const managerCopy = !includePrivateSquare && Boolean(row.payload.privateSquareSnapshot);
+  if (includePrivateSquare) row.payload = await completeServerPayload({ origin, key, companyId, fetch: fetcher }, row);
+  else if (squareKeys.some(k => (row.payload.tables?.[k]?.length || 0) > 0)) {
+    throw new Error('Refusing to write raw Square records into a standard export.');
+  }
+  const target = path.join(folder, includePrivateSquare ? day + '-server-only' : day);
+  fs.mkdirSync(path.join(target, 'files'), { recursive: true, mode: 0o700 });
   const backupText = JSON.stringify(row.payload);
-  fs.writeFileSync(path.join(target, 'backup.json'), backupText);
+  fs.writeFileSync(path.join(target, 'backup.json'), backupText, { mode: 0o600 });
   const files = [];
   const missing = [];
   const taken = new Set();
-  for (const storagePath of new Set([...(row.payload.storagePaths || []), ...backup.storagePaths(row.payload.records || [], row.payload.tables)])) {
+  for (const item of filesNamedBy(row.payload, companyId)) {
     // Keep the database record even if a bad historical reference cannot be
-    // exported; never fetch outside this company's storage prefix.
-    if (typeof storagePath !== 'string' || !storagePath.startsWith(companyId + '/') ||
-        storagePath.includes('\\') || storagePath.split('/').some(part => !part || part === '.' || part === '..')) {
-      missing.push(storagePath); continue;
-    }
-    let name = localFileName(storagePath);
-    if (taken.has(name.toLowerCase())) name = `${name}.${sha256(storagePath).slice(0, 8)}`;
-    taken.add(name.toLowerCase());
+    // exported: the file is named as missing, and nothing is fetched for it.
+    if (!item.allowed) { missing.push(item.name); continue; }
+    let local = item.local;
+    if (taken.has(local.toLowerCase())) local = `${local}.${sha256(item.name).slice(0, 8)}`;
+    taken.add(local.toLowerCase());
     try {
-      const file = await fetcher(objectUrl(origin, storagePath), { signal: AbortSignal.timeout(300000), headers: backup.serviceHeaders(key) });
-      if (!file.ok) { missing.push(storagePath); continue; }
+      const file = await fetcher(objectUrl(origin, item.path, item.bucket), { signal: AbortSignal.timeout(300000), headers: backup.serviceHeaders(key) });
+      if (!file.ok) { missing.push(item.name); continue; }
       const bytes = Buffer.from(await file.arrayBuffer());
-      const destination = path.join(target, 'files', ...name.split('/'));
+      const destination = path.join(target, ...local.split('/'));
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.writeFileSync(destination, bytes);
-      files.push({ path: storagePath, file: `files/${name}`, bytes: bytes.length, sha256: sha256(bytes), type: file.headers?.get?.('content-type') || '' });
-      log(`  copied ${storagePath}`);
+      files.push({ path: item.path, ...(item.bucket === BUCKET ? {} : { bucket: item.bucket }), file: local, bytes: bytes.length, sha256: sha256(bytes), type: file.headers?.get?.('content-type') || '' });
+      log(`  copied ${item.name}`);
     } catch {
-      missing.push(storagePath);
+      missing.push(item.name);
     }
   }
   const manifest = { backupDate: day, exportedAt: new Date().toISOString(), records: Number(row.record_count) || 0,
     backup: { file: 'backup.json', bytes: Buffer.byteLength(backupText), sha256: sha256(backupText) }, files, missing,
     // Tables the backup itself is missing. A copy of an incomplete backup is an incomplete copy.
-    incompleteTables: backup.missingTables(row.payload) };
+    ...(managerCopy ? { scope: 'manager' } : {}),
+    incompleteTables: backup.missingTables(row.payload).filter(k => !managerCopy || !squareKeys.includes(k) || row.payload.skippedTables?.includes(k)) };
   fs.writeFileSync(path.join(target, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return { folder: target, ...manifest };
 }
@@ -441,17 +498,34 @@ function verifyExport(folder) {
   // for in this copy, either as a file here or as one named missing.
   try {
     const payload = readBackupFile(path.join(folder, ...manifest.backup.file.split('/')));
-    problems.push(...backupGaps(payload));
-    const accountedFor = new Set([...(manifest.files || []).map((entry) => entry.path), ...(manifest.missing || [])]);
-    for (const storagePath of new Set([...(payload.storagePaths || []), ...backup.storagePaths(payload.records, payload.tables)])) {
-      if (!accountedFor.has(storagePath)) problems.push(`${storagePath}: the backup points to this file and the copy does not have it`);
+    const managerCopy = manifest.scope === 'manager' && Boolean(payload.privateSquareSnapshot);
+    if (managerCopy && squareKeys.some(k => Object.hasOwn(payload.tables || {},k))) problems.push('Unexpected Square data in the manager export');
+    problems.push(...backupGaps(payload).filter(gap => !managerCopy || !squareKeys.some(k => gap === k + ': not in the backup')));
+    const accountedFor = new Set([...(manifest.files || []).map(entryName), ...(manifest.missing || [])]);
+    for (const item of filesNamedBy(payload, '')) {
+      if (!accountedFor.has(item.name)) problems.push(`${item.name}: the backup points to this file and the copy does not have it`);
     }
   } catch {
     if (!problems.some((problem) => problem.startsWith(`${manifest.backup.file}:`))) problems.push(`${manifest.backup.file}: cannot be read as a backup`);
   }
   // A file the records point to that was never copied is a hole in the copy too.
   for (const storagePath of manifest.missing || []) problems.push(`${storagePath}: not in this copy (it could not be read when the copy was made)`);
-  return { backupDate: manifest.backupDate, files: manifest.files.length, missing: manifest.missing, problems };
+  return { backupDate: manifest.backupDate, files: manifest.files.length, missing: manifest.missing, problems, ...(manifest.scope === 'manager' ? { scope: 'manager' } : {}) };
+}
+
+// "That file is already there" from the file service, and nothing else. It
+// says so with status 409, or with 400 and the 409 in the answer itself. Any
+// other refusal is a file that did not go back: the quote photo bucket, for
+// one, turns away anything that is not an image, also with a 400.
+async function alreadyThere(response) {
+  if (response.status === 409) return true;
+  if (response.status !== 400) return false;
+  try {
+    const answer = await response.json();
+    return String(answer?.statusCode) === '409' || answer?.error === 'Duplicate';
+  } catch {
+    return false;
+  }
 }
 
 // Sends exported files back to where the records expect them. A file that is
@@ -462,16 +536,17 @@ async function uploadFiles({ origin, key, fetch: fetcher = fetch, folder, log = 
   const kept = [];
   const failed = [];
   for (const entry of manifest.files) {
+    const name = entryName(entry);
     const bytes = fs.readFileSync(path.join(folder, ...entry.file.split('/')));
-    if (sha256(bytes) !== entry.sha256) { failed.push(entry.path); continue; }
+    if (sha256(bytes) !== entry.sha256) { failed.push(name); continue; }
     try {
-      const response = await fetcher(objectUrl(origin, entry.path), { method: 'POST', signal: AbortSignal.timeout(300000),
+      const response = await fetcher(objectUrl(origin, entry.path, entry.bucket || BUCKET), { method: 'POST', signal: AbortSignal.timeout(300000),
         headers: backup.serviceHeaders(key, { 'Content-Type': entry.type || 'application/octet-stream', 'x-upsert': 'false' }), body: bytes });
-      if (response.ok) { sent.push(entry.path); log(`  sent ${entry.path}`); }
-      else if (response.status === 409 || response.status === 400) kept.push(entry.path);
-      else failed.push(entry.path);
+      if (response.ok) { sent.push(name); log(`  sent ${name}`); }
+      else if (await alreadyThere(response)) kept.push(name);
+      else failed.push(name);
     } catch {
-      failed.push(entry.path);
+      failed.push(name);
     }
   }
   return { sent, kept, failed };
@@ -567,11 +642,17 @@ async function drill({ ports = { appPort: 4620, cloudPort: 4621, staticPort: 462
     // none of them is only ever backed up and restored empty.
     const everyTable = await seedEveryTable(cloud, { companyId, userId: admin.id });
     need(!everyTable.failed.length, 'A test row could not be made for every table', everyTable.failed.slice(0, 5));
+    // The website quote request made above names a photo. That photo is in a
+    // bucket of its own, not with the CRM's documents.
+    const quotePhotoPath = TEST_ROW_VALUES.quote_requests.photo_paths[0];
+    const quotePhoto = crypto.randomBytes(12 * 1024);
+    const storedPhoto = await fetch(objectUrl(cloud.cloudUrl, quotePhotoPath, backup.QUOTE_PHOTO_BUCKET), { method: 'POST', headers: backup.serviceHeaders(cloud.serviceKey, { 'Content-Type': 'image/png' }), body: quotePhoto });
+    need(storedPhoto.ok, 'The test quote photo could not be stored');
 
     const made = await backup.createDailyBackup(config);
     const row = (await cloud.query('select record_count, payload from public.crm_backups where company_state_id = $1 order by backup_date desc limit 1', [companyId])).rows[0];
     need(row && made.recordCount === row.record_count, 'The server did not store a backup', made);
-    const payload = row.payload;
+    const payload = await completeServerPayload(config, { ...row, backup_date: made.backupDate });
     need(!payload.skippedTables.length, 'The backup could not read some tables', payload.skippedTables);
     need(!backupGaps(payload).length, 'The backup is missing something it is meant to hold', backupGaps(payload));
     // Every table of the database is accounted for, and every one the backup
@@ -642,23 +723,31 @@ async function drill({ ports = { appPort: 4620, cloudPort: 4621, staticPort: 462
     step('one damaged estimate was put back on its own; nothing else changed except a history line saying so');
 
     // The files.
-    const exported = await exportBackup({ ...config, folder });
+    const exported = await exportBackup({ ...config, folder, includePrivateSquare: true });
     need(exported.files.some(file => file.path === `${companyId}/drill/version-only.pdf` && file.sha256 === sha256(attachment)), 'A version stored only in the versions table was omitted');
-    need(exported.files.length === payload.storagePaths.length && !exported.missing.length, 'Not every file was copied out', { listed: payload.storagePaths.length, copied: exported.files.length, missing: exported.missing.slice(0, 3) });
+    need(payload.quotePhotoPaths.length === 1 && payload.quotePhotoPaths[0] === quotePhotoPath, 'The backup should list the photo a website quote request names', payload.quotePhotoPaths);
+    const listedFiles = payload.storagePaths.length + payload.quotePhotoPaths.length;
+    need(exported.files.length === listedFiles && !exported.missing.length, 'Not every file was copied out', { listed: listedFiles, copied: exported.files.length, missing: exported.missing.slice(0, 3) });
+    need(exported.files.some(file => file.bucket === backup.QUOTE_PHOTO_BUCKET && file.path === quotePhotoPath && file.sha256 === sha256(quotePhoto)), 'The website quote photo was not copied out of its own bucket');
     const verified = verifyExport(exported.folder);
     need(!verified.problems.length, 'The copied files do not match their checksums', verified.problems.slice(0, 3));
     cloud.state.missingFiles.add(`${BUCKET}/${companyId}/drill/TEST contract.pdf`);
+    cloud.state.missingFiles.add(`${backup.QUOTE_PHOTO_BUCKET}/${quotePhotoPath}`);
     const second = await exportBackup({ ...config, folder: path.join(folder, 'second') });
-    need(second.missing.length === 1 && second.missing[0] === `${companyId}/drill/TEST contract.pdf`, 'A file that has gone missing should be named', second.missing);
+    need(second.missing.length === 2 && second.missing.includes(`${companyId}/drill/TEST contract.pdf`) && second.missing.includes(`${backup.QUOTE_PHOTO_BUCKET}/${quotePhotoPath}`), 'Files that have gone missing should be named', second.missing);
+    need(verifyExport(second.folder).problems.length === 2, 'A copy with files missing should not pass its check', verifyExport(second.folder).problems);
     cloud.state.missingFiles.clear();
-    step(`all ${exported.files.length} files the records point to were copied out and verified; a missing one is named`);
+    step(`all ${exported.files.length} files the records point to were copied out and verified, the website quote photo among them; missing ones are named`);
 
     cloud.state.storage.clear();
     const returned = await uploadFiles({ ...config, folder: exported.folder });
     need(returned.sent.length === exported.files.length && !returned.failed.length, 'Not every file went back', { sent: returned.sent.length, failed: returned.failed.slice(0, 3) });
     const fetched = await fetch(objectUrl(cloud.cloudUrl, `${companyId}/drill/TEST contract.pdf`), { headers: backup.serviceHeaders(cloud.serviceKey) });
     need(fetched.ok && sha256(Buffer.from(await fetched.arrayBuffer())) === sha256(attachment), 'The attachment did not come back unchanged');
-    step('the files were sent back from the copy, and the attachment is the same byte for byte');
+    const photoBack = await fetch(objectUrl(cloud.cloudUrl, quotePhotoPath, backup.QUOTE_PHOTO_BUCKET), { headers: backup.serviceHeaders(cloud.serviceKey) });
+    need(photoBack.ok && sha256(Buffer.from(await photoBack.arrayBuffer())) === sha256(quotePhoto), 'The website quote photo did not come back unchanged, in its own bucket');
+    need(!cloud.state.storage.has(`${BUCKET}/${quotePhotoPath}`), 'The website quote photo was sent to the documents bucket');
+    step('the files were sent back from the copy, each to its own bucket, and are the same byte for byte');
 
     log(`\nPASS  ${steps.length} checks`);
     return { steps, records: row.record_count, files: exported.files.length, collected: Number(totals.collected) };
@@ -691,8 +780,9 @@ async function main(argv) {
     return 0;
   }
   if (command === 'export') {
-    const result = await exportBackup({ ...liveConfig(), folder: option('--to'), date: option('--date'), log: console.log });
+    const result = await exportBackup({ ...liveConfig(), folder: option('--to'), date: option('--date'), includePrivateSquare: rest.includes('--include-private-square'), log: console.log });
     console.log(`\nBackup of ${result.backupDate}: ${result.records} records and ${result.files.length} files copied to ${result.folder}`);
+    if (result.scope === 'manager') console.log('Manager copy: raw Square records stay on the server. This is not a full disaster-recovery export.');
     if (result.missing.length) console.log(`MISSING  ${result.missing.length} files the records point to could not be copied:\n  ${result.missing.join('\n  ')}`);
     if (result.incompleteTables.length) console.log(`INCOMPLETE  the backup itself is missing ${result.incompleteTables.length} table${result.incompleteTables.length === 1 ? '' : 's'}: ${result.incompleteTables.join(', ')}`);
     return result.missing.length || result.incompleteTables.length ? 1 : 0;
@@ -700,7 +790,7 @@ async function main(argv) {
   if (command === 'verify-export') {
     if (!rest[0]) throw new Error('Name the exported folder (the one that holds manifest.json).');
     const result = verifyExport(rest[0]);
-    console.log(result.problems.length ? `FAIL\n  ${result.problems.join('\n  ')}` : `PASS  the backup of ${result.backupDate} is complete, and it and its ${result.files} files are intact`);
+    console.log(result.problems.length ? `FAIL\n  ${result.problems.join('\n  ')}` : `PASS  ${result.scope === 'manager' ? 'manager copy (excludes server-only Square records)' : 'backup'} of ${result.backupDate} and its ${result.files} files are intact`);
     return result.problems.length ? 1 : 0;
   }
   throw new Error(`Unknown command "${command}". The commands are drill, check, records, export and verify-export.`);
@@ -710,4 +800,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => process.exit(code), (error) => { console.error(`\nFAIL  ${error.message}`); process.exit(1); });
 }
 
-module.exports = { backupGaps, check, compareWithBackup, drill, exportBackup, ledgerTotals, seedEveryTable, localFileName, moneyInBackup, readBackupFile, recordsSql, restoreAll, restoreVerdict, tablesIn, uploadFiles, verifyExport };
+module.exports = { TEST_ROW_VALUES, backupGaps, check, compareWithBackup, drill, exportBackup, filesNamedBy, ledgerTotals, seedEveryTable, localFileName, moneyInBackup, readBackupFile, recordsSql, restoreAll, restoreVerdict, tablesIn, uploadFiles, verifyExport };

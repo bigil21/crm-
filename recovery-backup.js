@@ -1,7 +1,13 @@
 "use strict";
 
 const DEFAULT_PAGE_SIZE = 1000;
-const BACKUP_FORMAT = 5;
+// 6: the five Square tables are in the backup too. A stored backup in an older
+// format is not counted as whole, so the day's is made again once after an update.
+const BACKUP_FORMAT = 6;
+// The database function that hands over the Square tables, and the most rows it
+// gives at a time.
+const SQUARE_BACKUP_FUNCTION = "crm_square_backup_page";
+const FUNCTION_PAGE_SIZE = 500;
 
 function serviceHeaders(key, extra = {}) {
   return {
@@ -65,21 +71,15 @@ const EXCLUDED_TABLES = {
   crm_oauth_states: "Half-finished sign-ins to connected services. Secrets, and of no use minutes later.",
   crm_write_receipts: "Receipts of saves that have already finished. They exist so a repeated request does nothing twice; they hold no business data.",
   crm_company_settings_receipts: "Receipts of settings saves that have already finished. No business data.",
-  // These five are closed to everything except the database's own Square
-  // functions, the server's key included, so the server cannot read them to
-  // back them up. After a restore Square is set up again; the invoice numbers
-  // and paid amounts themselves are on the estimates and jobs, which are here.
-  crm_square_invoice_policy: "Square set-up. Closed to the server's key.",
-  crm_square_invoice_intents: "Square invoices in the middle of being sent. Closed to the server's key.",
-  crm_square_invoice_reviews: "Square invoices held for review. Closed to the server's key.",
-  crm_square_invoice_watermarks: "How far each Square invoice's notices have been applied. Closed to the server's key.",
-  crm_square_webhook_events: "The queue of notices from Square. Closed to the server's key.",
 };
 
 // order: the table's own key, so pages of rows never overlap or skip.
 // everyCompany: the table has no company column.
+// via: the table is closed to the server's key and is read through this
+//   database function instead, which gives the same rows a page at a time.
 // optional: a table that not every copy of the database has. Where it is
-//   absent that is recorded, and is not a failure.
+//   absent that is recorded, and is not a failure. No table is optional now:
+//   the one that was, quote_requests, is made by the repo's own migrations.
 const EXTRA_TABLES = [
   // Money kept in its own tables, and the numbers already given out.
   { table: "crm_sales_numbers", order: "number_kind.asc,entity_id.asc" },
@@ -94,6 +94,16 @@ const EXTRA_TABLES = [
   { table: "crm_expenses", order: "id.asc" },
   { table: "crm_change_orders", order: "id.asc" },
   { table: "crm_progress_billings", order: "id.asc" },
+  // Square. These five are closed to every role, the server's key included, so
+  // they are read through a function of the database's own. The first holds
+  // when Square invoicing was switched on: without that date, a rebuilt
+  // database treats every existing estimate as needing a review before it can
+  // be invoiced.
+  { table: "crm_square_invoice_policy", order: "environment.asc", via: SQUARE_BACKUP_FUNCTION },
+  { table: "crm_square_invoice_reviews", order: "environment.asc,estimate_id.asc", via: SQUARE_BACKUP_FUNCTION },
+  { table: "crm_square_invoice_intents", order: "id.asc", via: SQUARE_BACKUP_FUNCTION },
+  { table: "crm_square_invoice_watermarks", order: "environment.asc,merchant_id.asc,invoice_id.asc", via: SQUARE_BACKUP_FUNCTION },
+  { table: "crm_square_webhook_events", order: "environment.asc,merchant_id.asc,event_id.asc", via: SQUARE_BACKUP_FUNCTION },
   // Work on a job.
   { table: "crm_permits", order: "id.asc" },
   { table: "crm_inspections", order: "id.asc" },
@@ -127,7 +137,7 @@ const EXTRA_TABLES = [
   // What came in from the website.
   { table: "crm_web_lead_forms", order: "id.asc" },
   { table: "crm_website_intake_requests", order: "request_id.asc" },
-  { table: "quote_requests", order: "id.asc", everyCompany: true, optional: true },
+  { table: "quote_requests", order: "id.asc", everyCompany: true },
   // History, notices and messages waiting to go out.
   { table: "crm_activity_events", order: "id.asc" },
   { table: "crm_notifications", order: "id.asc" },
@@ -158,15 +168,50 @@ const EXTRA_TABLES = [
   { table: "crm_admins", order: "email.asc", everyCompany: true },
 ];
 
+// A table the server's key may not read, asked of the database function that
+// may. Each answer is one page of rows and the table's whole row count. The
+// rows are kept only when every page gave the same count, the pages add up to
+// it, and no row came twice: a table that changed between two pages is read
+// again on the next run instead of being stored with a row doubled or missing.
+async function fetchFunctionRows(config, name, table, order) {
+  const rows = [];
+  const pageSize = Math.min(config.pageSize || FUNCTION_PAGE_SIZE, FUNCTION_PAGE_SIZE);
+  const inconsistent = () => new Error(`Recovery backup received an inconsistent page of ${table}.`);
+  let total;
+  for (;;) {
+    const response = await config.fetch(new URL(`${config.origin}/rest/v1/rpc/${name}`), {
+      method: "POST",
+      signal: AbortSignal.timeout(config.timeoutMs || 30000),
+      headers: serviceHeaders(config.key, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ p_company: config.companyId, p_table: table, p_offset: rows.length, p_limit: pageSize }),
+    });
+    const page = await readJson(response, `Recovery backup could not read ${table}.`);
+    if (!page || !Array.isArray(page.rows) || !Number.isSafeInteger(page.total) || page.total < 0
+      || !page.rows.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
+      throw new Error(`Recovery backup received invalid ${table} data.`);
+    }
+    if (total === undefined) total = page.total;
+    else if (page.total !== total) throw inconsistent();
+    rows.push(...page.rows);
+    if (rows.length > total || (!page.rows.length && rows.length < total)) throw inconsistent();
+    if (rows.length === total) break;
+  }
+  const keyColumns = ["company_state_id", ...order.split(",").map((part) => part.split(".")[0])];
+  if (new Set(rows.map((row) => JSON.stringify(keyColumns.map((column) => row[column])))).size !== rows.length) throw inconsistent();
+  return rows;
+}
+
 // These are read one at a time, and a table that cannot be read is named in
 // the backup instead of stopping it: the records must be backed up regardless.
 async function fetchExtraTables(config) {
   const tables = {};
   const skippedTables = [];
   const absentTables = [];
-  for (const { table, order, everyCompany, optional } of EXTRA_TABLES) {
+  for (const { table, order, everyCompany, optional, via } of EXTRA_TABLES) {
     try {
-      tables[table] = await fetchRows(config, table, { ...(everyCompany ? {} : { company_state_id: `eq.${config.companyId}` }), order });
+      tables[table] = via
+        ? await fetchFunctionRows(config, via, table, order)
+        : await fetchRows(config, table, { ...(everyCompany ? {} : { company_state_id: `eq.${config.companyId}` }), order });
     } catch (error) {
       // "This database has no such table" is an answer, for a table marked
       // optional. Any other failure is a table that could not be read.
@@ -203,6 +248,7 @@ async function storedBackupFound(config, day, { completeOnly = false } = {}) {
   if (completeOnly) {
     url.searchParams.set("payload->>skippedTables", "eq.[]");
     url.searchParams.set("payload->>schemaVersion", `eq.${BACKUP_FORMAT}`);
+    url.searchParams.set("payload->>privateSquareSnapshot", "not.is.null");
   }
   const response = await config.fetch(url, {
     signal: AbortSignal.timeout(config.timeoutMs || 30000),
@@ -256,6 +302,16 @@ function storagePaths(records, tables = {}) {
   return [...new Set(paths)];
 }
 
+// Files kept in a bucket of their own: the photos a visitor attaches to a
+// website quote request. Each request names its photos; the files are in the
+// "quote-photos" bucket, not with the CRM's documents.
+const QUOTE_PHOTO_BUCKET = "quote-photos";
+function quotePhotoPaths(tables = {}) {
+  return [...new Set((Array.isArray(tables.quote_requests) ? tables.quote_requests : [])
+    .flatMap((row) => (Array.isArray(row?.photo_paths) ? row.photo_paths : []))
+    .filter((item) => typeof item === "string" && item))];
+}
+
 async function createDailyBackup(config, date = new Date()) {
   const day = backupDate(date, config.timeZone);
   const stored = await storedBackupState(config, day);
@@ -286,6 +342,9 @@ async function createDailyBackup(config, date = new Date()) {
     // The files themselves are not in here, only where each one is kept.
     // `npm run backup:export` copies them, with this backup, to a folder.
     storagePaths: storagePaths(records, tables),
+    // The same for the photos sent in with website quote requests, which are
+    // kept in their own bucket.
+    quotePhotoPaths: quotePhotoPaths(tables),
   };
   const incomplete = missingTables(payload);
   const recordCount = records.filter((row) => !row.deleted_at).length;
@@ -293,26 +352,25 @@ async function createDailyBackup(config, date = new Date()) {
   // missing one too. The earlier one is kept: a second partial copy is no
   // better than the first. The next run tries again.
   if (stored === "incomplete" && incomplete.length) return { backupDate: day, alreadyStored: true, incomplete };
-  const url = new URL(`${config.origin}/rest/v1/crm_backups`);
-  url.searchParams.set("on_conflict", "company_state_id,backup_date");
+  // Only the server-only RPC accepts raw provider records. Never fall back to
+  // posting the combined payload to the manager-readable table.
+  const url = new URL(`${config.origin}/rest/v1/rpc/crm_store_split_backup`);
   const response = await config.fetch(url, {
     method: "POST",
     signal: AbortSignal.timeout(config.timeoutMs || 30000),
-    headers: serviceHeaders(config.key, {
-      "Content-Type": "application/json",
-      // A whole backup takes the place of an incomplete one from earlier in
-      // the day. Nothing else is ever replaced.
-      Prefer: `resolution=${stored === "incomplete" ? "merge" : "ignore"}-duplicates,return=minimal`,
-    }),
-    body: JSON.stringify({
+    headers: serviceHeaders(config.key, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ p_replace: stored === "incomplete", p_backup: {
       company_state_id: config.companyId,
       backup_date: day,
       record_count: recordCount,
       payload,
       created_by: null,
-    }),
+    } }),
   });
   if (!response.ok) throw new Error("Recovery backup could not be stored.");
+  const changed = await response.json();
+  if (changed === false) return { backupDate: day, alreadyStored: true };
+  if (changed !== true) throw new Error("Recovery backup storage was not confirmed.");
   return { backupDate: day, recordCount, ...(stored === "incomplete" ? { replacedIncomplete: true } : {}), ...(incomplete.length ? { incomplete } : {}) };
 }
 
@@ -337,4 +395,4 @@ function start(config) {
   return () => { stopped = true; clearInterval(timer); };
 }
 
-module.exports = { CORE_TABLES, EXCLUDED_TABLES, EXTRA_TABLES, backupDate, backupExists, createDailyBackup, fetchRows, missingTables, serviceHeaders, start, storagePaths, storedBackupState };
+module.exports = { BACKUP_FORMAT, CORE_TABLES, EXCLUDED_TABLES, EXTRA_TABLES, QUOTE_PHOTO_BUCKET, SQUARE_BACKUP_FUNCTION, quotePhotoPaths, backupDate, backupExists, createDailyBackup, fetchRows, missingTables, serviceHeaders, start, storagePaths, storedBackupState };

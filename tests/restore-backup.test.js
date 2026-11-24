@@ -33,7 +33,7 @@ function sampleBackup() {
     record('document', 'doc-1', { name: 'TEST contract.pdf', storagePath: 'coastal-crest/lead-1/TEST contract.pdf', previousVersions: [{ storagePath: 'coastal-crest/lead-1/old.pdf' }] }, { job_id: 'job-1' }),
   ];
   return {
-    schemaVersion: 5, createdAt: '2026-11-21T05:00:00.000Z', source: 'server',
+    schemaVersion: backup.BACKUP_FORMAT, createdAt: '2026-11-21T05:00:00.000Z', source: 'server',
     company: { company: { name: 'TEST Roofing Co', defaultTerms: 'Net 14' } },
     stateRows: [{ id: 'coastal-crest:company', data: { company: { name: 'TEST Roofing Co', defaultTerms: 'Net 14' } } }],
     absentTables: [],
@@ -301,6 +301,156 @@ test('the files are copied out with a checksum each, and one that is missing is 
   await assert.rejects(restore.exportBackup({ origin: 'https://example.supabase.co', key: 'k', fetch: async () => response({ message: 'secret detail' }, 500), folder }), (error) => error.message === 'The backup could not be read from the database.');
 });
 
+// The photos a visitor attaches to a website quote request are in a bucket of
+// their own. Until 2026-11-24 nothing copied them: the export read only the
+// CRM's documents bucket, so three real photos were in no copy at all.
+test('ordinary exports omit private Square data; only an explicit server recovery export joins the matching snapshot', async () => {
+  const payload = sampleBackup();
+  const keys = backup.EXTRA_TABLES.filter(t=>t.via===backup.SQUARE_BACKUP_FUNCTION).map(t=>t.table);
+  const square = Object.fromEntries(keys.map(k=>[k,[{ sample: 'SERVER-ONLY-CANARY' }]]));
+  keys.forEach(k=>delete payload.tables[k]);
+  payload.privateSquareSnapshot='00000000-0000-4000-8000-000000000001';
+  let reads=0, deny=false;
+  const config={origin:'https://example.supabase.co',key:'synthetic',folder:fs.mkdtempSync(path.join(os.tmpdir(),'jobcrest-role-export-')),
+    fetch:async (input,opts)=>{
+      const url=new URL(input);
+      if(url.pathname.endsWith('/crm_backups')) return response([{backup_date:'2026-11-24',record_count:8,payload:structuredClone(payload)}]);
+      if(url.pathname.endsWith('/crm_private_square_snapshot')) {
+        reads++;
+        assert.deepEqual(JSON.parse(opts.body),{p_company:COMPANY,p_day:'2026-11-24',p_snapshot:payload.privateSquareSnapshot});
+        return response(square,deny?403:200);
+      }
+      return {ok:true,headers:{get:()=>null},arrayBuffer:async()=>Buffer.from('local document')};
+    }};
+  try {
+    const ordinary=await restore.exportBackup(config);
+    assert.equal(reads,0);
+    assert.equal(ordinary.scope,'manager');
+    assert.ok(!fs.readFileSync(path.join(ordinary.folder,'backup.json'),'utf8').includes('SERVER-ONLY-CANARY'));
+    assert.deepEqual(restore.verifyExport(ordinary.folder).problems,[]);
+    await assert.rejects(restore.restoreAll(null,payload),/server-only Square snapshot/);
+    const full=await restore.exportBackup({...config,includePrivateSquare:true});
+    assert.equal(reads,1);
+    assert.notEqual(full.folder,ordinary.folder);
+    assert.deepEqual(restore.readBackupFile(path.join(full.folder,'backup.json')).tables[keys[0]],square[keys[0]]);
+    assert.deepEqual(restore.verifyExport(full.folder).problems,[]);
+    deny=true;
+    await assert.rejects(restore.exportBackup({...config,includePrivateSquare:true}),/Cannot read the matching/);
+  } finally { fs.rmSync(config.folder,{recursive:true,force:true}); }
+});
+
+test('website quote photos are copied out of their own bucket, checked, and sent back to it', async () => {
+  const good = '0f8fad5b-d9cb-469f-a165-70867728950e/TEST roof 1.jpg';
+  const gone = '7c9e6679-7425-40de-944b-e07fc1f90ae7/TEST gone.jpg';
+  // What a visitor could type into a request to make the copy read something else.
+  const bad = ['../crm-documents/coastal-crest/lead-1/TEST contract.pdf', 'not-a-random-id/x.jpg', 'coastal-crest/lead-1/TEST contract.pdf', '0f8fad5b-d9cb-469f-a165-70867728950e', '0f8fad5b-d9cb-469f-a165-70867728950e/../../x.jpg'];
+  const payload = sampleBackup();
+  payload.tables.quote_requests = [{ id: 'q1', photo_paths: [good, gone] }, { id: 'q2', photo_paths: [] }, { id: 'q3', photo_paths: [good, ...bad] }];
+  payload.quotePhotoPaths = backup.quotePhotoPaths(payload.tables);
+  const stored = new Map([
+    ['crm-documents/coastal-crest/lead-1/TEST contract.pdf', crypto.randomBytes(2048)],
+    ['crm-documents/coastal-crest/lead-1/old.pdf', crypto.randomBytes(1024)],
+    [`quote-photos/${good}`, crypto.randomBytes(3072)],
+  ]);
+  const requests = [];
+  const sent = new Map();
+  const fetcher = async (input, options = {}) => {
+    const url = new URL(input);
+    if (url.pathname === '/rest/v1/crm_backups') return response([{ backup_date: '2026-11-21', record_count: 8, payload }]);
+    const object = decodeURIComponent(url.pathname.replace('/storage/v1/object/', ''));
+    requests.push({ object, raw: url.pathname, method: options.method || 'GET', headers: options.headers });
+    if (options.method === 'POST') { sent.set(object, Buffer.from(options.body)); return response({ Key: object }); }
+    return stored.has(object) ? response(stored.get(object)) : response(null, 400);
+  };
+  const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'jobcrest-export-quote-photos-'));
+  const result = await restore.exportBackup({ origin: 'https://example.supabase.co', key: 'sb_secret_test', fetch: fetcher, folder });
+
+  // The photo is in the copy, under a folder of its own, with its bucket named.
+  const photo = result.files.find((file) => file.bucket === 'quote-photos');
+  assert.deepEqual({ path: photo.path, file: photo.file, bytes: photo.bytes, sha256: photo.sha256 },
+    { path: good, file: `files/_quote-photos/${good}`, bytes: 3072, sha256: sha(stored.get(`quote-photos/${good}`)) });
+  assert.ok(fs.readFileSync(path.join(result.folder, 'files', '_quote-photos', ...good.split('/'))).equals(stored.get(`quote-photos/${good}`)));
+  // The documents are copied as before, and their lines in the list are unchanged: no bucket on them.
+  assert.deepEqual(result.files.filter((file) => !file.bucket).map((file) => file.path).sort(), ['coastal-crest/lead-1/TEST contract.pdf', 'coastal-crest/lead-1/old.pdf']);
+  assert.equal(result.files.length, 3);
+  // A photo that is not there, and every path that is not a photo's, is named missing, with its bucket.
+  assert.deepEqual([...result.missing].sort(), [gone, ...bad].map((item) => `quote-photos/${item}`).sort());
+  // Nothing a request names is ever fetched from the documents bucket, or from outside a random-id folder.
+  const fetched = requests.filter((request) => request.method === 'GET').map((request) => request.object).sort();
+  assert.deepEqual(fetched, ['crm-documents/coastal-crest/lead-1/TEST contract.pdf', 'crm-documents/coastal-crest/lead-1/old.pdf', `quote-photos/${gone}`, `quote-photos/${good}`].sort());
+  assert.ok(requests.every((request) => !request.raw.includes('..') && request.headers.apikey === 'sb_secret_test'));
+
+  // The check accounts for the photo: every missing one is a problem, and a copy whose list leaves the photo out fails.
+  const problems = restore.verifyExport(result.folder).problems;
+  assert.deepEqual([...problems].sort(), [gone, ...bad].map((item) => `quote-photos/${item}: not in this copy (it could not be read when the copy was made)`).sort());
+  const manifestFile = path.join(result.folder, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  fs.writeFileSync(manifestFile, JSON.stringify({ ...manifest, files: manifest.files.filter((file) => file.bucket !== 'quote-photos') }));
+  assert.ok(restore.verifyExport(result.folder).problems.includes(`quote-photos/${good}: the backup points to this file and the copy does not have it`));
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+
+  // Sent back, each file goes to the bucket it came from, and is never written over what is there.
+  const returned = await restore.uploadFiles({ origin: 'https://example.supabase.co', key: 'sb_secret_test', fetch: fetcher, folder: result.folder });
+  assert.deepEqual([...returned.sent].sort(), ['coastal-crest/lead-1/TEST contract.pdf', 'coastal-crest/lead-1/old.pdf', `quote-photos/${good}`].sort());
+  assert.deepEqual(returned.failed, []);
+  assert.ok(sent.get(`quote-photos/${good}`).equals(stored.get(`quote-photos/${good}`)));
+  assert.ok(!sent.has(`crm-documents/${good}`), 'the photo did not go to the documents bucket');
+  assert.ok(requests.filter((request) => request.method === 'POST').every((request) => request.headers['x-upsert'] === 'false'));
+
+  // A backup made before the photos were listed still names them, in its quote requests: they are copied all the same.
+  delete payload.quotePhotoPaths;
+  const older = await restore.exportBackup({ origin: 'https://example.supabase.co', key: 'sb_secret_test', fetch: fetcher, folder: path.join(folder, 'older') });
+  assert.ok(older.files.some((file) => file.bucket === 'quote-photos' && file.path === good && file.sha256 === sha(stored.get(`quote-photos/${good}`))));
+  assert.equal(older.files.length, 3);
+});
+
+test('sending files back: only "already there" counts as kept; any other refusal is a file that did not go back', async () => {
+  const payload = sampleBackup();
+  const names = ['a', 'b', 'c', 'd', 'e', 'f'].map((letter) => `0f8fad5b-d9cb-469f-a165-70867728950e/TEST ${letter}.jpg`);
+  payload.tables.quote_requests = [{ id: 'q1', photo_paths: names }];
+  const answers = {
+    a: response({ Key: 'ok' }),
+    b: response({ statusCode: '409', error: 'Duplicate', message: 'The resource already exists' }, 400),
+    c: response({ statusCode: '409', error: 'Duplicate', message: 'The resource already exists' }, 409),
+    // The photo bucket takes images only, and says no with the same status as "already there".
+    d: response({ statusCode: '415', error: 'invalid_mime_type', message: 'mime type application/octet-stream is not supported' }, 400),
+    e: response({ statusCode: '403', error: 'Unauthorized', message: 'new row violates row-level security policy' }, 400),
+    f: { ok: false, status: 400, json: async () => { throw new Error('not JSON'); } },
+  };
+  const fetcher = async (input, options = {}) => {
+    const url = new URL(input);
+    if (url.pathname === '/rest/v1/crm_backups') return response([{ backup_date: '2026-11-21', record_count: 8, payload }]);
+    if (options.method !== 'POST') return response(Buffer.from(decodeURIComponent(url.pathname)));
+    const letter = decodeURIComponent(url.pathname).match(/TEST (\w)\.jpg$/)?.[1];
+    return letter ? answers[letter] : response({ Key: 'ok' });
+  };
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'jobcrest-export-kept-'));
+  const result = await restore.exportBackup({ origin: 'https://example.supabase.co', key: 'sb_secret_test', fetch: fetcher, folder });
+  const returned = await restore.uploadFiles({ origin: 'https://example.supabase.co', key: 'sb_secret_test', fetch: fetcher, folder: result.folder });
+  const photo = (letter) => `quote-photos/0f8fad5b-d9cb-469f-a165-70867728950e/TEST ${letter}.jpg`;
+  assert.deepEqual(returned.sent.filter((name) => name.startsWith('quote-photos/')), [photo('a')]);
+  assert.deepEqual(returned.kept, [photo('b'), photo('c')]);
+  assert.deepEqual(returned.failed, [photo('d'), photo('e'), photo('f')]);
+});
+
+test('two stored files whose names differ only in capitals do not overwrite each other in the copy', async () => {
+  const payload = sampleBackup();
+  payload.tables.quote_requests = [{ id: 'q1', photo_paths: ['0f8fad5b-d9cb-469f-a165-70867728950e/Roof.jpg', '0F8FAD5B-D9CB-469F-A165-70867728950E/roof.JPG'] }];
+  const fetcher = async (input) => {
+    const url = new URL(input);
+    if (url.pathname === '/rest/v1/crm_backups') return response([{ backup_date: '2026-11-21', record_count: 8, payload }]);
+    return response(Buffer.from(decodeURIComponent(url.pathname)));
+  };
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'jobcrest-export-case-'));
+  const result = await restore.exportBackup({ origin: 'https://example.supabase.co', key: 'sb_secret_test', fetch: fetcher, folder });
+  const photos = result.files.filter((file) => file.bucket === 'quote-photos');
+  assert.equal(photos.length, 2);
+  assert.equal(new Set(photos.map((file) => file.file.toLowerCase())).size, 2, 'each has a file of its own');
+  assert.equal(new Set(photos.map((file) => file.sha256)).size, 2);
+  assert.deepEqual(restore.verifyExport(result.folder).problems, []);
+});
+
 test('a stored path can never write outside the export folder', () => {
   assert.equal(restore.localFileName('coastal-crest/lead-1/photo.jpg'), 'coastal-crest/lead-1/photo.jpg');
   assert.equal(restore.localFileName('../../Windows/system.ini'), '_/_/Windows/system.ini');
@@ -318,20 +468,25 @@ test('the daily backup now holds the payment tables, given-out numbers, set-up l
     crm_sales_numbers: [{ entity_id: 'lead-1', number_value: 'L-1' }],
     crm_payments: [{ id: 'p1', amount: 10 }],
     crm_user_access: [{ user_id: OWNER, role: 'admin' }],
+    crm_square_invoice_policy: [{ company_state_id: COMPANY, environment: 'production', installed_at: '2026-09-21T13:43:28.935762+00:00' },
+      { company_state_id: COMPANY, environment: 'sandbox', installed_at: '2026-09-21T13:43:28.939294+00:00' }],
   };
   // The backups table, stood in for: one backup per day, kept or replaced the way the database would.
   const backups = new Map();
   let unreadable = new Set();
   const fetcher = async (input, options = {}) => {
     const url = new URL(input);
-    const table = url.pathname.split('/').pop();
-    calls.push({ table, url, method: options.method || 'GET', prefer: options.headers?.Prefer || '' });
+    // A Square table is asked of the database's function; the table it is asked for is in the request.
+    const viaFunction = url.pathname.endsWith(`/rpc/${backup.SQUARE_BACKUP_FUNCTION}`);
+    const table = viaFunction ? JSON.parse(options.body).p_table : url.pathname.split('/').pop();
+    calls.push({ table, url, method: viaFunction ? 'GET' : options.method || 'GET', replace: table === 'crm_store_split_backup' && JSON.parse(options.body).p_replace, viaFunction });
+    if (viaFunction) return unreadable.has(table) ? response({ message: 'permission denied' }, 403) : response({ total: (rows[table] || []).length, rows: rows[table] || [] });
+    if (table === 'crm_store_split_backup') {
+      const {p_backup: body,p_replace} = JSON.parse(options.body);
+      if (!backups.has(body.backup_date) || p_replace) backups.set(body.backup_date, body);
+      return response(true);
+    }
     if (table === 'crm_backups') {
-      if (options.method === 'POST') {
-        const body = JSON.parse(options.body);
-        if (!backups.has(body.backup_date) || /resolution=merge-duplicates/.test(options.headers.Prefer)) backups.set(body.backup_date, body);
-        return response(null, 201);
-      }
       const row = backups.get(url.searchParams.get('backup_date').replace('eq.', ''));
       const wholeOnly = url.searchParams.get('payload->>skippedTables') === 'eq.[]';
       return response(row && (!wholeOnly || (JSON.stringify(row.payload.skippedTables) === '[]' &&
@@ -344,7 +499,8 @@ test('the daily backup now holds the payment tables, given-out numbers, set-up l
   const first = await backup.createDailyBackup(config, new Date('2026-11-21T16:00:00.000Z'));
   assert.deepEqual(first, { backupDate: '2026-11-21', recordCount: 1 });
   const stored = backups.get('2026-11-21');
-  assert.equal(stored.payload.schemaVersion, 5);
+  assert.equal(stored.payload.schemaVersion, 6);
+  assert.equal(backup.BACKUP_FORMAT, 6);
   // Every settings row of this company, and no other company's.
   assert.deepEqual(stored.payload.stateRows.map((row) => row.id), ['coastal-crest', 'coastal-crest:company', 'coastal-crest:user:u1']);
   assert.deepEqual(stored.payload.company, { company: { name: 'TEST' } });
@@ -358,6 +514,12 @@ test('the daily backup now holds the payment tables, given-out numbers, set-up l
   assert.deepEqual(stored.payload.tables.crm_sales_numbers, rows.crm_sales_numbers);
   assert.deepEqual(stored.payload.tables.crm_payments, rows.crm_payments);
   assert.deepEqual(stored.payload.tables.crm_user_access, rows.crm_user_access);
+  // Square's tables are in it too, with the date invoicing was switched on. They
+  // were asked of the database's function, for this company, and never read as tables.
+  assert.deepEqual(stored.payload.tables.crm_square_invoice_policy, rows.crm_square_invoice_policy);
+  const squareCalls = calls.filter((call) => call.table.startsWith('crm_square_'));
+  assert.equal(squareCalls.length, 5);
+  assert.ok(squareCalls.every((call) => call.viaFunction && call.url.pathname === '/rest/v1/rpc/crm_square_backup_page'));
   assert.deepEqual(stored.payload.skippedTables, []);
   assert.deepEqual(backup.missingTables(stored.payload), []);
   // Company tables are read for this company only; roles are not per company.
@@ -391,31 +553,35 @@ test('the daily backup now holds the payment tables, given-out numbers, set-up l
   assert.deepEqual(whole, { backupDate: '2026-11-22', recordCount: 1, replacedIncomplete: true });
   assert.deepEqual(backups.get('2026-11-22').payload.skippedTables, []);
   assert.deepEqual(backups.get('2026-11-22').payload.tables.crm_payments, rows.crm_payments);
-  assert.match(calls.filter((call) => call.method === 'POST').at(-1).prefer, /resolution=merge-duplicates/);
+  assert.equal(calls.filter((call) => call.method === 'POST').at(-1).replace, true);
   // After that the day is done, and a whole backup is never replaced.
   const settled = calls.length;
   assert.deepEqual(await backup.createDailyBackup(config, new Date('2026-11-22T13:00:00.000Z')), { backupDate: '2026-11-22', alreadyStored: true });
   assert.deepEqual(calls.slice(settled).map((call) => `${call.method} ${call.table}`), ['GET crm_backups']);
-  assert.equal(calls.filter((call) => call.method === 'POST' && /merge-duplicates/.test(call.prefer)).length, 1);
+  assert.equal(calls.filter((call) => call.method === 'POST' && call.replace).length, 1);
 
-  // A backup from before backups said what they hold is not whole, so the first
-  // run of this code on its day makes a full one in its place.
-  backups.set('2026-11-23', { backup_date: '2026-11-23', payload: { schemaVersion: 4, skippedTables: [], records: [] } });
+  // A backup in the format before this one is not whole: it has no Square
+  // tables, though it skipped nothing it knew of. So the first run of this code
+  // on its day makes a full one in its place.
+  backups.set('2026-11-23', { backup_date: '2026-11-23', payload: { schemaVersion: 5, skippedTables: [], records: [] } });
   assert.equal(await backup.storedBackupState(config, '2026-11-23'), 'incomplete');
   assert.equal((await backup.createDailyBackup(config, new Date('2026-11-23T16:00:00.000Z'))).replacedIncomplete, true);
-  assert.equal(backups.get('2026-11-23').payload.schemaVersion, 5);
+  assert.equal(backups.get('2026-11-23').payload.schemaVersion, 6);
+  assert.equal(await backup.storedBackupState(config, '2026-11-23'), 'complete');
   // When the question cannot even be asked, a backup is still made, and nothing is replaced.
   const offline = { ...config, fetch: async (input, options = {}) => (new URL(input).pathname.endsWith('crm_backups') && (options.method || 'GET') === 'GET' ? response({}, 503) : fetcher(input, options)) };
   assert.equal(await backup.storedBackupState(offline, '2026-11-24'), 'unknown');
   await backup.createDailyBackup(offline, new Date('2026-11-24T16:00:00.000Z'));
-  assert.match(calls.filter((call) => call.method === 'POST').at(-1).prefer, /resolution=ignore-duplicates/);
+  assert.equal(calls.filter((call) => call.method === 'POST').at(-1).replace, false);
 });
 
 test('the server is told when the day\'s backup is incomplete, so it shows in the log', async () => {
   const errors = [];
   const fetcher = async (input, options = {}) => {
     const table = new URL(input).pathname.split('/').pop();
-    if (table === 'crm_backups') return options.method === 'POST' ? response(null, 201) : response([]);
+    if (table === 'crm_backups') return response([]);
+    if (table === 'crm_store_split_backup') return response(true);
+    if (table === backup.SQUARE_BACKUP_FUNCTION) return response({ total: 0, rows: [] });
     return table === 'crm_refunds' ? response({}, 500) : response([]);
   };
   const stop = backup.start({ origin: 'https://example.supabase.co', companyId: COMPANY, key: 'sb_secret_test', fetch: fetcher, intervalMs: 3600000, onError: (error) => errors.push(error.message) });

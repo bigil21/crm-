@@ -17,7 +17,9 @@ test('to-do 1: the local test copy starts, signs a test user in and enforces the
     assert.equal(totals.leads, 236);
     assert.equal(totals.jobs, 283);
     const skipped = copy.state.bootLog.filter((line) => line.includes('skipped'));
-    assert.ok(skipped.length <= 1, `migrations that did not apply: ${skipped.join(' | ')}`);
+    // Every one applies. One used to be skipped: it alters the website's quote
+    // requests table, which the repo's schema did not make until 2026-11-24.
+    assert.deepEqual(skipped, [], 'migrations that did not apply');
     // The app is served with its configuration pointed at the local copy only.
     const config = await (await fetch(`${copy.appUrl}/auth-config.js`)).text();
     assert.match(config, /"supabaseUrl":"http:\/\/localhost:4421"/);
