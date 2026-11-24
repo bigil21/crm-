@@ -2422,6 +2422,8 @@ if (require.main === module) {
   if (stopWorker) server.once("close", stopWorker);
   const stopBackupWorker = startRecoveryBackupWorker();
   if (stopBackupWorker) server.once("close", stopBackupWorker);
+  const stopMediaVault = process.env.FILE_VAULT_ENABLED === "true" && require("./scripts/media-vault").start();
+  if (stopMediaVault) server.once("close", stopMediaVault);
   const stopWebsiteQuoteImportWorker = startWebsiteQuoteImportWorker();
   if (stopWebsiteQuoteImportWorker) server.once("close", stopWebsiteQuoteImportWorker);
 }
