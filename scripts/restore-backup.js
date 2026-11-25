@@ -33,7 +33,10 @@
 //
 // A backup file is what crm_backups.payload holds. The SQL editor's
 //   select payload from crm_backups order by backup_date desc limit 1;
-// saved as JSON is accepted as it is.
+// saved as JSON is accepted as it is. Since format 6 that file leaves out
+// Square's five tables, which the server keeps apart: "check" covers
+// everything else in it and says so. The file that holds them too is the
+// backup.json inside an export made with --include-private-square.
 'use strict';
 const fs = require('node:fs');
 const os = require('node:os');
@@ -103,11 +106,13 @@ function moneyInBackup(payload) {
   const expenseIds = new Set(table('crm_expenses').map((row) => row.id));
   const sum = (values) => values.reduce((total, value) => total + value, 0);
   const list = (value) => (Array.isArray(value) ? value : []);
-  const invoicePayments = sum(paymentRows.filter((row) => counts(row) && (!fromJob(row) || jobIds.has(row.job_id))).map((row) => money(row.amount)));
+  const invoicePayments = sum(paymentRows.filter((row) => row.origin !== 'square' && counts(row) && (!fromJob(row) || jobIds.has(row.job_id))).map((row) => money(row.amount)));
   // Payments on a job's record with no row in the table: all of them in an
   // older backup, none in a newer one.
   const jobPayments = sum(jobs.flatMap((job) => list(job.data?.manualPayments).filter((item) => !paymentRows.some((row) => covers(row, item, job))).map((item) => money(item?.amount))));
-  const squarePayments = sum(jobs.map((job) => money(job.data?.squarePaidAmount)).filter((amount) => amount > 0));
+  const ledgerJobs = new Set(jobs.filter((job) => job.data?.paymentLedgerVersion === 2).map((job) => job.id));
+  const squarePayments = sum(jobs.filter((job) => !ledgerJobs.has(job.id)).map((job) => money(job.data?.squarePaidAmount)).filter((amount) => amount > 0))
+    + sum(paymentRows.filter((row) => row.origin === 'square' && counts(row) && ledgerJobs.has(row.job_id)).map((row) => money(row.amount) - money(row.provider_refunded)));
   const refunds = sum(table('crm_refunds').filter(counts).map((row) => money(row.amount)));
   const expenses = sum(table('crm_expenses').filter(counts).map((row) => money(row.amount)))
     + sum(jobs.flatMap((job) => list(job.data?.costItems).filter((item) => !expenseIds.has(item?.id)).map((item) => money(item?.amount))));
@@ -214,8 +219,14 @@ async function tableShape(db, table) {
 // Puts a whole backup into an empty database. Rows go back exactly as they
 // were saved: the database's own rules, which would re-stamp each row's date,
 // version and author on the way in, are switched off for this one transaction.
-async function restoreAll(db, payload, { companyId = DEFAULT_COMPANY } = {}) {
-  if (payload.privateSquareSnapshot && !squareKeys.every(k => Array.isArray(payload.tables?.[k]))) {
+async function restoreAll(db, payload, { companyId = DEFAULT_COMPANY, withoutSquare = false } = {}) {
+  // A database rebuilt from a copy without Square's tables gets a new "Square
+  // invoicing switched on" date, which is the fault those tables are backed up
+  // to prevent. So it is refused, unless the caller says it is understood, as
+  // "check" does for a database it builds only to look at and then throws away.
+  // A Square table the backup says it could not read is a different thing: that
+  // is an incomplete backup, which is restored as far as it goes like any other.
+  if (!withoutSquare && squareKeptApart(payload).length) {
     throw new Error('A full rebuild needs the server-only Square snapshot; a manager copy cannot be used.');
   }
   const existing = Number((await db.query('select count(*)::int as n from public.crm_records where company_state_id = $1', [companyId])).rows[0].n);
@@ -413,6 +424,14 @@ function filesNamedBy(payload, companyId) {
 const entryName = (entry) => (entry.bucket && entry.bucket !== BUCKET ? `${entry.bucket}/${entry.path}` : entry.path);
 
 const squareKeys = backup.EXTRA_TABLES.filter(t => t.via === backup.SQUARE_BACKUP_FUNCTION).map(t => t.table);
+// In a backup that keeps Square's tables apart, the ones this copy does not
+// hold. A table the backup says it could not read is not one of them: it is
+// missing from the server-only part as well, and is a gap like any other.
+function squareKeptApart(payload) {
+  if (!payload?.privateSquareSnapshot) return [];
+  const skipped = Array.isArray(payload.skippedTables) ? payload.skippedTables : [];
+  return squareKeys.filter((table) => !Array.isArray(payload.tables?.[table]) && !skipped.includes(table));
+}
 // Fetch the matching archived snapshot, never today's live provider tables.
 async function completeServerPayload(config, row) {
   const payload = row.payload;
@@ -441,15 +460,20 @@ async function exportBackup({ origin, key, companyId = DEFAULT_COMPANY, fetch: f
   const [row] = await response.json();
   if (!row?.payload) throw new Error(date ? `There is no backup dated ${date}.` : 'There is no backup yet.');
   const day = String(row.backup_date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Invalid backup date.');
   const managerCopy = !includePrivateSquare && Boolean(row.payload.privateSquareSnapshot);
   if (includePrivateSquare) row.payload = await completeServerPayload({ origin, key, companyId, fetch: fetcher }, row);
   else if (squareKeys.some(k => (row.payload.tables?.[k]?.length || 0) > 0)) {
     throw new Error('Refusing to write raw Square records into a standard export.');
   }
   const target = path.join(folder, includePrivateSquare ? day + '-server-only' : day);
-  fs.mkdirSync(path.join(target, 'files'), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  // Reserve a new export directory atomically. Never replace an older copy or
+  // write through an existing folder/link, even when the same day is retried.
+  fs.mkdirSync(target, { mode: 0o700 });
+  fs.mkdirSync(path.join(target, 'files'), { mode: 0o700 });
   const backupText = JSON.stringify(row.payload);
-  fs.writeFileSync(path.join(target, 'backup.json'), backupText, { mode: 0o600 });
+  fs.writeFileSync(path.join(target, 'backup.json'), backupText, { mode: 0o600, flag: 'wx' });
   const files = [];
   const missing = [];
   const taken = new Set();
@@ -466,7 +490,7 @@ async function exportBackup({ origin, key, companyId = DEFAULT_COMPANY, fetch: f
       const bytes = Buffer.from(await file.arrayBuffer());
       const destination = path.join(target, ...local.split('/'));
       fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.writeFileSync(destination, bytes);
+      fs.writeFileSync(destination, bytes, { mode: 0o600, flag: 'wx' });
       files.push({ path: item.path, ...(item.bucket === BUCKET ? {} : { bucket: item.bucket }), file: local, bytes: bytes.length, sha256: sha256(bytes), type: file.headers?.get?.('content-type') || '' });
       log(`  copied ${item.name}`);
     } catch {
@@ -478,7 +502,7 @@ async function exportBackup({ origin, key, companyId = DEFAULT_COMPANY, fetch: f
     // Tables the backup itself is missing. A copy of an incomplete backup is an incomplete copy.
     ...(managerCopy ? { scope: 'manager' } : {}),
     incompleteTables: backup.missingTables(row.payload).filter(k => !managerCopy || !squareKeys.includes(k) || row.payload.skippedTables?.includes(k)) };
-  fs.writeFileSync(path.join(target, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  fs.writeFileSync(path.join(target, 'manifest.json'), JSON.stringify(manifest, null, 2), { mode: 0o600, flag: 'wx' });
   return { folder: target, ...manifest };
 }
 
@@ -568,9 +592,16 @@ async function check(file, { log = console.log, companyId = DEFAULT_COMPANY } = 
   const { createEmptyDatabase } = require('./local-cloud.js');
   log(`Backup made ${payload.createdAt || '(no date)'} by ${payload.source === 'server' ? 'the server' : 'a browser'} (format ${payload.schemaVersion}).`);
   log('Building an empty database on this computer and restoring into it...');
+  // The copy a person can get without the server's key (the stored payload, or
+  // an ordinary export) leaves out Square's tables, which the server keeps
+  // apart. That copy is checked for everything it does hold, and the report
+  // says what it leaves out. Their absence is not a gap in the backup.
+  const keptApart = squareKeptApart(payload);
+  const managerCopy = keptApart.length > 0;
+  const notAGap = new Set(keptApart.map((table) => `${table}: not in the backup`));
   const db = await createEmptyDatabase({ quiet: true });
   try {
-    const report = await restoreAll(db, payload, { companyId });
+    const report = await restoreAll(db, payload, { companyId, withoutSquare: managerCopy });
     const comparison = await compareWithBackup(db, payload, { companyId });
     const expectedMoney = moneyInBackup(payload);
     const totals = await ledgerTotals(db);
@@ -581,17 +612,25 @@ async function check(file, { log = console.log, companyId = DEFAULT_COMPANY } = 
     log(`  Collected, by the backup file:        ${dollars(expectedMoney.collected)}`);
     if (totals) log(`  Collected, by the restored database:  ${dollars(totals.collected)}`);
     log(`  Files the records point to: ${(payload.storagePaths || []).length}. They are not in the backup; "export" copies them.`);
-    const gaps = backupGaps(payload);
-    const problems = restoreVerdict(comparison, { money: expectedMoney, totals, payload });
+    const gaps = backupGaps(payload).filter((gap) => !notAGap.has(gap));
+    const problems = restoreVerdict(comparison, { money: expectedMoney, totals, payload }).filter((problem) => !notAGap.has(problem));
+    if (managerCopy) log(`  Square's tables are not in this file (${keptApart.length} of them). The server keeps them apart from the copy managers can read.`);
     // "Restores completely" is said only of a backup that holds everything and
     // came back whole. One with a table missing fails, whatever else matched.
-    if (!problems.length) log('\nPASS  the backup restores completely');
+    // A copy without Square's tables is never called "the backup": it passes as
+    // what it is, and says that it cannot rebuild the CRM by itself.
+    if (!problems.length && managerCopy) {
+      log('\nPASS  the manager copy restores completely');
+      log('  It excludes the server-only Square records, so it cannot rebuild the CRM by itself.');
+      log('  The full copy is made where the server\'s key is: export --include-private-square.');
+    } else if (!problems.length) log('\nPASS  the backup restores completely');
     else {
       const restoredWhatItHolds = problems.length === gaps.length;
       log(`\nFAIL  ${gaps.length ? 'the backup is incomplete' : 'the restore does not match the backup'}: ${problems.length} problem${problems.length === 1 ? '' : 's'}\n  ${problems.join('\n  ')}`);
       if (gaps.length && restoredWhatItHolds) log('  Everything that is in the backup restored correctly. What is missing from it cannot be restored from this file.');
     }
-    return { problems, incomplete: backup.missingTables(payload), comparison, money: expectedMoney, totals };
+    return { problems, incomplete: backup.missingTables(payload).filter((table) => !keptApart.includes(table)), comparison, money: expectedMoney, totals,
+      ...(managerCopy ? { scope: 'manager', keptApart } : {}) };
   } finally { await db.close(); }
 }
 

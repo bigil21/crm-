@@ -326,6 +326,9 @@ test('ordinary exports omit private Square data; only an explicit server recover
     const ordinary=await restore.exportBackup(config);
     assert.equal(reads,0);
     assert.equal(ordinary.scope,'manager');
+    const original=fs.readFileSync(path.join(ordinary.folder,'backup.json'));
+    await assert.rejects(restore.exportBackup(config),{code:'EEXIST'});
+    assert.deepEqual(fs.readFileSync(path.join(ordinary.folder,'backup.json')),original);
     assert.ok(!fs.readFileSync(path.join(ordinary.folder,'backup.json'),'utf8').includes('SERVER-ONLY-CANARY'));
     assert.deepEqual(restore.verifyExport(ordinary.folder).problems,[]);
     await assert.rejects(restore.restoreAll(null,payload),/server-only Square snapshot/);
@@ -337,6 +340,102 @@ test('ordinary exports omit private Square data; only an explicit server recover
     deny=true;
     await assert.rejects(restore.exportBackup({...config,includePrivateSquare:true}),/Cannot read the matching/);
   } finally { fs.rmSync(config.folder,{recursive:true,force:true}); }
+});
+
+// Found reviewing release 43bf4d9, which moved Square's tables out of the copy
+// managers can read. Two things followed that were not meant:
+//   - "check" stopped with an error on every backup file a person can get
+//     without the server's key (the stored payload, or an ordinary export),
+//     so nobody without that key could check a backup any more;
+//   - a full copy in which one Square table could not be read was refused
+//     outright and called a manager copy, where any other incomplete backup is
+//     restored as far as it goes with the gap named.
+test('"check" works on the copy a person can get without the server\'s key, and says what that copy leaves out', async () => {
+  const keys = backup.EXTRA_TABLES.filter((item) => item.via === backup.SQUARE_BACKUP_FUNCTION).map((item) => item.table);
+  const payload = sampleBackup();
+  keys.forEach((table) => delete payload.tables[table]);
+  payload.privateSquareSnapshot = '00000000-0000-4000-8000-000000000001';
+  const lines = [];
+  const result = await restore.check(backupFile(payload), { log: (line) => lines.push(line) });
+  const said = lines.join('\n');
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.scope, 'manager');
+  assert.deepEqual([...result.keptApart].sort(), [...keys].sort());
+  assert.deepEqual(result.incomplete, []);
+  // Everything it holds came back, records and money included.
+  assert.equal(result.comparison.find((item) => item.table === 'crm_records').identical, payload.records.length);
+  assert.equal(result.totals.collected, result.money.collected);
+  // It passes as what it is. It is never called "the backup", and it says what it cannot do.
+  assert.match(said, /PASS {2}the manager copy restores completely/);
+  assert.doesNotMatch(said, /the backup restores completely/);
+  assert.match(said, /Square's tables are not in this file \(5 of them\)/);
+  assert.match(said, /cannot rebuild the CRM by itself/);
+  assert.match(said, /export --include-private-square/);
+
+  // A real rebuild from that copy is still refused: it would give Square invoicing a new switch-on date.
+  const db = await createEmptyDatabase({ quiet: true });
+  try {
+    await assert.rejects(restore.restoreAll(db, payload), /server-only Square snapshot/);
+    assert.equal((await db.query('select count(*)::int as n from public.crm_records')).rows[0].n, 0, 'and nothing was put in');
+  } finally { await db.close(); }
+
+  // A manager copy that is missing something else fails, and only for that.
+  const short = structuredClone(payload);
+  delete short.tables.crm_payments;
+  short.skippedTables = ['crm_payments'];
+  const shortLines = [];
+  const shortResult = await restore.check(backupFile(short), { log: (line) => shortLines.push(line) });
+  assert.deepEqual(shortResult.problems, ['crm_payments: not in the backup (it could not be read when the backup was made)']);
+  assert.deepEqual(shortResult.incomplete, ['crm_payments']);
+  assert.doesNotMatch(shortLines.join('\n'), /PASS/);
+
+  // A backup from before Square's tables were kept apart, with none of them in it, is simply missing them.
+  const older = structuredClone(payload);
+  delete older.privateSquareSnapshot;
+  older.schemaVersion = 5;
+  const olderResult = await restore.check(backupFile(older), { log: () => {} });
+  assert.deepEqual([...olderResult.problems].sort(), keys.map((table) => `${table}: not in the backup`).sort());
+  assert.equal(olderResult.scope, undefined);
+});
+
+test('a copy in which one Square table could not be read is restored as far as it goes, with the gap named', async () => {
+  const keys = backup.EXTRA_TABLES.filter((item) => item.via === backup.SQUARE_BACKUP_FUNCTION).map((item) => item.table);
+  const gap = 'crm_square_webhook_events: not in the backup (it could not be read when the backup was made)';
+  const switchedOn = [{ company_state_id: COMPANY, environment: 'production', installed_at: '2026-09-21T13:43:28.935762+00:00' },
+    { company_state_id: COMPANY, environment: 'sandbox', installed_at: '2026-09-21T13:43:28.939294+00:00' }];
+
+  // The full copy, from the server: four Square tables are in it, and the fifth is named as not read.
+  const full = sampleBackup();
+  full.privateSquareSnapshot = '00000000-0000-4000-8000-000000000002';
+  full.tables.crm_square_invoice_policy = switchedOn;
+  delete full.tables.crm_square_webhook_events;
+  full.skippedTables = ['crm_square_webhook_events'];
+  const db = await createEmptyDatabase({ quiet: true });
+  try {
+    await restore.restoreAll(db, full);
+    // The date Square invoicing was switched on came back, which is what those tables are backed up for.
+    const dates = (await db.query(`select environment, installed_at from public.crm_square_invoice_policy where company_state_id = $1 order by environment`, [COMPANY])).rows;
+    assert.deepEqual(dates.map((row) => new Date(row.installed_at).toISOString()), ['2026-09-21T13:43:28.935Z', '2026-09-21T13:43:28.939Z']);
+    assert.equal((await db.query('select count(*)::int as n from public.crm_records')).rows[0].n, full.records.length);
+  } finally { await db.close(); }
+  const lines = [];
+  const result = await restore.check(backupFile(full), { log: (line) => lines.push(line) });
+  assert.deepEqual(result.problems, [gap]);
+  assert.equal(result.scope, undefined, 'it is the full copy, not a manager copy');
+  assert.match(lines.join('\n'), /FAIL {2}the backup is incomplete: 1 problem/);
+  assert.match(lines.join('\n'), /Everything that is in the backup restored correctly/);
+  assert.doesNotMatch(lines.join('\n'), /PASS/);
+
+  // The manager's copy of the same day: the four kept apart are not a gap, the one never read is.
+  const managerCopy = structuredClone(full);
+  keys.forEach((table) => delete managerCopy.tables[table]);
+  const managerLines = [];
+  const managerResult = await restore.check(backupFile(managerCopy), { log: (line) => managerLines.push(line) });
+  assert.deepEqual(managerResult.problems, [gap]);
+  assert.equal(managerResult.scope, 'manager');
+  assert.deepEqual([...managerResult.keptApart].sort(), keys.filter((table) => table !== 'crm_square_webhook_events').sort());
+  assert.deepEqual(managerResult.incomplete, ['crm_square_webhook_events']);
+  assert.doesNotMatch(managerLines.join('\n'), /PASS/);
 });
 
 test('website quote photos are copied out of their own bucket, checked, and sent back to it', async () => {
