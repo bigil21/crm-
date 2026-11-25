@@ -1,0 +1,16 @@
+[
+  "01-workspace.js",
+  "02-record-models.js",
+  "03-cloud-persistence.js",
+  "04-workspace-navigation.js",
+  "05-dashboard-pipeline.js",
+  "06-leads-and-jobs.js",
+  "07-lead-operations.js",
+  "08-documents.js",
+  "09-smart-documents.js",
+  "10-calendar-tasks.js",
+  "11-billing-reports.js",
+  "12-estimate-editor.js",
+  "13-estimate-output.js",
+  "14-events-startup.js"
+]

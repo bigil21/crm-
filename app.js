@@ -1560,7 +1560,7 @@ function normalizeInvoice(invoice = {}) {
 // database adds the same money up from the table (crm_ledger_totals), and the
 // two answers are compared: see compareServerLedgerWithLocal.
 function isInvoicePaymentRow(payment) {
-  return payment?.origin !== "job";
+  return payment?.origin !== "job" && payment?.origin !== "square";
 }
 
 function normalizeFinancialPayment(payment = {}) {
@@ -1919,7 +1919,7 @@ function normalizeJob(job, contact = {}) {
         Math.max(legacyPaidAmount - manualPaidAmount, 0),
     ),
   );
-  const paidAmount = Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
+  const paidAmount = job.paymentLedgerVersion === 2 ? number(job.paidAmount) : Math.round((squarePaidAmount + manualPaidAmount) * 100) / 100;
   const contractValue = number(job.contractValue ?? job.value ?? contact.value);
   // A job cannot stay Paid without confirmed money covering the contract (old
   // records, or a payment removed afterwards). It drops back to the stage
@@ -1932,8 +1932,8 @@ function normalizeJob(job, contact = {}) {
     : status;
   const closedDate =
     job.closedDate || (soldJobStatuses.includes(normalizedStatus) ? contact.closedDate || contact.lastContact || todayISO() : "");
-  const squareLastPaymentAt = job.squareLastPaymentAt || job.square_last_payment_at || (!manualPayments.length ? job.lastPaymentAt || "" : "");
-  const lastPaymentAt = [
+  const squareLastPaymentAt = job.squareLastPaymentAt || job.square_last_payment_at || (job.paymentLedgerVersion !== 2 && !manualPayments.length ? job.lastPaymentAt || "" : "");
+  const lastPaymentAt = job.paymentLedgerVersion === 2 ? (job.lastPaymentAt || "") : [
     squareLastPaymentAt,
     ...manualPayments.map((payment) => payment.date || payment.createdAt || ""),
   ]
@@ -4691,6 +4691,7 @@ function applyDurableRealtimeRecord(row, eventType = "UPDATE") {
         if (index >= 0) contact.jobs.splice(index, 1);
       } else {
         const normalized = normalizeJob({ ...row.data, id: row.id, ownerUserId: row.owner_id || row.data?.ownerUserId || "" }, contact);
+        if (normalized.paymentLedgerVersion === 2 && normalized.ledgerChangedAt && normalized.ledgerChangedAt !== contact.jobs[index]?.ledgerChangedAt) scheduleLedgerReload();
         if (index >= 0) contact.jobs[index] = normalized;
         else contact.jobs.push(normalized);
       }
@@ -4828,6 +4829,14 @@ async function initializeDurableRecords() {
     .subscribe();
 }
 
+let ledgerReloadTimer = null;
+function scheduleLedgerReload() {
+  clearTimeout(ledgerReloadTimer);
+  ledgerReloadTimer = setTimeout(async () => {
+    if (await initializeFinancialLedger()) renderDurableUpdateWhenIdle();
+  }, 300);
+}
+
 async function initializeFinancialLedger() {
   if (!cloudReady || !cloudClient || !authSession?.user?.id) {
     financialLedgerReady = true;
@@ -4846,7 +4855,22 @@ async function initializeFinancialLedger() {
     "crm_billing_notices",
   ];
   try {
-    const results = await Promise.all(tables.map((table) => cloudClient.from(table).select("*").eq("company_state_id", companyId)));
+    const results = await Promise.all(tables.map(async (table) => {
+      const data = [];
+      let last = null;
+      for (;;) {
+        let query = cloudClient.from(table).select("*").eq("company_state_id", companyId).order("id").limit(250);
+        if (last !== null) query = query.gt("id", last);
+        const page = await query;
+        if (page.error) throw page.error;
+        if (!Array.isArray(page.data)) throw Error("Incomplete ledger response");
+        if (!page.data.length) return { data };
+        const next = page.data.at(-1).id;
+        if (next == null || next === last) throw Error("Incomplete ledger page");
+        last = next;
+        data.push(...page.data);
+      }
+    }));
     const failed = results.find((result) => result.error);
     if (failed) throw failed.error;
     const [invoiceRows, itemRows, paymentRows, allocationRows, expenseRows, creditRows, refundRows, scheduleRows, noticeRows] = results.map((result) => result.data || []);
@@ -4860,6 +4884,7 @@ async function initializeFinancialLedger() {
       items: (itemsByInvoice.get(invoice.id) || []).sort((a, b) => number(a.position) - number(b.position)),
     }));
     state.financialPayments = paymentRows.filter(isInvoicePaymentRow).map(normalizeFinancialPayment);
+    state.jobLedgerPayments = paymentRows.filter((p) => !isInvoicePaymentRow(p)).map(normalizeFinancialPayment);
     state.paymentAllocations = allocationRows.map(normalizePaymentAllocation);
     state.financialExpenses = expenseRows.map(normalizeFinancialExpense);
     state.creditNotes = creditRows.map(normalizeCreditNote);
@@ -5831,6 +5856,7 @@ function invalidEstimateLineItems(estimate = {}) {
 }
 
 function statusPillClass(status = "") {
+  if (globalThis.window?.RooflineProductionFlow?.statusPillClass) return window.RooflineProductionFlow.statusPillClass(status);
   const s = status.toLowerCase().replace(/\s+/g, "-");
   if (s === "won" || s === "approved" || s === "completed") return "pill-won";
   if (s === "lost" || s === "rejected") return "pill-lost";
@@ -5873,6 +5899,7 @@ function staleLeadDays(contact) {
 }
 
 function staleClass(contact) {
+  if (globalThis.window?.RooflineProductionFlow?.staleClass) return window.RooflineProductionFlow.staleClass(contact);
   if (["Won", "Lost"].includes(contact.status)) return "";
   const days = staleLeadDays(contact);
   if (days >= 14) return "stale-red";
@@ -6934,6 +6961,7 @@ function addContactUpdate(contactId, { author = "", message, status = "", jobId 
 
 function applyStatusUpdate(contactId, nextStatus, author = "", message = "") {
   let contact = getContact(contactId);
+  if (globalThis.window?.RooflineWorkflowChecklist?.allowStatusChange?.(contactId, nextStatus) === false) return contact;
   const currentJob = contact ? contactJobs(contact)[0] : null;
   const currentJobStatus = currentJob?.status || contact?.status || "";
   if (!contact || !nextStatus || currentJobStatus === nextStatus) return contact;
@@ -6989,6 +7017,7 @@ async function notifyGoogleChat(type, detail, url = "https://jobcrestcrm.com/") 
 }
 
 function render() {
+  globalThis.window?.RooflineProductionFlow?.beforeRender?.();
   renderSidebar();
   if (!canView(state.view)) {
     state.view = firstAllowedView();
@@ -7068,6 +7097,8 @@ function render() {
   }
   renderLiveSearchResults();
   applyPermissionsToDom();
+  globalThis.window?.RooflineWorkflowChecklist?.afterRender?.();
+  globalThis.window?.RooflineProjectConversations?.afterRender?.();
 }
 
 function showViewRenderError(view, error) {
@@ -8651,6 +8682,7 @@ async function movePipelineOpportunity(contactId, jobId, targetStage) {
 }
 
 function renderLeadCard(contact) {
+  if (globalThis.window?.RooflineProductionFlow?.renderLeadCard) return window.RooflineProductionFlow.renderLeadCard(contact);
   const job = primaryJob(contact);
   const nextStatus = statuses[Math.min(statuses.indexOf(contact.status) + 1, statuses.length - 1)];
   const days = staleLeadDays(contact);
@@ -9140,6 +9172,12 @@ function paymentProgressMarkup(metrics, { compact = false } = {}) {
 }
 
 function renderLeadDetail() {
+  renderLeadDetailContent();
+  globalThis.window?.RooflineWorkflowChecklist?.afterLeadDetail?.();
+  globalThis.window?.RooflineProjectConversations?.afterLeadDetail?.();
+}
+
+function renderLeadDetailContent() {
   if (!els.views.leadDetail) return;
   const contact = getSelectedContact();
   if (!contact) {
@@ -9978,7 +10016,7 @@ function renderLeadActivity(contact) {
   }));
   jobs.forEach((job) => {
     events.push({ id: `job-${job.id}`, at: createdMoment(job), type: "job", title: `Job created: ${job.name}`, detail: job.address || "No address saved" });
-    (job.manualPayments || []).forEach((payment) => events.push({
+    (job.paymentLedgerVersion === 2 ? manualPaymentRows(job) : job.manualPayments || []).forEach((payment) => events.push({
       id: payment.id,
       at: payment.createdAt || payment.date,
       type: "payment",
@@ -10178,6 +10216,53 @@ function renderLeadProfit(contact) {
   }
 }
 
+function manualPaymentRows(job) {
+  if (job?.paymentLedgerVersion !== 2) return job?.manualPayments || [];
+  return (state.jobLedgerPayments || []).filter((row) => row.jobId === job.id && row.origin === "job")
+    .map((row) => ({ ...row, date: row.receivedAt.slice(0, 10), createdBy: row.created_by }));
+}
+
+// Read back the job projection too: the payment row and stage were committed in one
+// transaction, but realtime notification delivery can lag (or be disconnected).
+async function refreshLedgerJobInView(contactId, jobId) {
+  const job = getContact(contactId)?.jobs?.find(row => row.id === jobId);
+  if (job?.paymentLedgerVersion !== 2) return;
+  const shared = await cloudClient.from("crm_records").select("*").eq("company_state_id", supabaseStateId()).eq("lead_id",contactId).eq("record_type","job").eq("id",jobId).single();
+  if (shared.error || !shared.data) throw Error("Payment change was saved. Reload to refresh the job balance.");
+  if (getDurableCommitWriter().getVersion(shared.data) >= shared.data.version) return;
+  if (durableSaveInFlight || hasPendingDurableChanges() || !applyDurableRealtimeRecord(shared.data)) queueDurableRecordsReload();
+}
+
+async function writeCanonicalJobPayment(job, id, payment, expected) {
+  const form = els.manualPaymentForm;
+  if (form.dataset.submitting === "true") return;
+  form.dataset.submitting = "true";
+  els.manualPaymentSaveButton.disabled = true;
+  let committed = false;
+  try {
+    if (!cloudReady || !financialLedgerReady || !cloudClient) throw Error("The shared payment ledger is not available.");
+    if (durableSaveInFlight || hasPendingDurableChanges()) throw Error("Finish saving your other changes before recording a payment.");
+    const result = await cloudClient.rpc("crm_write_job_payment", { p_job: job.id, p_id: id, p_payment: payment, p_expected: expected || null });
+    if (result.error) throw result.error;
+    if (result.data?.id !== id || (!payment && result.data?.deleted !== true)) throw Error("Payment receipt was not confirmed.");
+    committed = true;
+    if (!await initializeFinancialLedger()) throw Error("refresh");
+    await refreshLedgerJobInView(result.data.lead_id || getSelectedContact()?.id, job.id);
+    delete form.dataset.pendingId;
+    delete form.dataset.expectedVersion;
+    fillManualPaymentForm();
+    render();
+    setSaveState(els.manualPaymentSaveStatus, payment ? "Payment saved to the shared CRM." : "Payment deleted.", "success");
+  } catch (error) {
+    setSaveState(els.manualPaymentSaveStatus, committed ? "Payment change was saved. Reload to see the updated balance; do not enter it again." :
+      error?.code === "PT409" ? "This payment changed. Reload and review it before trying again." :
+      "Payment could not be confirmed. Check the connection and retry the same entry.", "error");
+  } finally {
+    delete form.dataset.submitting;
+    els.manualPaymentSaveButton.disabled = false;
+  }
+}
+
 function renderLeadPayments(contact) {
   if (!els.leadPaymentsPanel) return;
   if (!canManageManualPayments()) {
@@ -10191,7 +10276,7 @@ function renderLeadPayments(contact) {
   if (els.manualPaymentForm && !els.manualPaymentForm.elements.date.value) fillManualPaymentForm();
 
   const metrics = jobPaymentMetrics(job);
-  const manualPaidAmount = (job.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0);
+  const manualPaidAmount = job.paymentLedgerVersion === 2 ? number(job.manualPaidAmount) : (job.manualPayments || []).reduce((sum, payment) => sum + number(payment.amount), 0);
   const squarePaidAmount = number(job.squarePaidAmount);
   const overpayment = Math.max(metrics.paidAmount - metrics.contractValue, 0);
   const balanceLabel = overpayment ? "Customer Credit" : "Balance Due";
@@ -10203,7 +10288,7 @@ function renderLeadPayments(contact) {
       ["Contract Value", money.format(metrics.contractValue), job.projectNumber || job.name],
       ["Total Collected", money.format(metrics.paidAmount), `${roundedPercent}% paid`],
       [balanceLabel, money.format(balanceAmount), overpayment ? "Collected above contract value" : "Still owed on this job"],
-      ["Payment Sources", `${money.format(squarePaidAmount)} Square`, `${money.format(manualPaidAmount)} recorded manually`],
+      ["Payment Sources", `${money.format(squarePaidAmount)} Square`, `${money.format(manualPaidAmount)} recorded manually${job.paymentLedgerVersion === 2 ? " · " + money.format(number(job.invoicePaidNet)) + " invoice payments (net)" : ""}`],
     ]
       .map(
         ([label, value, caption]) => `
@@ -10218,10 +10303,13 @@ function renderLeadPayments(contact) {
   }
 
   if (els.manualPaymentList) {
-    const manualRows = [...(job.manualPayments || [])].sort((a, b) =>
+    const manualRows = [...manualPaymentRows(job)].sort((a, b) =>
       `${b.date}|${b.createdAt}`.localeCompare(`${a.date}|${a.createdAt}`),
     );
-    const squareRow = squarePaidAmount
+    const squareRow = job.paymentLedgerVersion === 2
+      ? (state.jobLedgerPayments || []).filter((row) => row.jobId === job.id && row.origin === "square").map((row) =>
+        `<article class="cost-card payment-ledger-card payment-ledger-square"><div><span class="status-pill pill-won">Square · Automatic</span><strong>${money.format(row.amount)}</strong><span>${escapeHtml(formatDate(row.receivedAt))}</span>${row.provider_refunded > 0 ? "<p>Refunded: "+money.format(row.provider_refunded)+"</p>" : ""}</div></article>`).join("")
+      : squarePaidAmount
       ? `
           <article class="cost-card payment-ledger-card payment-ledger-square">
             <div>
@@ -10256,8 +10344,10 @@ function renderLeadPayments(contact) {
         `,
       )
       .join("");
-    els.manualPaymentList.innerHTML = squareRow || manualMarkup
-      ? `${squareRow}${manualMarkup}`
+    const invoiceMarkup = job.paymentLedgerVersion === 2 ? (state.financialPayments || []).filter(p => p.jobId === job.id && p.contactId === contact.id).map(p =>
+      `<article class="cost-card payment-ledger-card"><div><span class="status-pill">Invoice payment</span><strong>${money.format(p.amount)}</strong><span>${escapeHtml(formatDate(p.receivedAt))}</span><p>Managed in Billing &amp; Payments.</p></div></article>`).join("") : "";
+    els.manualPaymentList.innerHTML = squareRow || manualMarkup || invoiceMarkup
+      ? `${squareRow}${manualMarkup}${invoiceMarkup}`
       : '<div class="empty-state">No payments have been collected for this job yet.</div>';
     hydrateIcons(els.manualPaymentList);
   }
@@ -10299,8 +10389,12 @@ async function saveManualPayment(event) {
     return;
   }
 
-  const paymentId = formData.get("paymentId") || uid("payment");
-  const previousPayments = [...(job.manualPayments || [])];
+  if (job.paymentLedgerVersion === 2 && els.manualPaymentForm.dataset.pendingJob !== job.id) {
+    delete els.manualPaymentForm.dataset.pendingId;
+    els.manualPaymentForm.dataset.pendingJob = job.id;
+  }
+  const paymentId = formData.get("paymentId") || (job.paymentLedgerVersion === 2 ? (els.manualPaymentForm.dataset.pendingId ||= uid("payment")) : uid("payment"));
+  const previousPayments = [...manualPaymentRows(job)];
   const existing = previousPayments.find((payment) => payment.id === paymentId);
   // A payment larger than what is owed is usually a typing mistake (a $20,000
   // payment on a $13,500 balance was accepted without a word). Ask first.
@@ -10326,6 +10420,7 @@ async function saveManualPayment(event) {
     updatedAt: now,
     createdBy: existing?.createdBy || state.currentUser.name || state.currentUser.email || "CRM admin",
   });
+  if (job.paymentLedgerVersion === 2) return writeCanonicalJobPayment(job, paymentId, payment, formData.get("paymentId") ? els.manualPaymentForm.dataset.expectedVersion : null);
 
   updateSelectedProfitJob((currentJob) => ({
     ...currentJob,
@@ -10379,11 +10474,12 @@ function editManualPayment(paymentId) {
   if (!canManageManualPayments()) return;
   const contact = getSelectedContact();
   const job = selectedLeadJob(contact);
-  const payment = (job?.manualPayments || []).find((item) => item.id === paymentId);
+  const payment = manualPaymentRows(job).find((item) => item.id === paymentId);
   if (!payment) return;
   state.leadDetailTab = "payments";
   renderLeadDetail();
   fillManualPaymentForm({ ...payment, paymentId: payment.id });
+  els.manualPaymentForm.dataset.expectedVersion = payment.updated_at || "";
   els.manualPaymentForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -10391,7 +10487,7 @@ async function deleteManualPayment(paymentId) {
   if (!canManageManualPayments()) return;
   const contact = getSelectedContact();
   const job = selectedLeadJob(contact);
-  const payment = (job?.manualPayments || []).find((item) => item.id === paymentId);
+  const payment = manualPaymentRows(job).find((item) => item.id === paymentId);
   if (!contact || !job || !payment) return;
   const remaining = Math.round((number(job.paidAmount) - number(payment.amount)) * 100) / 100;
   const contractTotal = number(job.contractValue) || number(job.value);
@@ -10402,6 +10498,7 @@ async function deleteManualPayment(paymentId) {
   );
   if (!confirmed) return;
 
+  if (job.paymentLedgerVersion === 2) return writeCanonicalJobPayment(job, paymentId, null, payment.updated_at);
   const previousPayments = [...(job.manualPayments || [])];
   updateSelectedProfitJob((currentJob) => ({
     ...currentJob,
@@ -14844,7 +14941,7 @@ async function copySquareInvoiceLink(estimateId) {
 function updateJobPaymentSnapshot(contactId, jobId) {
   const contact = getContact(contactId);
   const job = contactJobs(contact).find((item) => item.id === jobId);
-  if (!contact || !job) return;
+  if (!contact || !job || job.paymentLedgerVersion === 2) return;
   const linked = state.estimates.filter(
     (estimate) => estimate.contactId === contactId && estimate.jobId === jobId && estimate.squareInvoiceId,
   );
@@ -15325,12 +15422,23 @@ function financialLedgerEntries() {
     entries.push({ id: `expense-${expense.id}`, at: expense.expenseDate, kind: "Expense", contactId: expense.contactId,
       jobId: expense.jobId, label: expense.category, detail: expense.vendor || expense.description, amount: expense.amount, direction: "expense" });
   });
+  const ledgerByJob = new Map();
+  for (const p of state.jobLedgerPayments || []) {
+    if (!ledgerByJob.has(p.jobId)) ledgerByJob.set(p.jobId, []);
+    ledgerByJob.get(p.jobId).push(p);
+  }
   contacts.forEach((contact) => contactJobs(contact).forEach((job) => {
+    if (job.paymentLedgerVersion === 2) {
+      (ledgerByJob.get(job.id) || []).filter(p => p.contactId === contact.id).forEach(p => entries.push({
+        id: "ledger-" + p.id, kind: "Payment", at: p.receivedAt, contactId: contact.id, jobId: job.id, label: p.method,
+        detail: p.reference || p.provider, amount: number(p.amount) - number(p.provider_refunded), direction: "credit",
+      }));
+    }
     (job.manualPayments || []).filter((payment) => !paymentIds.has(payment.id)).forEach((payment) => entries.push({
       id: `manual-${payment.id}`, at: payment.date || payment.createdAt, kind: "Payment", contactId: contact.id, jobId: job.id,
       label: payment.method || "Manual", detail: payment.reference || "Recorded in CRM", amount: number(payment.amount), direction: "credit",
     }));
-    if (number(job.squarePaidAmount) > 0) entries.push({
+    if (job.paymentLedgerVersion !== 2 && number(job.squarePaidAmount) > 0) entries.push({
       id: `square-${job.id}`, at: job.squareLastPaymentAt || job.lastPaymentAt, kind: "Payment", contactId: contact.id, jobId: job.id,
       label: "Square", detail: "Confirmed Square payments", amount: number(job.squarePaidAmount), direction: "credit",
     });
@@ -15365,7 +15473,7 @@ function jobPaymentsAppliedToInvoice(invoice) {
   if (!invoice?.jobId || invoice.status === "void") return 0;
   const contact = state.contacts.find((item) => item.id === invoice.contactId);
   const job = contact && contactJobs(contact).find((item) => item.id === invoice.jobId);
-  let pool = number(job?.paidAmount);
+  let pool = job?.paymentLedgerVersion === 2 ? number(job.manualPaidAmount) + number(job.squarePaidAmount) : number(job?.paidAmount);
   if (!(pool > 0)) return 0;
   const siblings = (state.invoices || [])
     .filter((item) => item.jobId === invoice.jobId && item.contactId === invoice.contactId && item.status !== "void")
@@ -15443,6 +15551,7 @@ async function recordInvoicePayment(event) {
       } });
       if (error) throw error;
       if (!(await initializeFinancialLedger())) throw new Error("Payment saved, but ledger refresh failed");
+      await refreshLedgerJobInView(invoice.contactId, invoice.jobId);
     } else {
       state.financialPayments.unshift(payment);
       state.paymentAllocations.unshift(normalizePaymentAllocation({ id: uid("allocation"), paymentId: payment.id, invoiceId: invoice.id, contactId: invoice.contactId, jobId: invoice.jobId, amount }));
@@ -15620,6 +15729,7 @@ async function recordInvoiceRefund(event) {
       const { error } = await cloudClient.rpc("crm_record_refund", { p_refund: { id: refund.id, payment_id: payment.id, amount, reason, refunded_at: refund.refundedAt, provider: "manual" } });
       if (error) throw error;
       if (!(await initializeFinancialLedger())) throw new Error("Refund saved, but the ledger refresh failed");
+      await refreshLedgerJobInView(payment.contactId, payment.jobId);
     } else {
       state.financialRefunds.unshift(refund);
       const invoice = (state.invoices || []).find((item) => item.id === allocation?.invoiceId);
@@ -20355,29 +20465,7 @@ function pauseForSessionChange() {
 // Explicit extension boundary for the three legacy feature modules. This keeps
 // replacement names allowlisted and removes eval-style global mutation and
 // timing polls while the features are progressively moved into the core app.
-window.JobCrestApp = {
-  ready: false,
-  replaceFunction(name, value) {
-    if (typeof value !== "function") return false;
-    switch (name) {
-      case "statusPillClass": statusPillClass = value; break;
-      case "staleClass": staleClass = value; break;
-      case "dashboardMetrics": dashboardMetrics = value; break;
-      case "renderSummary": renderSummary = value; break;
-      case "applyStatusUpdate": applyStatusUpdate = value; break;
-      case "renderLeadCard": renderLeadCard = value; break;
-      case "renderDashboard": renderDashboard = value; break;
-      case "renderRevenueOverview": renderRevenueOverview = value; break;
-      case "renderDashboardDonuts": renderDashboardDonuts = value; break;
-      case "renderProjectsView": renderProjectsView = value; break;
-      case "renderReviewsView": renderReviewsView = value; break;
-      case "renderLeadDetail": renderLeadDetail = value; break;
-      case "render": render = value; break;
-      default: return false;
-    }
-    return true;
-  },
-};
+window.JobCrestApp = { ready: false };
 
 async function startApp() {
   if (!window.RooflineAuth) {
@@ -20428,6 +20516,7 @@ async function startApp() {
     state.companyDocuments = [];
     state.invoices = [];
     state.financialPayments = [];
+    state.jobLedgerPayments = [];
     state.financialExpenses = [];
     state.creditNotes = [];
     state.paymentAllocations = [];

@@ -5,8 +5,6 @@
   let selectedConversationJobId = "";
   let selectedMentionKeys = new Set();
   let mentionSuggestionQuery = "";
-  let previousRender = null;
-  let previousRenderLeadDetail = null;
   let conversationCloudReady = false;
   let conversationCloudLoading = false;
   let conversationCloudSubscription = null;
@@ -27,10 +25,6 @@
     } catch {
       return false;
     }
-  }
-
-  function assignGlobal(name, value) {
-    if (!window.JobCrestApp?.replaceFunction?.(name, value)) throw new Error(`Unsupported JobCrest extension: ${name}`);
   }
 
   function isSoldJob(job) {
@@ -1469,26 +1463,6 @@
     installMentionDialog();
     ensureTeamDirectory();
 
-    previousRenderLeadDetail = renderLeadDetail;
-    assignGlobal("renderLeadDetail", function projectConversationLeadDetailWrapper() {
-      previousRenderLeadDetail();
-      renderJobConversation();
-      augmentLeadJobCards();
-      updateMentionButton();
-    });
-
-    previousRender = render;
-    assignGlobal("render", function projectConversationRenderWrapper() {
-      previousRender();
-      restoreDurableConversationCache();
-      ensureTeamDirectory();
-      renderJobConversation();
-      augmentProjectsView();
-      augmentJobsView();
-      augmentLeadJobCards();
-      updateMentionButton();
-    });
-
     document.addEventListener("submit", submitJobConversation, true);
     document.addEventListener("click", handleCollaborationClick, true);
     document.addEventListener("change", handleConversationJobChange, true);
@@ -1498,6 +1472,11 @@
     initializeConversationPersistence();
 
     window.RooflineProjectConversations = {
+      afterLeadDetail() { renderJobConversation(); augmentLeadJobCards(); updateMentionButton(); },
+      afterRender() {
+        restoreDurableConversationCache(); ensureTeamDirectory(); renderJobConversation();
+        augmentProjectsView(); augmentJobsView(); augmentLeadJobCards(); updateMentionButton();
+      },
       version: VERSION,
       teamDirectory,
       sharedConversation,

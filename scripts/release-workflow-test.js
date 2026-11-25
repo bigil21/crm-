@@ -257,7 +257,8 @@ async function pdfText(file) {
 // --------------------------------------------------------------------- run
 async function main() {
   console.log('Release workflow test: two people, one estimate');
-  const copy = await localCloud.start({ ...PORTS, quiet: true });
+  const canonicalLedger = process.argv.includes('--canonical-ledger') || process.env.JOBCREST_LOCAL_LEDGER_V2 === '1';
+  const copy = await localCloud.start({ ...PORTS, quiet: true, canonicalLedger });
   let browser;
   let rep;
   let admin;
@@ -665,6 +666,10 @@ async function main() {
     });
     const agree = (figures) => Math.abs(Number(figures.database.collected) - figures.screen) < 0.005 && Number(figures.database.unsyncedJobPayments) === 0 && figures.proof.matched === true;
     const beforePayment = await moneyNow();
+    if (canonicalLedger) {
+      const proof = (await copy.query("select public.crm_payment_ledger_enabled() as active, data->>'paymentLedgerVersion' as version from crm_records where record_type='job' and id=$1",[picked.job_id])).rows[0];
+      check(proof?.active === true && proof.version === '2', 'this walkthrough must exercise the activated ledger', proof);
+    }
     check(beforePayment.rows.length === 0 && agree(beforePayment), 'Before the payment, the screen, the database and the payments table should agree', beforePayment);
     await admin.run((leadId, jobId) => openLeadDetail(leadId, 'payments', jobId), picked.lead_id, picked.job_id);
     await admin.waitFor(() => state.leadDetailTab === 'payments' && Boolean(els.manualPaymentForm?.elements?.amount), { message: 'the payments tab' });
@@ -675,7 +680,7 @@ async function main() {
       form.requestSubmit();
     });
     // Saved means: on the job, the form cleared for the next one, nothing in flight.
-    await admin.waitFor((jobId) => contactJobs(getSelectedContact()).find((item) => item.id === jobId)?.manualPayments?.some((item) => item.reference === 'TEST-CHK-9')
+    await admin.waitFor((jobId) => manualPaymentRows(contactJobs(getSelectedContact()).find((item) => item.id === jobId)).some((item) => item.reference === 'TEST-CHK-9')
       && !durableSaveInFlight && !els.manualPaymentSaveButton.disabled && els.manualPaymentForm.elements.amount.value === '',
       { timeout: 45000, message: 'the payment to be saved', args: [picked.job_id] });
     await settled(admin, 'the payment to be saved');
@@ -697,7 +702,7 @@ async function main() {
       return 'asked';
     });
     check(deleted === 'asked', deleted);
-    await admin.waitFor((jobId) => !contactJobs(getSelectedContact()).find((item) => item.id === jobId)?.manualPayments?.length && !durableSaveInFlight,
+    await admin.waitFor((jobId) => !manualPaymentRows(contactJobs(getSelectedContact()).find((item) => item.id === jobId)).length && !durableSaveInFlight,
       { timeout: 45000, message: 'the payment to be deleted', args: [picked.job_id] });
     await settled(admin, 'the deletion to be saved');
     const afterDelete = await moneyNow();

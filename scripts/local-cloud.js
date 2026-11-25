@@ -782,6 +782,7 @@ async function start(options = {}) {
   writeAccountsFile();
   await buildDatabase();
   await seedDatabase();
+  if (options.canonicalLedger === true) await db.query('select public.crm_activate_payment_ledger()');
   const files = startStaticServer();
   const cloud = await startCloudServer();
   const proxy = await startAppProxy();

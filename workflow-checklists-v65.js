@@ -264,7 +264,6 @@
   ];
 
   let selectedWorkflowJobId = "";
-  let originalApplyStatusUpdate = null;
   const checklistSaveStates = new Map();
   const checklistSaveTimers = new Map();
   const checklistSaveRevisions = new Map();
@@ -291,10 +290,6 @@
     } catch {
       return false;
     }
-  }
-
-  function assignGlobal(name, value) {
-    if (!window.JobCrestApp?.replaceFunction?.(name, value)) throw new Error(`Unsupported JobCrest extension: ${name}`);
   }
 
   function estimatesForJob(contact, job) {
@@ -906,16 +901,16 @@
     showToast(result.reason || "Complete the stage checklist before moving forward");
   }
 
-  function gatedApplyStatusUpdate(contactId, targetStatus, author = "Local user", message = "") {
+  function allowStatusChange(contactId, targetStatus) {
     const contact = getContact(contactId);
-    if (!contact) return null;
+    if (!contact) return false;
     const job = primaryJob(contact);
     const result = transitionCheck(contact, job, targetStatus);
     if (!result.allowed) {
       showBlockedTransition(contact, job, result);
-      return contact;
+      return false;
     }
-    return originalApplyStatusUpdate(contactId, targetStatus, author, message);
+    return true;
   }
 
   function advanceSecondaryJob(contact, job, targetStatus) {
@@ -968,7 +963,7 @@
     let updatedContact;
     const primaryJobAlreadyAtTarget = primaryJob(contact).id === job.id && contact.status === targetStatus;
     if (primaryJob(contact).id === job.id) {
-      updatedContact = originalApplyStatusUpdate(contact.id, targetStatus, state.currentUser?.name || "CRM user");
+      updatedContact = applyStatusUpdate(contact.id, targetStatus, state.currentUser?.name || "CRM user");
     } else {
       updatedContact = advanceSecondaryJob(contact, job, targetStatus);
     }
@@ -1385,29 +1380,14 @@
     addPipelinePermissions();
     installStyles();
 
-    originalApplyStatusUpdate = applyStatusUpdate;
-    assignGlobal("applyStatusUpdate", gatedApplyStatusUpdate);
-
-    const previousRenderLeadDetail = renderLeadDetail;
-    assignGlobal("renderLeadDetail", function workflowLeadDetailWrapper() {
-      previousRenderLeadDetail();
-      renderWorkflowPanel();
-      augmentJobCards();
-    });
-
-    const previousRender = render;
-    assignGlobal("render", function workflowRenderWrapper() {
-      previousRender();
-      ensureChronologicalNavigation();
-      renderWorkflowPanel();
-      augmentJobCards();
-    });
-
     document.addEventListener("submit", guardStatusSubmit, true);
     document.addEventListener("change", handleWorkflowChange, true);
     document.addEventListener("click", handleWorkflowClick, true);
 
     window.RooflineWorkflowChecklist = {
+      allowStatusChange,
+      afterRender() { ensureChronologicalNavigation(); renderWorkflowPanel(); augmentJobCards(); },
+      afterLeadDetail() { renderWorkflowPanel(); augmentJobCards(); },
       version: "65",
       stages: progressionStages,
       definitions: checklistDefinitions,
