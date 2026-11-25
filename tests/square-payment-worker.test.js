@@ -488,7 +488,7 @@ function schedulerHarness({ env = {}, claim = validClaim(), providerStatus = 200
   const rpcCalls = [], providerCalls = [], authCalls = [], timers = [], warnings = [];
   let pending = claim !== null, route;
   const context = vm.createContext({
-    URL, Buffer, AbortSignal, __dirname: root, module: { exports: {} },
+    URL, URLSearchParams, Buffer, AbortSignal, __dirname: root, module: { exports: {} },
     console: { log() {}, warn: message => warnings.push(message), error() {} },
     process: { env: { CRM_SKIP_ENV_FILES: 'true', AUTH_REQUIRED: 'true', SUPABASE_URL: 'https://unit.supabase.co',
       SUPABASE_ANON_KEY: 'sb_publishable_synthetic', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_synthetic_worker',
@@ -507,6 +507,12 @@ function schedulerHarness({ env = {}, claim = validClaim(), providerStatus = 200
     },
     async fetch(input, options) {
       const url = new URL(String(input));
+      if (url.origin === 'https://unit.supabase.co' && url.pathname === '/rest/v1/crm_payments') {
+        assert.equal(options.method || 'GET','GET'); assert.equal(url.searchParams.get('limit'),'1');
+        assert.equal(url.searchParams.get('company_state_id'),'eq.'+scope.companyId);
+        assert.equal(url.searchParams.get('origin'),'eq.square'); assert.equal(url.searchParams.get('provider'),'eq.square');
+        return jsonResponse(200,[]);
+      }
       if (url.origin === 'https://unit.supabase.co' && url.pathname === '/auth/v1/user') {
         authCalls.push({ url, options }); return jsonResponse(authUser ? 200 : 401, authUser || {});
       }
@@ -567,7 +573,7 @@ for (const env of [{ SUPABASE_SERVICE_ROLE_KEY: '' }, { SUPABASE_ANON_KEY: '' },
 test('server scheduler processes a durable queue without a browser and uses only scoped worker writes/provider GETs', async () => {
   const h = schedulerHarness({ env: { SQUARE_PAYMENT_WORKER_ENABLED: 'true' } }); const stop = h.start();
   assert.equal(typeof stop, 'function'); await h.drain();
-  assert.equal(h.timers.length, 1); assert.equal(h.timers[0].delay, 5000); assert.equal(h.timers[0].unreferenced, true);
+  assert.deepEqual(h.timers.map(t=>t.delay),[5000,15000]); assert.ok(h.timers.every(t=>t.unreferenced));
   assert.deepEqual(h.rpcCalls.map(call => call.name), ['crm_square_claim_webhook', 'crm_square_apply_payment']);
   assert.equal(h.providerCalls.length, 2); assert.equal(h.warnings.length, 0);
   for (const call of h.rpcCalls) {
@@ -586,7 +592,7 @@ test('server scheduler processes a durable queue without a browser and uses only
   }
   await h.timers[0].callback(); assert.equal(h.rpcCalls.at(-1).name, 'crm_square_claim_webhook');
   assert.equal(h.providerCalls.length, 2, 'Completed events do not trigger repeated provider reads');
-  stop(); assert.equal(h.timers[0].cleared, true);
+  stop(); assert.ok(h.timers.every(t=>t.cleared));
 });
 
 test('scheduler waits for the payload invoice version, not the later webhook emitter timestamp', async () => {

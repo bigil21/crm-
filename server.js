@@ -2123,14 +2123,14 @@ function startSquarePaymentWorker() {
       const result=await fetch(SQUARE_BASE+p,{headers:{Authorization:"Bearer "+squareToken(),"Square-Version":SQUARE_VERSION},redirect:"error",signal:AbortSignal.timeout(10000)});
       if(!result.ok)throw Error("Square refund provider unavailable");return result.json();
     };
-    const serviceHeaders = require("./recovery-backup.js").serviceHeaders(config.key);
+    const serviceHeaders = require(path.join(__dirname,"recovery-backup.js")).serviceHeaders(config.key);
     const lookup=async id=>{
       const q=new URLSearchParams({select:"provider_invoice,provider_payment_id,amount,origin",company_state_id:"eq."+config.companyId,provider:"eq.square",origin:"eq.square",provider_payment_id:"eq."+id,limit:"2"});
       const r=await fetch(config.origin+"/rest/v1/crm_payments?"+q,{headers:serviceHeaders,redirect:"error",signal:AbortSignal.timeout(10000)});
       if(!r.ok)throw Error("Square refund mapping unavailable");const rows=await r.json();
       if(!Array.isArray(rows)||rows.length>1)throw Error("Ambiguous refund mapping");return rows[0];
     };
-    verifiedRefundWorker=require("./square-refund-reconciliation.js").create({get,lookup,apply:args=>squareWorkerRpc(config,"crm_square_apply_verified_refund",{...base,...args}),warn:msg=>console.warn(msg)});
+    verifiedRefundWorker=require(path.join(__dirname,"square-refund-reconciliation.js")).create({get,lookup,apply:args=>squareWorkerRpc(config,"crm_square_apply_verified_refund",{...base,...args}),warn:msg=>console.warn(msg)});
   }
   const workerModule = require(path.join(__dirname, "square-payment-worker.js"));
   const worker = workerModule.create({
@@ -2155,7 +2155,7 @@ function startSquarePaymentWorker() {
   const refunds=verifiedRefundWorker;
   const hasMappedPayments=async()=>{
     const q=new URLSearchParams({select:"id",company_state_id:"eq."+config.companyId,provider:"eq.square",origin:"eq.square",limit:"1"});
-    const r=await fetch(config.origin+"/rest/v1/crm_payments?"+q,{headers:require("./recovery-backup.js").serviceHeaders(config.key),redirect:"error",signal:AbortSignal.timeout(10000)});
+    const r=await fetch(config.origin+"/rest/v1/crm_payments?"+q,{headers:require(path.join(__dirname,"recovery-backup.js")).serviceHeaders(config.key),redirect:"error",signal:AbortSignal.timeout(10000)});
     if(!r.ok)throw Error("Square mapping read unavailable");const rows=await r.json();if(!Array.isArray(rows))throw Error("Invalid mapping response");return rows.length!==0;
   };
   const refundTimer=refunds?setInterval(()=>void refunds.sweep(hasMappedPayments),15000):null;
