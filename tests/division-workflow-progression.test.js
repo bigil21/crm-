@@ -66,7 +66,7 @@ test('the service advance button saves the configured next stage through the dur
     getContact:()=>contact, contactJobs:value=>value.jobs, primaryJob:value=>value.jobs[0],
     window:{clearTimeout(){}}, checklistSaveTimers:new Map(), checklistSaveStates:new Map(),
     queueWorkflowLocalSave(){},renderActiveWorkflowLead(){},canUseCloudSync:()=>true,
-    originalApplyStatusUpdate(_id,target){contact.status=target;contact.jobs[0].status=target;contact.updates=[{id:'update'}];return contact;},
+    applyStatusUpdate(_id,target){contact.status=target;contact.jobs[0].status=target;contact.updates=[{id:'update'}];return contact;},
     async persistLeadJobRecord(jobId,updateId){saves.push({jobId,updateId,status:contact.jobs[0].status});return true;},
   });
   vm.runInContext(source('checklistSaveKey') + source('advanceWorkflowJob'),h);

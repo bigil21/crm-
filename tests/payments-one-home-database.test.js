@@ -69,6 +69,87 @@ async function oneLead() {
 }
 
 // ---- recording, changing and removing a payment -----------------------------
+test('cutover accepts only matched historical captures and rolls all changes back on a discrepancy', async () => {
+  const db=await oneLead();
+  try {
+    await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({role:'service_role'})]);
+    await db.exec("update crm_records set data=data || '{\"paidAmount\":30,\"squarePaidAmount\":30}' where id='job-1'");
+    await db.query("insert into crm_records(company_state_id,record_type,id,lead_id,job_id,owner_id,updated_by,data) values($1,'estimate','est-hist','lead-1','job-1',$2,$2,$3)",[CO,ADMIN.sub,{squareInvoiceId:'hist-i',squareOrderId:'hist-o',paidAmount:30,status:'Won'}]);
+    const snap={environment:'sandbox',merchant:'test',invoiceId:'hist-i',orderId:'hist-o',version:3,paidAmount:30,tenders:[{id:'verified',grossCents:4000,refundedCents:1000,receivedAt:'2026-11-05T12:00:00Z'}]};
+    const activate=items=>db.query('select crm_activate_payment_ledger($1::jsonb) as v',[JSON.stringify(items)]);
+    await assert.rejects(activate([]),/verified_historical_square/);
+    await assert.rejects(activate([{...snap,paidAmount:29}]),/historical_square_mapping_changed/);
+    assert.equal((await rows(db,"origin='square'")).length,0);
+    const result=(await activate([snap])).rows[0].v;
+    assert.equal(result.before,780);assert.equal(result.after,780);
+    assert.equal((await rows(db,"origin='square'")).length,1);
+    await assert.rejects(as(db,ADMIN,tx=>tx.query('select crm_activate_payment_ledger()')),e=>e.code==='42501');
+    await assert.rejects(db.exec("delete from crm_state where id like '%:payment-ledger-v2'"),/ledger_control_is_server_only/);
+  } finally {await db.close();}
+});
+
+test('verified captures reconcile atomically, deduplicate replays and apply per-tender refunds', async () => {
+  const db=await oneLead();
+  try {
+    const company=CO, env='sandbox', merchant='merchant-test';
+    const apply=async (event,version,amount,tenders,status='PARTIALLY_PAID')=>{
+      const stamp='2026-11-20T00:00:00Z', invoice='inv-test-ledger', order='order-test-ledger';
+      await db.query('select crm_square_enqueue_webhook($1,$2,$3)',[company,env,{merchant_id:merchant,event_id:event,type:'invoice.payment_made',created_at:stamp,data:{object:{invoice:{id:invoice,version,updated_at:stamp}}}}]);
+      const claim=(await db.query('select crm_square_claim_webhook($1,$2,$3) as v',[company,env,merchant])).rows[0].v;
+      assert.equal(claim.ledgerV2,true);
+      await db.query('select crm_square_apply_payment($1,$2,$3,$4,$5,$6)',[company,env,merchant,event,claim.leaseId,{
+        invoiceId:invoice,orderId:order,version,updatedAt:stamp,status,contractAmount:20000,paidAmount:amount,
+        paymentRequests:[{type:'DEPOSIT',requestedAmount:20000,paidAmount:75}],tenders}]);
+    };
+    await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({role:'service_role'})]);
+    await db.exec("update crm_records set data=jsonb_set(data,'{id}',to_jsonb(id)) where id in ('lead-1','job-1')");
+    await db.query("insert into crm_records(company_state_id,record_type,id,lead_id,job_id,owner_id,updated_by,data) values($1,'estimate','est-ledger','lead-1','job-1',$2,$2,$3)",[CO,ADMIN.sub,{id:'est-ledger',contactId:'lead-1',jobId:'job-1',squareInvoiceId:'inv-test-ledger',squareOrderId:'order-test-ledger',contractValue:20000,paidAmount:0,status:'Won'}]);
+    await db.query('select crm_activate_payment_ledger()');
+    const tenders=[{id:'capture-a',grossCents:5000,refundedCents:0,receivedAt:'2026-11-18T12:00:00Z'},{id:'capture-b',grossCents:2500,refundedCents:0,receivedAt:'2026-11-19T12:00:00Z'}];
+    await apply('evt-1',2,75,tenders); await apply('evt-2',2,75,tenders);
+    assert.equal((await rows(db,"origin='square'")).length,2);
+    assert.equal((await totals(db)).collected,825);
+    await apply('evt-3',3,65,[{...tenders[0],refundedCents:1000},tenders[1]],'PARTIALLY_REFUNDED');
+    assert.equal((await totals(db)).collected,815);
+    assert.equal((await rows(db,"origin='square'")).length,2);
+    assert.equal((await proof(db)).matched,true);
+  } finally {await db.close();}
+});
+
+test('activated ledger preserves money, checks roles and versions, and counts invoice payments toward Paid', async () => {
+  const db = await oneLead();
+  const run = (user, amount, version=null, id='ledger-pay') => as(db,user,tx=>tx.query(
+    'select public.crm_write_job_payment($1,$2,$3::jsonb,$4) as p',
+    ['job-1',id,amount===null?null:JSON.stringify(payment(id,amount)),version])).then(r=>r.rows[0].p);
+  const read = async () => (await db.query("select data from crm_records where record_type='job' and id='job-1'")).rows[0].data;
+  try {
+    const activated=(await db.query('select crm_activate_payment_ledger() as v')).rows[0].v;
+    assert.equal(activated.before,750); assert.equal(activated.after,750);
+    assert.equal((await read()).paymentLedgerVersion,2);
+    await assert.rejects(run(REP,10), /admin_required/);
+    await assert.rejects(as(db,REP,tx=>tx.query("select crm_lock_refundable_invoice_payment('any')")), /admin_required/);
+    const first=await run(ADMIN,100);
+    assert.equal((await run(ADMIN,100)).id,first.id);
+    assert.equal((await read()).paidAmount,100);
+    const edited=await run(ADMIN,125,first.updated_at);
+    await assert.rejects(run(ADMIN,110,first.updated_at), /payment_changed_reload/);
+    await run(ADMIN,null,edited.updated_at);
+    await assert.rejects(run(ADMIN,100),/payment_was_removed/);
+    assert.equal((await read()).paidAmount,0);
+    await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({...ADMIN,role:'authenticated'})]);
+    await db.query("insert into crm_invoices(company_state_id,id,invoice_number,lead_id,job_id,subtotal,total_amount,issue_date,created_by,updated_by) values($1,'inv','TEST-INV','lead-1','job-1',20000,20000,current_date,$2,$2)",[CO,ADMIN.sub]);
+    await as(db,ADMIN,tx=>tx.query('select crm_record_invoice_payment($1::jsonb)',[JSON.stringify({id:'invoice-pay',allocation_id:'alloc-1',invoice_id:'inv',amount:20000,method:'Check',received_at:'2026-11-22T17:00:00Z'})]));
+    assert.equal((await read()).paidAmount,20000);
+    await db.exec("update crm_records set data=jsonb_set(data,'{status}','\"Paid\"') where record_type='job' and id='job-1'");
+    assert.equal((await read()).status,'Paid');
+    await as(db,ADMIN,tx=>tx.query('select crm_record_refund($1::jsonb)',[JSON.stringify({id:'rf-1',payment_id:'invoice-pay',amount:25,reason:'TEST refund',refunded_at:'2026-11-23T17:00:00Z'})]));
+    assert.equal((await read()).paidAmount,19975); assert.notEqual((await read()).status,'Paid');
+    assert.equal((await proof(db)).matched,true);
+    assert.equal((await totals(db)).collected,20725);
+    assert.equal((await read()).manualPayments,undefined);
+  } finally { await db.close(); }
+});
+
 test('a payment recorded on a job is in the payments table in the same save', async () => {
   const db = await oneLead();
   try {

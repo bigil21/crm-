@@ -25,10 +25,6 @@
     }
   }
 
-  function assignGlobal(name, value) {
-    if (!window.JobCrestApp?.replaceFunction?.(name, value)) throw new Error(`Unsupported JobCrest extension: ${name}`);
-  }
-
   function isSoldStatus(status = "") {
     return soldStatuses.includes(status);
   }
@@ -161,6 +157,7 @@
     if (!hasAppGlobals() || window.__rooflineProductionFlowV64Installed) return false;
     window.__rooflineProductionFlowV64Installed = true;
     window.RooflineProductionFlow = {
+      beforeRender: syncStatuses, statusPillClass: patchedStatusPillClass, staleClass: patchedStaleClass, renderLeadCard: patchedRenderLeadCard,
       version: "64",
       statuses: productionStatuses,
       activeContractStatuses,
@@ -172,28 +169,6 @@
     };
 
     syncStatuses();
-    assignGlobal("statusPillClass", patchedStatusPillClass);
-    assignGlobal("staleClass", patchedStaleClass);
-    // app.js owns status transitions so checklist, payment, optimistic-save,
-    // multi-job, and server-integrity rules cannot be bypassed by this legacy UI layer.
-    assignGlobal("renderLeadCard", patchedRenderLeadCard);
-    // The dashboard, Sold Jobs and Reviews screens are owned by app.js. This
-    // file used to replace them with roofing-only copies that totalled
-    // whatever happened to be in memory, skipped the dashboard widget layout,
-    // and left Construction and Home Services jobs out of production lists.
-    // Keep the canonical form handlers in app.js. They normalize names and
-    // phone numbers, stamp updatedAt, and wait for verified durable saving.
-
-    const previousRender = typeof render === "function" ? render : null;
-    if (previousRender && !window.__rooflineProductionRenderWrappedV64) {
-      window.__rooflineProductionRenderWrappedV64 = true;
-      assignGlobal("render", function productionRenderWrapper() {
-        syncStatuses();
-        previousRender();
-        applyPermissionsToDom();
-      });
-    }
-
     try {
       render();
     } catch {

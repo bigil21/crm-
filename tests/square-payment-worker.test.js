@@ -54,6 +54,31 @@ function safeFailure(error, retryable) {
   return true;
 }
 
+test('server cutover preparation verifies merchant and reads a multiply-linked invoice only once', async () => {
+  const {prepare}=require('../scripts/prepare-payment-ledger.js');
+  const link={lead_id:'l',job_id:'j',data:{squareInvoiceId:invoiceId,squareOrderId:orderId}};
+  const paymentValues=payments();
+  for(const p of Object.values(paymentValues))p.created_at=updatedAt;
+  const mock=provider({value:paidInvoice('PARTIALLY_REFUNDED'),paymentValues});
+  const options={list:async()=>[link,link],merchant:'m1',environment:'sandbox',provider:async path=>path==='/merchants/m1'?{merchant:{id:'m1'}}:mock.get(path)};
+  const history=await prepare(options);
+  assert.equal(history.length,1);assert.equal(history[0].paidAmount,100.5);assert.equal(history[0].tenders.length,2);
+  await assert.rejects(prepare({...options,provider:async()=>({merchant:{id:'other'}})}),/merchant does not match/);
+  await assert.rejects(prepare({...options,list:async()=>[link,{...link,job_id:'other'}]}),/Conflicting/);
+});
+
+test('ledger capture verification returns one minimized row per provider payment and fails closed if a timestamp is missing', async () => {
+  const paymentValues = payments();
+  for (const row of Object.values(paymentValues)) row.created_at=updatedAt;
+  const value=paidInvoice('PARTIALLY_REFUNDED');
+  const p=provider({value,paymentValues});
+  const snapshot=await p.run({withTenders:true});
+  assert.deepEqual(snapshot.tenders.map(t=>[t.id,t.grossCents,t.refundedCents]),[['payment:1',5025,5025],['payment:2',10050,0]]);
+  assert.deepEqual((await p.run({withTenders:true})).tenders,snapshot.tenders);
+  delete paymentValues['payment:2'].created_at;
+  await assert.rejects(p.run({withTenders:true}),/payment_provider_not_current/);
+});
+
 test('readSnapshot verifies a stable invoice twice and returns exact shared balance without provider writes', async () => {
   const p = provider(); const result = await p.run();
   assert.equal(result.invoiceId, invoiceId); assert.equal(result.orderId, orderId);

@@ -627,12 +627,16 @@ test('shared-data redraw waits until the active text editor loses focus', () => 
   assert.equal(rendered, 1);
 });
 
-test('the production render wrapper does not draw the active page twice', () => {
-  const source = fs.readFileSync(path.join(root, 'production-flow-v64.js'), 'utf8');
-  const wrapper = source.match(/assignGlobal\("render", function productionRenderWrapper\(\) \{([^]*?)\n\s*\}\);/);
-  assert.ok(wrapper, 'production render wrapper exists');
-  assert.match(wrapper[1], /previousRender\(\)/);
-  assert.doesNotMatch(wrapper[1], /refreshCurrentView\(\)/);
+test('feature modules use explicit hooks and never replace or double-call the active renderer', () => {
+  for (const file of ['production-flow-v64.js', 'workflow-checklists-v65.js', 'project-conversations-v67.js']) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.doesNotMatch(source, /assignGlobal|replaceFunction|previousRender/);
+  }
+  const source = fs.readFileSync(path.join(root,'app.js'),'utf8');
+  const render = source.slice(source.indexOf('function render() {'), source.indexOf('function showViewRenderError'));
+  assert.equal(render.split('activeRenderer[state.view]?.()').length, 2);
+  assert.match(render, /RooflineProductionFlow\?\.beforeRender/);
+  assert.doesNotMatch(render, /refreshCurrentView\(/);
 });
 
 test('Save Estimate has a direct click path in addition to keyboard form submit', () => {

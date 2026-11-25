@@ -10,6 +10,10 @@ npm start
 
 Then open `http://localhost:4173`.
 
+## Editing the browser app
+
+Edit the feature sources in `src/crm/`, then run `npm run build:client`. The release check verifies that the generated `app.js` matches. See [Payment ledger rollout and browser source](PAYMENT_LEDGER_ROLLOUT.md) for the local two-person tests and the separate financial cutover.
+
 ## Make It Public
 
 See `DEPLOYMENT.md` for the public hosting checklist. The app is now packaged as a Node web service with `npm start`.

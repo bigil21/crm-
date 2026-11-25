@@ -40,7 +40,7 @@ function summarize(invoice, invoiceId, expectedOrderId) {
     updatedAt: invoice.updated_at, status: invoice.status, contractCents, grossCents, paymentRequests: requests };
 }
 
-async function readSnapshot({ get, invoiceId, expectedOrderId, notBefore, minimumVersion }) {
+async function readSnapshot({ get, invoiceId, expectedOrderId, notBefore, minimumVersion, withTenders = false }) {
   if (typeof get !== "function" || !safeId(invoiceId) || (expectedOrderId && !safeId(expectedOrderId))) throw failure("payment_snapshot_invalid");
   const retrieve = async (providerPath) => {
     try { return await get(providerPath); }
@@ -55,7 +55,9 @@ async function readSnapshot({ get, invoiceId, expectedOrderId, notBefore, minimu
     throw failure("payment_provider_not_current", true);
   }
   let refundedCents = 0;
-  if (["REFUNDED", "PARTIALLY_REFUNDED"].includes(first.status)) {
+  const tenders = [];
+  const refundStatus = ["REFUNDED", "PARTIALLY_REFUNDED"].includes(first.status);
+  if (refundStatus || (withTenders && first.grossCents > 0)) {
     // Square leaves invoice total_completed_amount_money unchanged after refunds.
     // Its invoice guide specifies retrieving the order's tenders and each payment's
     // refunded_money. Never subtract from an already-netted payment amount.
@@ -73,13 +75,17 @@ async function readSnapshot({ get, invoiceId, expectedOrderId, notBefore, minimu
           payment.status !== "COMPLETED") throw failure("payment_refund_unconfirmed", true);
       const total = money(payment.total_money);
       const refunded = money(payment.refunded_money, true);
+      if (withTenders) {
+        if (!validTime(payment.created_at) || !total) throw failure("payment_provider_not_current", true);
+        tenders.push({ id, grossCents: total, refundedCents: refunded, receivedAt: new Date(payment.created_at).toISOString() });
+      }
       // Tip allocation isn't known from invoice requests. Preserve last known
       // balances for review rather than subtracting a tip refund from principal.
       if (money(payment.tip_money, true) !== 0 || refunded > total) throw failure("payment_snapshot_invalid");
       paymentTotalCents = sum([paymentTotalCents, total]);
       refundedCents = sum([refundedCents, refunded]);
     }
-    if (paymentTotalCents !== first.grossCents || refundedCents <= 0 || refundedCents > first.grossCents ||
+    if (paymentTotalCents !== first.grossCents || (refundStatus ? refundedCents <= 0 : refundedCents !== 0) || refundedCents > first.grossCents ||
         (first.status === "REFUNDED" && refundedCents !== first.grossCents) ||
         (first.status === "PARTIALLY_REFUNDED" && refundedCents === first.grossCents)) throw failure("payment_refund_unconfirmed", true);
   }
@@ -91,7 +97,7 @@ async function readSnapshot({ get, invoiceId, expectedOrderId, notBefore, minimu
   return { invoiceId, orderId: first.orderId, version: first.version, updatedAt: first.updatedAt,
     status: first.status, contractAmount: first.contractCents / 100, paidAmount,
     paymentPercent: (first.grossCents - refundedCents) / first.contractCents * 100,
-    paymentRequests: first.paymentRequests };
+    paymentRequests: first.paymentRequests, ...(withTenders ? { tenders: tenders.sort((a, b) => a.id.localeCompare(b.id)) } : {}) };
 }
 
 function create({ store, read, scope, onError = () => {} }) {

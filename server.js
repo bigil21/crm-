@@ -2039,6 +2039,7 @@ async function handleSquarePaymentStatus(req, res, user) {
   sendJson(res, 200, { payments });
 }
 
+let verifiedRefundWorker=null;
 async function handleSquareWebhook(req, res) {
   const key = squareWebhookKey();
   const webhookUrl = process.env.SQUARE_WEBHOOK_URL;
@@ -2060,6 +2061,17 @@ async function handleSquareWebhook(req, res) {
     const environment = process.env.SQUARE_ENVIRONMENT === "sandbox" ? "sandbox" : "production";
     if (event?.merchant_id !== merchantId || (req.headers["square-environment"] && String(req.headers["square-environment"]).trim().toLowerCase() !== environment)) {
       sendJson(res, 403, { error: "Webhook merchant or environment mismatch" }); return;
+    }
+    if((event.type==="refund.updated" || event.type==="refund.created") &&
+       typeof verifiedRefundWorker!=="undefined" && verifiedRefundWorker){
+      const refundId=event.data?.object?.refund?.id;
+      if(!squareStatusSafeId(refundId)||!squareStatusSafeId(event.event_id)){
+        sendJson(res,400,{error:"Missing refund identity"});return;
+      }
+      const result=await verifiedRefundWorker.reconcile(refundId);
+      // An unmatched payment can pre-date posting its capture. The catch-up scan
+      // independently re-reads refunds after startup; no webhook amount is trusted.
+      sendJson(res,200,{received:true,reconciled:result.durable===true});return;
     }
     const events = ["invoice.created", "invoice.published", "invoice.updated", "invoice.payment_made",
       "invoice.scheduled_charge_failed", "invoice.canceled", "invoice.refunded", "invoice.deleted"];
@@ -2105,6 +2117,21 @@ function startSquarePaymentWorker() {
   const environment = process.env.SQUARE_ENVIRONMENT === "sandbox" ? "sandbox" : "production";
   const scope = { companyId: config.companyId, environment, merchantId };
   const base = { p_company: config.companyId, p_environment: environment, p_merchant: merchantId };
+  if (["production","sandbox"].includes(process.env.SQUARE_ENVIRONMENT || "production")) {
+    const get=async p=>{
+      if(!/^\/(?:refunds|payments|orders|invoices)\/[A-Za-z0-9_%:-]+$/.test(p)&&!p.startsWith("/refunds?"))throw Error("Invalid refund read path");
+      const result=await fetch(SQUARE_BASE+p,{headers:{Authorization:"Bearer "+squareToken(),"Square-Version":SQUARE_VERSION},redirect:"error",signal:AbortSignal.timeout(10000)});
+      if(!result.ok)throw Error("Square refund provider unavailable");return result.json();
+    };
+    const serviceHeaders = require("./recovery-backup.js").serviceHeaders(config.key);
+    const lookup=async id=>{
+      const q=new URLSearchParams({select:"provider_invoice,provider_payment_id,amount,origin",company_state_id:"eq."+config.companyId,provider:"eq.square",origin:"eq.square",provider_payment_id:"eq."+id,limit:"2"});
+      const r=await fetch(config.origin+"/rest/v1/crm_payments?"+q,{headers:serviceHeaders,redirect:"error",signal:AbortSignal.timeout(10000)});
+      if(!r.ok)throw Error("Square refund mapping unavailable");const rows=await r.json();
+      if(!Array.isArray(rows)||rows.length>1)throw Error("Ambiguous refund mapping");return rows[0];
+    };
+    verifiedRefundWorker=require("./square-refund-reconciliation.js").create({get,lookup,apply:args=>squareWorkerRpc(config,"crm_square_apply_verified_refund",{...base,...args}),warn:msg=>console.warn(msg)});
+  }
   const workerModule = require(path.join(__dirname, "square-payment-worker.js"));
   const worker = workerModule.create({
     scope,
@@ -2118,16 +2145,25 @@ function startSquarePaymentWorker() {
       }),
     },
     read: (claim) => workerModule.readSnapshot({
-      get: squareProviderReader(), invoiceId: claim.invoiceId,
+      get: squareProviderReader(), invoiceId: claim.invoiceId, withTenders: claim.ledgerV2 === true,
       notBefore: claim.invoiceUpdatedAt || undefined, minimumVersion: claim.invoiceVersion ?? undefined,
     }),
     onError: (code) => console.warn(`Square payment processing deferred: ${code}`),
   });
   const run = () => worker.tick().catch(() => console.warn("Square payment worker could not confirm its queue state; retained for retry."));
   const timer = setInterval(run, 5000);
+  const refunds=verifiedRefundWorker;
+  const hasMappedPayments=async()=>{
+    const q=new URLSearchParams({select:"id",company_state_id:"eq."+config.companyId,provider:"eq.square",origin:"eq.square",limit:"1"});
+    const r=await fetch(config.origin+"/rest/v1/crm_payments?"+q,{headers:require("./recovery-backup.js").serviceHeaders(config.key),redirect:"error",signal:AbortSignal.timeout(10000)});
+    if(!r.ok)throw Error("Square mapping read unavailable");const rows=await r.json();if(!Array.isArray(rows))throw Error("Invalid mapping response");return rows.length!==0;
+  };
+  const refundTimer=refunds?setInterval(()=>void refunds.sweep(hasMappedPayments),15000):null;
+  refundTimer?.unref();
+  if(refunds)void refunds.sweep(hasMappedPayments);
   timer.unref();
   run();
-  return () => clearInterval(timer);
+  return () => {clearInterval(timer);if(refundTimer)clearInterval(refundTimer);verifiedRefundWorker=null;};
 }
 
 async function handleSquareSyncStatus(req, res, user) {
@@ -2422,6 +2458,8 @@ if (require.main === module) {
   if (stopWorker) server.once("close", stopWorker);
   const stopBackupWorker = startRecoveryBackupWorker();
   if (stopBackupWorker) server.once("close", stopBackupWorker);
+  const stopMediaVault = process.env.FILE_VAULT_ENABLED === "true" && require("./scripts/media-vault").start();
+  if (stopMediaVault) server.once("close", stopMediaVault);
   const stopWebsiteQuoteImportWorker = startWebsiteQuoteImportWorker();
   if (stopWebsiteQuoteImportWorker) server.once("close", stopWebsiteQuoteImportWorker);
 }
